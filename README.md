@@ -46,4 +46,4 @@ JARVIS/
 
 ## License
 
-Private - All rights reserved.
+[MIT License](LICENSE)
