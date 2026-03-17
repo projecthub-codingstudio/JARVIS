@@ -65,6 +65,13 @@ python -m jarvis --model=exaone3.5:7.8b
 python -m pytest tests/ -v
 ```
 
+## Built With
+
+This project was designed and built using:
+
+- **[ProjectHub](https://projecthub.co.kr)** — AI-powered project management and build orchestration platform
+- **[Colligi](https://colligi.ai)** — Collective intelligence analysis system for architecture design and technical decision-making
+
 ## License
 
 [MIT License](LICENSE)
