@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from jarvis.contracts import DocumentRecord, EmbeddingRuntimeProtocol, IndexingStatus
+from jarvis.contracts import ChunkRecord, DocumentRecord, EmbeddingRuntimeProtocol, IndexingStatus
 from jarvis.indexing.chunker import Chunker
 from jarvis.indexing.parsers import DocumentParser
 from jarvis.indexing.tombstone import TombstoneManager
@@ -74,7 +74,7 @@ class IndexPipeline:
             (document_id,),
         )
 
-    def _insert_chunks(self, chunks: list) -> None:
+    def _insert_chunks(self, chunks: list[ChunkRecord]) -> None:
         for chunk in chunks:
             self._db.execute(
                 "INSERT INTO chunks"

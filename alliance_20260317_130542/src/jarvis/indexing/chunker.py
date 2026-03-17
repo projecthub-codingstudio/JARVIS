@@ -10,10 +10,23 @@ import hashlib
 from jarvis.contracts import ChunkRecord
 
 
+def _snap_to_utf8_boundary(data: bytes, pos: int) -> int:
+    """Snap a byte position forward to a valid UTF-8 character boundary."""
+    if pos >= len(data):
+        return len(data)
+    # UTF-8 continuation bytes start with 0b10xxxxxx (0x80-0xBF).
+    # Advance past any continuation bytes to reach the start of the next char.
+    while pos < len(data) and (data[pos] & 0xC0) == 0x80:
+        pos += 1
+    return pos
+
+
 class Chunker:
     """Splits document text into overlapping chunks for indexing.
 
     Chunk boundaries respect newline boundaries where possible.
+    Byte positions are snapped to UTF-8 character boundaries to avoid
+    splitting multi-byte characters (critical for Korean text).
     """
 
     def __init__(
@@ -53,8 +66,11 @@ class Chunker:
                 if best_break > byte_pos:
                     end = best_break
 
+            # Snap end to UTF-8 character boundary
+            end = _snap_to_utf8_boundary(text_bytes, end)
+
             chunk_bytes = text_bytes[byte_pos:end]
-            chunk_text = chunk_bytes.decode("utf-8", errors="replace")
+            chunk_text = chunk_bytes.decode("utf-8")
 
             # Compute line range
             preceding = text_bytes[:byte_pos]
@@ -71,7 +87,11 @@ class Chunker:
                 chunk_hash=hashlib.sha256(chunk_bytes).hexdigest(),
             ))
 
-            # Advance with overlap
-            byte_pos = end - self._overlap_bytes if end < total else total
+            # Advance with overlap, snapping to UTF-8 boundary
+            if end < total:
+                next_pos = end - self._overlap_bytes
+                byte_pos = _snap_to_utf8_boundary(text_bytes, max(next_pos, byte_pos + 1))
+            else:
+                byte_pos = total
 
         return chunks

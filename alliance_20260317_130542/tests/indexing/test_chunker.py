@@ -79,3 +79,13 @@ class TestChunkerKorean:
         text = "JARVIS 프로젝트의 아키텍처를 설명합니다. " * 50
         chunks = Chunker(max_chunk_bytes=256, overlap_bytes=32).chunk(text, document_id="d1")
         assert len(chunks) > 1
+
+    def test_no_replacement_chars_in_korean_chunks(self) -> None:
+        """Verify multi-byte Korean chars are never split mid-character."""
+        text = "가나다라마바사아자차카타파하" * 30  # pure Korean, 3 bytes each
+        # Use chunk size that doesn't align with 3-byte boundaries
+        chunks = Chunker(max_chunk_bytes=100, overlap_bytes=25).chunk(text, document_id="d1")
+        for c in chunks:
+            assert "\ufffd" not in c.text, f"Replacement char found in chunk: {c.text[:50]}..."
+            # Every chunk should decode cleanly
+            c.text.encode("utf-8").decode("utf-8")
