@@ -69,8 +69,8 @@ python -m pytest tests/ -v
 
 This project was designed and built using:
 
-- **[ProjectHub](https://projecthub.co.kr)** (projecthub.co.kr) — AI-powered project management and build orchestration platform
-- **[Colligi](https://colligi.ai)** (colligi.ai) — Collective intelligence analysis system for architecture design and technical decision-making
+- **<a href="https://projecthub.co.kr" target="_blank">ProjectHub</a>** (projecthub.co.kr) — AI-powered project management and build orchestration platform
+- **<a href="https://colligi.ai" target="_blank">Colligi</a>** (colligi.ai) — Collective intelligence analysis system for architecture design and technical decision-making
 
 ## License
 
