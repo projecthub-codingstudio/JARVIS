@@ -1,6 +1,6 @@
 [build-system]
 requires = ["hatchling"]
-build-backend = "hatchling.backends"
+build-backend = "hatchling.build"
 
 [project]
 name = "jarvis"
@@ -8,10 +8,19 @@ version = "0.1.0"
 description = "Local-first personal workspace AI agent for Apple Silicon"
 requires-python = ">=3.12"
 dependencies = [
-    "kiwi-py>=0.18",
+    "kiwipiepy>=0.18",
     "mlx>=0.22",
+    "mlx-lm",
     "numpy>=1.26",
     "watchdog>=4.0",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-hwpx>=0.1",
+    "psutil>=5.9",
+    "pyhwp>=0.1b12",
+    "olefile>=0.46",
+    "six",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +47,7 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["mlx.*", "kiwi.*"]
+module = ["mlx.*", "kiwi.*", "pymupdf.*", "docx.*", "openpyxl.*", "hwpx.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

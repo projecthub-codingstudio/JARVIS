@@ -42,7 +42,7 @@ class EvidenceBuilder:
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
             chunk_row = self._db.execute(
-                "SELECT text FROM chunks WHERE chunk_id = ?",
+                "SELECT text, heading_path FROM chunks WHERE chunk_id = ?",
                 (result.chunk_id,),
             ).fetchone()
             if chunk_row is None:
@@ -73,6 +73,7 @@ class EvidenceBuilder:
             citation = self._freshness.refresh_citation(citation, doc)
 
             text = chunk_row[0] if chunk_row[0] else result.snippet
+            heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
             items.append(EvidenceItem(
                 chunk_id=result.chunk_id,
                 document_id=result.document_id,
@@ -80,6 +81,7 @@ class EvidenceBuilder:
                 citation=citation,
                 relevance_score=result.rrf_score,
                 source_path=doc.path,
+                heading_path=heading_path,
             ))
 
         return VerifiedEvidenceSet(

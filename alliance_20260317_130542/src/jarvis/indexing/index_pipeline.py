@@ -75,11 +75,17 @@ class IndexPipeline:
         )
 
     def _insert_chunks(self, chunks: list[ChunkRecord]) -> None:
+        """Insert chunks immediately without morpheme analysis.
+
+        Per Spec Task 1.1: metadata first, morphemes later via deferred queue.
+        FTS5 triggers fire on INSERT, so raw text is searchable immediately.
+        """
         for chunk in chunks:
             self._db.execute(
                 "INSERT INTO chunks"
-                " (chunk_id, document_id, byte_start, byte_end, line_start, line_end, text, chunk_hash)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " (chunk_id, document_id, byte_start, byte_end, line_start, line_end,"
+                "  text, chunk_hash, lexical_morphs, heading_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     chunk.chunk_id,
                     chunk.document_id,
@@ -89,8 +95,43 @@ class IndexPipeline:
                     chunk.line_end,
                     chunk.text,
                     chunk.chunk_hash,
+                    "",  # morphs deferred
+                    chunk.heading_path,
                 ),
             )
+
+    def backfill_morphemes(self, *, batch_size: int = 100) -> int:
+        """Backfill lexical_morphs for chunks that don't have them yet.
+
+        Per Spec Task 1.1: "same file change updates metadata first
+        and embeddings later via deferred queue."
+
+        Returns the number of chunks updated.
+        """
+        from jarvis.retrieval.tokenizer_kiwi import KiwiTokenizer
+
+        if not hasattr(self, "_kiwi"):
+            self._kiwi = KiwiTokenizer()
+
+        rows = self._db.execute(
+            "SELECT chunk_id, text FROM chunks"
+            " WHERE lexical_morphs = '' LIMIT ?",
+            (batch_size,),
+        ).fetchall()
+
+        updated = 0
+        for chunk_id, text in rows:
+            morphs = self._kiwi.tokenize_for_fts(text[:2000])
+            if morphs:
+                self._db.execute(
+                    "UPDATE chunks SET lexical_morphs = ? WHERE chunk_id = ?",
+                    (morphs, chunk_id),
+                )
+                updated += 1
+
+        if updated:
+            self._db.commit()
+        return updated
 
     def index_file(self, path: Path) -> DocumentRecord:
         record = self._parser.create_record(path)
