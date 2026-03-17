@@ -42,7 +42,10 @@ env/
 .projecthub/
 
 # Colligi output
-계획/colligi-output/
+계획/
+
+# Knowledge base (user data)
+knowledge_base/
 
 # Build
 *.app
