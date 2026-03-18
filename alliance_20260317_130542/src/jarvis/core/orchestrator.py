@@ -101,8 +101,9 @@ class Orchestrator:
             ))
             return turn
 
-        # 6. Generate answer (pass original user input, not search query)
-        answer = self._generate_answer(user_input, evidence)
+        # 6. Generate answer with conversation history (sliding window, 3 turns)
+        recent_turns = self._conversation_store.get_recent_turns(limit=3)
+        answer = self._generate_answer(user_input, evidence, recent_turns)
 
         # 7. Persist
         turn.assistant_output = answer.content
@@ -131,5 +132,10 @@ class Orchestrator:
         evidence = self._evidence_builder.build(hybrid_results, fragments)
         return evidence
 
-    def _generate_answer(self, prompt: str, evidence: VerifiedEvidenceSet) -> AnswerDraft:
-        return self._llm_generator.generate(prompt, evidence)
+    def _generate_answer(
+        self,
+        prompt: str,
+        evidence: VerifiedEvidenceSet,
+        recent_turns: list[ConversationTurn] | None = None,
+    ) -> AnswerDraft:
+        return self._llm_generator.generate(prompt, evidence, recent_turns=recent_turns)
