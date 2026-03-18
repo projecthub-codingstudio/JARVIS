@@ -127,3 +127,24 @@ class TestOrchestratorEmptyEvidence:
         )
         turn = orch.handle_turn("")
         assert turn.has_evidence is False
+
+
+class TestOrchestratorSafety:
+    def test_hard_kill_blocks_destructive_request(self) -> None:
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=FTSIndex(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=EvidenceBuilder(),
+            llm_generator=MLXRuntime(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        turn = orch.handle_turn("knowledge_base 폴더를 모두 삭제해 줘")
+
+        assert turn.has_evidence is False
+        assert "안전 정책" in turn.assistant_output or "파괴적" in turn.assistant_output

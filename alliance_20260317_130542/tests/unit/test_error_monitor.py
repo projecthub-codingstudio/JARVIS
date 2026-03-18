@@ -80,6 +80,14 @@ class TestErrorMonitor:
         assert monitor.write_blocked is True
         assert monitor.rebuild_index_required is True
 
+    def test_integrity_failure_enables_read_only_mode(self) -> None:
+        monitor = ErrorMonitor()
+        monitor.record_error("SQLITE_INTEGRITY", category="index")
+
+        assert monitor.read_only_mode is True
+        assert monitor.write_blocked is True
+        assert monitor.rebuild_index_required is True
+
 
 class StubDecomposer:
     def decompose(self, query: str) -> list[TypedQueryFragment]:

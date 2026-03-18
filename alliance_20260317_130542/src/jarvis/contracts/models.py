@@ -244,6 +244,8 @@ class RuntimeDecision:
     backend: Literal["mlx", "llamacpp"] = "mlx"
     model_id: str = ""
     context_window: int = 8192
+    max_retrieved_chunks: int = 8
+    generation_timeout_ms: int = 30000
     reasoning_enabled: bool = False
 
 

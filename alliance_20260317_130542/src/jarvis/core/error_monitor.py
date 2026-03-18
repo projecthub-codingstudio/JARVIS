@@ -37,6 +37,7 @@ class ErrorMonitor:
         self._generation_blocked = False
         self._write_blocked = False
         self._rebuild_index_required = False
+        self._read_only_mode = False
 
     def record_error(
         self,
@@ -68,6 +69,11 @@ class ErrorMonitor:
             if self._consecutive_count >= 3:
                 self._write_blocked = True
                 self._rebuild_index_required = True
+
+        if code in {"SQLITE_INTEGRITY", "INDEX_INTEGRITY_FAILED"}:
+            self._read_only_mode = True
+            self._write_blocked = True
+            self._rebuild_index_required = True
 
         category_events = self._category_events[category]
         category_events.append(now)
@@ -126,6 +132,11 @@ class ErrorMonitor:
     def rebuild_index_required(self) -> bool:
         """Return True if operator/user should rebuild the index."""
         return self._rebuild_index_required
+
+    @property
+    def read_only_mode(self) -> bool:
+        """Return True if the runtime should avoid further writes."""
+        return self._read_only_mode
 
     @staticmethod
     def _trim(events: deque[datetime], window: timedelta, now: datetime) -> None:
