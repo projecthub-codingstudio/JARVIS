@@ -1,6 +1,6 @@
 # JARVIS 구현 상태 검수 보고서
 
-**검수일**: 2026-03-18
+**검수일**: 2026-03-19
 **기술문서**: TASK-E93DF600.md (아키텍처 분석), TASK-9A8DC5D5.md (구현 명세)
 **구현 경로**: alliance_20260317_130542/
 
@@ -8,10 +8,12 @@
 
 ## 전체 요약
 
-| 구분 | ✅ 완료 | 🔧 부분 구현 | ❌ 미구현 |
-|------|:---:|:---:|:---:|
-| 아키텍처 (E93DF600) | 38 | 16 | 12 |
-| 구현 명세 (9A8DC5D5) | 42 | 23 | 19 |
+이 보고서는 `TASK-E93DF600.md`, `TASK-9A8DC5D5.md`, 그리고 구현 이후 추가된
+`docs/superpowers/specs/`, `docs/superpowers/plans/` 문서를 기준으로 다시 대조했다.
+
+- 아키텍처 핵심 요구(하이브리드 검색, 승인형 내보내기, Governor, 최신성, 메뉴바 브리지)는 대부분 구현됐다.
+- 부분 구현으로 남는 축은 `Tracing`, `Governor-기반 chunk/context 조절`, `AC 전원 승격`, `인덱싱 백오프`, `운영 하드닝`이다.
+- 명세와 구현의 차이는 주로 `타입/이름 계약`, `관측성 심화`, `Degradation Matrix` 일부, `docs/DECISIONS.md` 및 `docs/IMPLEMENTATION_PLAN.md` 미생성에 남아 있다.
 
 ---
 
@@ -36,7 +38,7 @@
 | Feature | Status | Implementation File | Notes |
 |---|---|---|---|
 | M1 Max 64GB 타겟 | ✅ | `app/config.py:32` | `memory_limit_gb = 16.0` (worst-case 기준) |
-| 순차 모델 로딩 (동시 금지) | 🔧 | `runtime/model_router.py` | 인터페이스 존재, `request_load()`/`release()` NotImplementedError |
+| 순차 모델 로딩 (동시 금지) | 🔧 | `runtime/model_router.py` | 단일 활성 모델과 메모리 버짓 체크 구현, Governor 연동은 단순화됨 |
 | 15-20GB 메모리 버짓 | ✅ | `core/governor.py:115`, `app/config.py:32` | Governor 16GB 제한 |
 | Swap/thermal/battery 정책 | ✅ | `core/governor.py:33-106` | psutil + pmset 실제 센서 |
 
@@ -80,9 +82,9 @@
 | Runtime: 임베딩 엔진 | ✅ | `runtime/embedding_runtime.py` | BGE-M3 임베딩 구현 |
 | Runtime: Reranker | ❌ | — | 명시적 유보 |
 | Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
-| Observability: Tracing | 🔧 | `observability/tracing.py` | no-op stub (Phase 2) |
-| Tools: ReadFile | 🔧 | `tools/read_file.py` | NotImplementedError |
-| Tools: DraftExport | 🔧 | `tools/draft_export.py` | NotImplementedError |
+| Observability: Tracing | 🔧 | `observability/tracing.py` | no-op tracer 유지, 추적 이벤트 수집은 미구현 |
+| Tools: ReadFile | ✅ | `tools/read_file.py` | 허용된 루트 내 텍스트 파일 읽기 구현 |
+| Tools: DraftExport | ✅ | `tools/draft_export.py` | 승인 게이트 연동 후 실제 export 수행 |
 
 ### Section 8: 핵심 데이터 플로우 (10단계)
 
@@ -90,14 +92,14 @@
 |---|---|---|---|
 | 1 | 한국어 질의 입력 | ✅ | REPL stdin |
 | 2 | 의도 분류 | ✅ | Planner.analyze() |
-| 3 | FTS + vector 병렬 검색 | 🔧 | 순차 실행, vector는 stub |
+| 3 | FTS + vector 병렬 검색 | 🔧 | 두 경로 모두 구현, 현재 호출 순서는 순차이며 병렬 실행 최적화는 미반영 |
 | 4 | Freshness 검증 | ✅ | 해시 비교 STALE + boost |
-| 5 | 컨텍스트 조합 (증거 + 대화) | 🔧 | 증거만 포함, 대화 히스토리 미주입 |
+| 5 | 컨텍스트 조합 (증거 + 대화) | ✅ | 최근 3턴 슬라이딩 윈도우를 LLM 입력에 주입 |
 | 6 | Governor 모델 tier 선택 | ✅ | 다운그레이드 로직 |
 | 7 | LLM 답변 생성 | ✅ | 한국어 시스템 프롬프트 |
 | 8 | 인용 검증 | 🔧 | 표시만, 문장 수준 환각 감지 없음 |
 | 9 | 답변 + 인용 렌더링 | ✅ | 파일명, 유형, 경고, 인용문 |
-| 10 | 메트릭 + task_log 기록 | 🔧 | task_log O, Orchestrator 메트릭 미연동 |
+| 10 | 메트릭 + task_log 기록 | 🔧 | task_log 기록 및 주요 latency 메트릭 연동, 전체 이벤트 전면 계측은 미완 |
 
 ### Section 9: 모델 전략
 
@@ -115,11 +117,11 @@
 |---|---|---|
 | 레벨 0 — 텍스트 전용 | ✅ | KB 없으면 stub 모드 |
 | 레벨 1 — 선택 폴더 읽기 | ✅ | watched_folders 제한 |
-| 레벨 2 — 승인형 쓰기 | 🔧 | 객체 존재, 미연동 |
+| 레벨 2 — 승인형 쓰기 | ✅ | `draft_export`만 승인 후 실제 쓰기 허용 |
 | 레벨 3-4 (자동화) | ❌ | 명시적 제외 |
 | 인용 필수 | ✅ | repl.py 인용 표시 |
 | Hard kill (파괴 명령 차단) | ❌ | 분류기 없음 |
-| 연속 에러 임계치 | ❌ | 카운터 없음 |
+| 연속 에러 임계치 | ✅ | 반복 오류 도구 차단, degraded/search-only, safe mode 구현 |
 
 ### Section 11: 인덱싱/최신성 정책
 
@@ -129,7 +131,7 @@
 | 포맷별 파서 | ✅ | Tier 1-3 전체 |
 | 바이너리/대용량 제외 | ✅ | _BINARY_EXTENSIONS + 1MB 프로브 |
 | 증분 인덱싱 | ✅ | watchdog + 시작 시 stale 정리 |
-| 메타데이터 우선, 임베딩 지연 | ✅ | backfill_morphemes daemon |
+| 메타데이터 우선, 임베딩 지연 | ✅ | 형태소/임베딩 backfill daemon 구현 |
 | Freshness 점수 보정 | ✅ | 4단계 boost (+2%~+15%) |
 | Tombstone | ✅ | 삭제 시 즉시 처리 |
 | SSD 쓰기량 주간 기록 | ❌ | |
@@ -172,12 +174,12 @@
 |---|---|---|
 | contracts/ (models, protocols, states, errors) | ✅ | 전체 구현 |
 | core/ (orchestrator, governor, planner, tool_registry) | ✅ | 전체 구현 |
-| retrieval/ (query_decomposer, fts_index, vector_index, hybrid_search, evidence_builder, freshness, tokenizer_kiwi) | 🔧 | vector_index stub |
+| retrieval/ (query_decomposer, fts_index, vector_index, hybrid_search, evidence_builder, freshness, tokenizer_kiwi) | ✅ | FTS + LanceDB vector + RRF + freshness 구현 |
 | indexing/ (parsers, chunker, file_watcher, index_pipeline, tombstone) | ✅ | 전체 구현 |
-| runtime/ (mlx_runtime, mlx_backend, llamacpp_backend, model_router, embedding_runtime) | 🔧 | model_router, embedding stub |
+| runtime/ (mlx_runtime, mlx_backend, llamacpp_backend, model_router, embedding_runtime) | 🔧 | model_router/embedding 구현, 다만 Governor 연동 및 운영 하드닝은 부분 구현 |
 | memory/ (conversation_store, task_log) | ✅ | 전체 구현 |
-| tools/ (read_file, search_files, draft_export) | 🔧 | 3개 모두 NotImplementedError |
-| cli/ (repl, approval) | 🔧 | approval 미연동 |
+| tools/ (read_file, search_files, draft_export) | ✅ | 3개 도구 모두 구현 및 등록 가능 |
+| cli/ (repl, approval) | ✅ | approval이 export 흐름과 연동됨 |
 | app/ (bootstrap, config) | ✅ | 전체 구현 |
 | observability/ (metrics, tracing, health) | 🔧 | tracing no-op, health 최소 |
 | sql/schema.sql | ✅ | 5 테이블 + FTS5 + 트리거 |
@@ -190,12 +192,12 @@
 |---|---|---|
 | QueryDecomposerProtocol | QueryDecomposer | ✅ |
 | FTSRetrieverProtocol | FTSIndex | ✅ |
-| VectorRetrieverProtocol | VectorIndex | ✅ (stub) |
+| VectorRetrieverProtocol | VectorIndex | ✅ |
 | HybridFusionProtocol | HybridSearch | ✅ |
 | EvidenceBuilderProtocol | EvidenceBuilder | ✅ |
 | LLMGeneratorProtocol | MLXRuntime | ✅ |
 | LLMBackendProtocol | MLXBackend, LlamaCppBackend | ✅ |
-| EmbeddingRuntimeProtocol | EmbeddingRuntime | ✅ (stub) |
+| EmbeddingRuntimeProtocol | EmbeddingRuntime | ✅ |
 | GovernorProtocol | Governor, GovernorStub | ✅ |
 | ConversationStoreProtocol | ConversationStore | ✅ |
 | TaskLogStoreProtocol | TaskLogStore | ✅ |
@@ -207,8 +209,8 @@
 | 장애 모드 | Status | Notes |
 |---|---|---|
 | 모델 로드 실패 1회 재시도 | 🔧 | MLX→Ollama→stub 폴백 (재시도 아닌 대체) |
-| 모델 2회 연속 실패 → degraded | ❌ | 연속 카운터 없음 |
-| 모델 3회 연속 → 검색 전용 | ❌ | |
+| 모델 2회 연속 실패 → degraded | ✅ | `core/error_monitor.py` |
+| 모델 3회 연속 → 검색 전용 | ✅ | `core/error_monitor.py`, `core/orchestrator.py` |
 | SQLite 락 읽기 재시도 | ❌ | |
 | SQLite 무결성 실패 → 읽기 전용 | ❌ | |
 | 임베딩 백로그 최근 우선 | ❌ | DB 스캔 순서 |
