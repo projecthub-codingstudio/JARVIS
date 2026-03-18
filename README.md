@@ -140,9 +140,7 @@ python -m pytest tests/ -v
 
 ---
 
-<div align="center">
-<h3>🇰🇷 한국어</h3>
-</div>
+### 🇰🇷 한국어
 
 ---
 
