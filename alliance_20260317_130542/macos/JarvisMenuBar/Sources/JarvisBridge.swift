@@ -77,11 +77,6 @@ enum BridgeError: LocalizedError {
 
 actor JarvisBridge {
     private let configuration: BridgeConfiguration
-    private var process: Process?
-    private var stdinPipe: Pipe?
-    private var stdoutHandle: FileHandle?
-    private var stderrHandle: FileHandle?
-    private var stdoutBuffer = Data()
 
     init(configuration: BridgeConfiguration = .default()) {
         self.configuration = configuration
@@ -120,15 +115,7 @@ actor JarvisBridge {
         return response
     }
 
-    deinit {
-        process?.terminate()
-    }
-
-    private func ensureServerStarted() throws {
-        if let process, process.isRunning {
-            return
-        }
-
+    private func runCommand(_ payload: [String: Any]) throws -> CommandEnvelope {
         let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
         guard FileManager.default.fileExists(atPath: pythonURL.path) else {
             throw BridgeError.missingPython(pythonURL.path)
@@ -143,7 +130,7 @@ actor JarvisBridge {
         process.arguments = [
             "-u",
             "-m", "jarvis.cli.menu_bridge",
-            "server",
+            String(payload["command"] as? String ?? "ask"),
         ]
 
         var environment = ProcessInfo.processInfo.environment
@@ -152,72 +139,37 @@ actor JarvisBridge {
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        for (key, value) in payload {
+            guard key != "command" else { continue }
+            if let boolValue = value as? Bool {
+                if boolValue {
+                    process.arguments?.append("--\(key)")
+                }
+                continue
+            }
+            process.arguments?.append("--\(key)=\(String(describing: value))")
+        }
         try process.run()
+        process.waitUntilExit()
 
-        self.process = process
-        self.stdinPipe = stdinPipe
-        self.stdoutHandle = stdoutPipe.fileHandleForReading
-        self.stderrHandle = stderrPipe.fileHandleForReading
-        self.stdoutBuffer.removeAll(keepingCapacity: true)
-
-        let ready = try readEnvelope()
-        guard ready.kind == "ready" else {
-            throw BridgeError.decodeFailed("expected ready envelope")
+        let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if process.terminationStatus != 0 {
+            let stderrText = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BridgeError.processFailed(stderrText.isEmpty ? "bridge process terminated" : stderrText)
         }
-    }
-
-    private func send(_ payload: [String: Any]) async throws -> CommandEnvelope {
-        try ensureServerStarted()
-        guard let stdinPipe, let stdinData = try? JSONSerialization.data(withJSONObject: payload) else {
-            throw BridgeError.processFailed("stdin not available")
+        guard !output.isEmpty else {
+            throw BridgeError.emptyResponse
         }
-        let stdinHandle = stdinPipe.fileHandleForWriting
-
-        stdinHandle.write(stdinData)
-        stdinHandle.write(Data([0x0a]))
-
-        let envelope = try readEnvelope()
+        let envelope = try JSONDecoder().decode(CommandEnvelope.self, from: output)
         if envelope.kind == "error" {
             throw BridgeError.processFailed(envelope.error ?? "unknown bridge error")
         }
         return envelope
     }
 
-    private func readEnvelope() throws -> CommandEnvelope {
-        guard let stdoutHandle else {
-            throw BridgeError.processFailed("stdout handle missing")
-        }
-
-        while true {
-            if let newlineRange = stdoutBuffer.firstRange(of: Data([0x0a])) {
-                let lineData = stdoutBuffer.subdata(in: 0..<newlineRange.lowerBound)
-                stdoutBuffer.removeSubrange(0...newlineRange.lowerBound)
-                if lineData.isEmpty {
-                    continue
-                }
-                let response = try JSONDecoder().decode(CommandEnvelope.self, from: lineData)
-                return response
-            }
-
-            let chunk = try stdoutHandle.read(upToCount: 4096) ?? Data()
-            if chunk.isEmpty {
-                let stderrText = readStderrSnapshot()
-                throw BridgeError.processFailed(stderrText.isEmpty ? "bridge process terminated" : stderrText)
-            }
-            stdoutBuffer.append(chunk)
-        }
-    }
-
-    private func readStderrSnapshot() -> String {
-        guard let stderrHandle else {
-            return ""
-        }
-        let data = (try? stderrHandle.readToEnd()) ?? Data()
-        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func send(_ query: String, command: String) async throws -> MenuResponse {
-        let envelope = try await send([
+        let envelope = try runCommand([
             "command": command,
             "query": query,
         ])
@@ -225,5 +177,9 @@ actor JarvisBridge {
             throw BridgeError.decodeFailed("missing query_result")
         }
         return response
+    }
+
+    private func send(_ payload: [String: Any]) async throws -> CommandEnvelope {
+        try runCommand(payload)
     }
 }
