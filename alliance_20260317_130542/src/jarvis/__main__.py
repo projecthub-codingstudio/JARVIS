@@ -49,7 +49,7 @@ def _has_indexed_data(db: object) -> bool:
         return False
 
 
-def _create_pipeline(db: object) -> object:
+def _create_pipeline(db: object, vector_index: object | None = None) -> object:
     """Create the indexing pipeline instance."""
     from jarvis.indexing.chunker import Chunker
     from jarvis.indexing.index_pipeline import IndexPipeline
@@ -63,6 +63,7 @@ def _create_pipeline(db: object) -> object:
         chunker=Chunker(),
         tombstone_manager=TombstoneManager(db=db),  # type: ignore[arg-type]
         embedding_runtime=EmbeddingRuntime(),
+        vector_index=vector_index,
     )
 
 
@@ -124,6 +125,33 @@ def _run_indexing(db: object, kb_path: Path) -> tuple[int, object]:
 
     thread = threading.Thread(target=_backfill_morphemes, daemon=True)
     thread.start()
+
+    def _backfill_embeddings() -> None:
+        """Background batch embedding generation."""
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.retrieval.vector_index import VectorIndex as VI
+        bg_db = init_database(JarvisConfig())
+        # Import the shared embedding_runtime from outer scope would be ideal,
+        # but the function runs in a daemon thread. Create a new EmbeddingRuntime
+        # that will share the same model once loaded.
+        from jarvis.runtime.embedding_runtime import EmbeddingRuntime as EmbRT2
+        bg_emb_rt = EmbRT2()
+        bg_vi = VI(embedding_runtime=bg_emb_rt)
+        bg_pipeline = _create_pipeline(bg_db, vector_index=bg_vi)
+        total_updated = 0
+        while True:
+            updated = bg_pipeline.backfill_embeddings(batch_size=32)  # type: ignore[union-attr]
+            total_updated += updated
+            if updated == 0:
+                break
+        if total_updated > 0:
+            print(f"   [embeddings] {total_updated} chunks 임베딩 생성 완료")
+        bg_emb_rt.unload_model()
+        bg_db.close()  # type: ignore[union-attr]
+
+    embed_thread = threading.Thread(target=_backfill_embeddings, daemon=True)
+    embed_thread.start()
 
     return total, pipeline
 
@@ -297,11 +325,18 @@ def main() -> None:
     from jarvis.core.planner import Planner
     planner = Planner(model_id="exaone3.5:7.8b")
 
+    # Vector index for semantic search (Spec Section 5, 9)
+    from jarvis.runtime.embedding_runtime import EmbeddingRuntime as EmbRT
+    embedding_runtime = EmbRT()
+    vector_index = VectorIndex(embedding_runtime=embedding_runtime)
+    vector_available = vector_index._check_available()
+    print(f"   Vector search: {'active' if vector_available else 'disabled (FTS only)'}")
+
     orchestrator = Orchestrator(
         governor=governor,
         query_decomposer=QueryDecomposer(),
         fts_retriever=FTSIndex(db=retrieval_db),
-        vector_retriever=VectorIndex(),
+        vector_retriever=vector_index,
         hybrid_fusion=HybridSearch(),
         evidence_builder=EvidenceBuilder(db=retrieval_db),
         llm_generator=llm_generator,
