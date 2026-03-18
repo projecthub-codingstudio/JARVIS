@@ -145,6 +145,7 @@ class AnswerDraft:
     evidence: VerifiedEvidenceSet
     model_id: str = ""
     generation_time_ms: float = 0.0
+    verification_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

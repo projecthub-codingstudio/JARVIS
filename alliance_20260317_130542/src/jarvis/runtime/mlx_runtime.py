@@ -20,6 +20,7 @@ from jarvis.contracts import (
     VerifiedEvidenceSet,
 )
 from jarvis.observability.metrics import MetricName, MetricsCollector
+from jarvis.retrieval.citation_verifier import CitationVerifier
 
 if TYPE_CHECKING:
     from jarvis.contracts import ConversationTurn
@@ -62,6 +63,7 @@ class MLXRuntime:
         self._model_id = model_id
         self._max_context_chars = max_context_chars
         self._metrics = metrics
+        self._citation_verifier = CitationVerifier()
 
     def _assemble_context(self, evidence: VerifiedEvidenceSet) -> str:
         """Assemble evidence into context string, respecting token budget.
@@ -155,12 +157,14 @@ class MLXRuntime:
                     elapsed_ms,
                     tags={"stage": "generation"},
                 )
+            warnings = self._citation_verifier.verify(response_text, evidence)
 
             return AnswerDraft(
                 content=response_text,
                 evidence=evidence,
                 model_id=self._backend.model_id if hasattr(self._backend, "model_id") else self._model_id,
                 generation_time_ms=elapsed_ms,
+                verification_warnings=warnings,
             )
 
         # Stub fallback
@@ -174,4 +178,5 @@ class MLXRuntime:
             evidence=evidence,
             model_id=self._model_id,
             generation_time_ms=1.0,
+            verification_warnings=(),
         )
