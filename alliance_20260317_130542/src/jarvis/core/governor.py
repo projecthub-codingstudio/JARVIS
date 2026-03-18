@@ -26,6 +26,7 @@ from jarvis.contracts import (
     SystemStateSnapshot,
     ThermalState,
 )
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +36,33 @@ def _sample_system_state() -> SystemStateSnapshot:
     import psutil
     from datetime import datetime
 
-    mem = psutil.virtual_memory()
-    swap = psutil.swap_memory()
-    cpu_pct = psutil.cpu_percent(interval=0.1)
+    try:
+        mem = psutil.virtual_memory()
+        memory_pressure_pct = mem.percent
+    except (OSError, PermissionError):
+        memory_pressure_pct = 0.0
+
+    try:
+        swap = psutil.swap_memory()
+        swap_used_mb = int(swap.used / (1024 * 1024))
+    except (OSError, PermissionError):
+        swap_used_mb = 0
+
+    try:
+        cpu_pct = psutil.cpu_percent(interval=0.1)
+    except (OSError, PermissionError):
+        cpu_pct = 0.0
 
     # Battery
-    battery = psutil.sensors_battery()
     on_ac = True
     battery_pct = 100
-    if battery is not None:
-        on_ac = battery.power_plugged or False
-        battery_pct = int(battery.percent)
+    try:
+        battery = psutil.sensors_battery()
+        if battery is not None:
+            on_ac = battery.power_plugged or False
+            battery_pct = int(battery.percent)
+    except (OSError, PermissionError):
+        pass
 
     # Thermal state (macOS)
     thermal: ThermalState = "nominal"
@@ -66,8 +83,8 @@ def _sample_system_state() -> SystemStateSnapshot:
 
     return SystemStateSnapshot(
         timestamp=datetime.now(),
-        memory_pressure_pct=mem.percent,
-        swap_used_mb=int(swap.used / (1024 * 1024)),
+        memory_pressure_pct=memory_pressure_pct,
+        swap_used_mb=swap_used_mb,
         cpu_pct=cpu_pct,
         gpu_pct=0.0,  # No portable GPU util on macOS
         thermal_state=thermal,
@@ -112,8 +129,14 @@ class Governor:
     Implements GovernorProtocol with actual telemetry.
     """
 
-    def __init__(self, *, memory_limit_gb: float = 16.0) -> None:
+    def __init__(
+        self,
+        *,
+        memory_limit_gb: float = 16.0,
+        metrics: MetricsCollector | None = None,
+    ) -> None:
         self._memory_limit_gb = memory_limit_gb
+        self._metrics = metrics
         self._last_state: SystemStateSnapshot | None = None
 
     @property
@@ -142,6 +165,8 @@ class Governor:
     def sample(self) -> SystemStateSnapshot:
         """Sample current system state."""
         self._last_state = _sample_system_state()
+        if self._metrics is not None and self._last_state.swap_used_mb > 0:
+            self._metrics.increment(MetricName.SWAP_DETECTED_COUNT)
         return self._last_state
 
     def select_runtime(self, requested_tier: RuntimeTier = "balanced") -> RuntimeDecision:
@@ -189,6 +214,7 @@ class GovernorStub:
         return 0.0
 
 
-# Runtime-checkable verification
-assert isinstance(GovernorStub(), GovernorProtocol)
-assert isinstance(Governor(), GovernorProtocol)
+# Avoid import-time protocol checks here. `GovernorProtocol` includes a
+# `mode` property, and `isinstance(..., GovernorProtocol)` may evaluate that
+# property during module import, which in turn triggers system sampling.
+# That creates test and sandbox failures before the application even starts.
