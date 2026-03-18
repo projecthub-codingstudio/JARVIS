@@ -45,38 +45,39 @@
 | Feature | Status | Implementation File | Notes |
 |---|---|---|---|
 | CLI REPL | ✅ | `cli/repl.py` | 인용 표시, 경고 포함 |
-| 메뉴바 UI | ❌ | — | Phase 2 명시 유보 |
+| 메뉴바 UI | ✅ | `macos/JarvisMenuBar/` | SwiftUI 메뉴바 셸 + 장기 실행 Python 브리지 + 승인 패널 + live voice loop + health status 구현 |
 | MLX primary 런타임 | ✅ | `runtime/mlx_backend.py` | mlx_lm.load/generate, Metal cache clear |
 | llama.cpp (Ollama) fallback | ✅ | `runtime/llamacpp_backend.py` | REST API, think:false, keep_alive=0 |
 | SQLite FTS5 | ✅ | `sql/schema.sql:50-70`, `retrieval/fts_index.py` | FTS5 + 트리거 + lexical_morphs |
-| Vector DB (LanceDB) | ❌ | `retrieval/vector_index.py` | stub (고정 결과 반환) |
+| Vector DB (LanceDB) | ✅ | `retrieval/vector_index.py` | LanceDB 연결, add/remove/search 구현 |
 | Hybrid search + RRF | ✅ | `retrieval/hybrid_search.py` | RRF k=60, FTS+vector 결합 |
-| BGE-M3 / Qwen3-Embedding | ❌ | `runtime/embedding_runtime.py` | stub (제로벡터) |
+| BGE-M3 / Qwen3-Embedding | ✅ | `runtime/embedding_runtime.py` | sentence-transformers 기반 on-demand 로드 |
 | Kiwi 형태소 | ✅ | `retrieval/tokenizer_kiwi.py` | content-POS filter (NNG, NNP, VV 등) |
 | MeCab-ko | ❌ | — | 명시적 유보 |
 | 선택 폴더 인덱싱 | ✅ | `app/config.py:14`, `__main__.py:35` | knowledge_base/ 제한 |
-| FSEvents 증분 인덱싱 | 🔧 | `indexing/file_watcher.py` | watchdog 사용 (macOS에서 FSEvents 내부 사용) |
-| 승인 게이트 | 🔧 | `cli/approval.py`, `tools/draft_export.py` | 객체 존재, 오케스트레이터 미연동 |
+| FSEvents 증분 인덱싱 | 🔧 | `indexing/file_watcher.py` | watchdog + polling fallback, 실시간 인덱싱 동작 |
+| 승인 게이트 | ✅ | `cli/approval.py`, `tools/draft_export.py` | CLI 승인 + 실제 export 구현 |
 
 ### Section 7: 코어 아키텍처 계층
 
 | Feature | Status | Implementation File | Notes |
 |---|---|---|---|
 | Interface: CLI REPL | ✅ | `cli/repl.py` | 출처 유형, staleness 경고, 한국어 메시지 |
-| Interface: 승인 패널 | 🔧 | `cli/approval.py` | Gateway 존재, 도구 호출과 미통합 |
+| Interface: 승인 패널 | ✅ | `cli/approval.py` | CLI 승인 흐름 및 export 연동 |
+| Interface: 메뉴바 브리지 | ✅ | `cli/menu_bridge.py`, `app/runtime_context.py` | JSON 응답/상태/출처 직렬화 |
 | Orchestration: Governor | ✅ | `core/governor.py` | 실제 psutil+pmset, tier 다운그레이드 |
 | Orchestration: Planner | ✅ | `core/planner.py` | Ollama 이중언어 키워드 추출, fallback |
-| Orchestration: ToolRegistry | ✅ | `core/tool_registry.py` | 3-tool 허용목록 |
+| Orchestration: ToolRegistry | ✅ | `core/tool_registry.py` | 3-tool 허용목록 + handler dispatch |
 | Orchestration: Orchestrator | ✅ | `core/orchestrator.py` | 7단계: governor→planner→검색→증거→생성→저장 |
 | Knowledge: Parser | ✅ | `indexing/parsers.py` | 10+ 포맷, CP949/EUC-KR/UTF-16 BOM |
 | Knowledge: Chunker | ✅ | `indexing/chunker.py` | heading-aware, 250-500 토큰, UTF-8 경계 |
 | Knowledge: FTS5 | ✅ | `retrieval/fts_index.py` | 형태소 확장 검색 |
-| Knowledge: Vector index | ❌ | `retrieval/vector_index.py` | stub only |
+| Knowledge: Vector index | ✅ | `retrieval/vector_index.py` | LanceDB 기반 검색 구현 |
 | Knowledge: 문서 레지스트리 | ✅ | `sql/schema.sql`, `indexing/index_pipeline.py` | documents+chunks 스키마 |
 | Memory: 대화 저장소 | ✅ | `memory/conversation_store.py` | SQLite + in-memory fallback |
 | Memory: 작업 로그 | ✅ | `memory/task_log.py` | task_logs 테이블 |
 | Runtime: MLX/llama.cpp | ✅ | `runtime/mlx_backend.py`, `runtime/llamacpp_backend.py` | 양쪽 구현 완료 |
-| Runtime: 임베딩 엔진 | ❌ | `runtime/embedding_runtime.py` | stub |
+| Runtime: 임베딩 엔진 | ✅ | `runtime/embedding_runtime.py` | BGE-M3 임베딩 구현 |
 | Runtime: Reranker | ❌ | — | 명시적 유보 |
 | Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
 | Observability: Tracing | 🔧 | `observability/tracing.py` | no-op stub (Phase 2) |
@@ -213,8 +214,8 @@
 | 임베딩 백로그 최근 우선 | ❌ | DB 스캔 순서 |
 | STALE 경고 + 기존 색인 사용 | ✅ | 해시 비교 |
 | ACCESS_LOST 상태 | ✅ | |
-| 5분 내 5에러 → 도구 중단 | ❌ | |
-| 10분 내 이중 실패 → safe mode | ❌ | |
+| 5분 내 5에러 → 도구 중단 | ✅ | `core/error_monitor.py`, `core/tool_registry.py` |
+| 10분 내 이중 실패 → safe mode | ✅ | `core/error_monitor.py`, `core/orchestrator.py` |
 
 ### 테스트 전략
 
@@ -223,7 +224,7 @@
 | tests/contracts/ | ✅ | 프로토콜, 모델, 상태, 에러, 아키텍처 적합성 |
 | tests/unit/ | 🔧 | metrics, orchestrator, conversation, task_log 존재 |
 | tests/integration/ | 🔧 | schema 테스트만 존재 |
-| tests/perf/ | ❌ | 디렉토리만 존재 |
+| tests/perf/ | ✅ | benchmark 하네스 + report 검증 |
 | tests/e2e/ | ✅ | smoke + orchestrator 통합 |
 | 90% branch coverage | ❌ | coverage 설정 없음 |
 
@@ -246,18 +247,18 @@
 
 | 항목 | 명세 위치 | 현재 상태 | 영향 |
 |------|-----------|-----------|------|
-| **벡터 인덱스 (LanceDB + BGE-M3)** | Sec 5, 7, 9 | ❌ stub | 하이브리드 검색의 semantic 측면 전무 |
-| **임베딩 런타임** | Sec 7, 9 | ❌ stub | 벡터 검색 불가 |
-| **ModelRouter 순차 로딩** | Sec 4, 9 | 🔧 stub | 메모리 버짓 강제 불가 |
-| **대화 히스토리 → LLM 컨텍스트** | Sec 8 step 5 | ❌ | 멀티턴 대화 맥락 유실 |
+| **벡터 인덱스 (LanceDB + BGE-M3)** | Sec 5, 7, 9 | ✅ 구현 | semantic 검색 경로 사용 가능 |
+| **임베딩 런타임** | Sec 7, 9 | ✅ 구현 | BGE-M3 기반 임베딩 생성 가능 |
+| **ModelRouter 순차 로딩** | Sec 4, 9 | ✅ 구현 | 단일 활성 모델 + 메모리 버짓 체크 |
+| **대화 히스토리 → LLM 컨텍스트** | Sec 8 step 5 | ✅ | 최근 3턴 슬라이딩 윈도우 반영 |
 
 ### P1 — 안정성/운영 Gap
 
 | 항목 | 명세 위치 | 현재 상태 |
 |------|-----------|-----------|
 | Governor → chunk 수/컨텍스트 크기 조절 | Sec 12, 15 | ❌ |
-| 연속 에러 카운터 (모델 2회, SQLite 3회) | Sec 10.3, 13 | ❌ |
-| Safe mode (모델+인덱스 동시 실패) | Sec 13 | ❌ |
+| 연속 에러 카운터 (모델 2회, SQLite 3회) | Sec 10.3, 13 | ✅ degraded/write-block 기본 구현 |
+| Safe mode (모델+인덱스 동시 실패) | Sec 13 | ✅ |
 | 인덱싱 thermal/battery 백오프 | Sec 12.2 | ❌ |
 | AC 전원 시 상위 모델 승격 허용 | Sec 12.2 | ❌ |
 
@@ -265,11 +266,11 @@
 
 | 항목 | 명세 위치 | 현재 상태 |
 |------|-----------|-----------|
-| retrieval_top5_hit, citation_stale_rate 등 5개 메트릭 | Sec 12 | ❌ |
-| 구조화된 JSON 로깅 | Sec 12 | ❌ |
-| Health check 확장 | Sec 12 | ❌ |
-| Tool 실행 (read_file, search_files, draft_export) | Sec 8.2, 10 | 🔧 |
-| 50-query 벤치마크 하네스 | Sec 16 | ❌ |
+| retrieval_top5_hit, citation_stale_rate 등 5개 메트릭 | Sec 12 | 🔧 계약 정렬 + 일부 emit 구현 |
+| 구조화된 JSON 로깅 | Sec 12 | 🔧 기본 포맷터 추가 |
+| Health check 확장 | Sec 12 | 🔧 database/metrics/watched_folders/export_dir 점검 |
+| Tool 실행 (read_file, search_files, draft_export) | Sec 8.2, 10 | ✅ |
+| 50-query 벤치마크 하네스 | Sec 16 | ✅ `perf/benchmark.py`, `tests/perf/test_benchmark.py` |
 
 ### P3 — 명세 정합성 (이름/타입 불일치)
 
@@ -285,9 +286,9 @@
 ## 5. Phase 진행도
 
 ```
-Phase 0 ████████████████████░░ 90%  (50-query 하네스 미완)
-Phase 1 ██████████████░░░░░░░░ 65%  (벡터, 도구, 승인 미완)
-Phase 2 ░░░░░░░░░░░░░░░░░░░░░  0%  (음성, 메뉴바 UI)
+Phase 0 ██████████████████████ 100%  (핵심 하네스 포함)
+Phase 1 ██████████████████████ 100%  (Phase 1 핵심 운영 항목 구현)
+Phase 2 ████████████████░░░░░ 80%  (STT/TTS 파일 모드 + 메뉴바 셸/브리지 + 승인 패널 + live voice loop + health status 구현)
 ```
 
 ---

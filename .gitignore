@@ -50,3 +50,8 @@ knowledge_base/
 # Build
 *.app
 *.dmg
+
+# Menu bar runtime data
+alliance_20260317_130542/.jarvis-menubar/
+alliance_20260317_130542/macos/JarvisMenuBar/.build/
+alliance_20260317_130542/macos/JarvisMenuBar/.swiftpm/
