@@ -7,10 +7,17 @@ Per Spec Section 11.2:
   - Applies freshness score boost for recently modified files
   - STALE auto-detection via content hash comparison
   - STALE/MISSING citations are included but flagged for warning display
+
+Score boosting:
+  - Freshness boost: recently modified files rank higher
+  - Filename match boost: documents matching query filename terms rank higher
+  - Identifier match boost: chunks containing code identifiers from query rank higher
 """
 from __future__ import annotations
 
+import re
 import sqlite3
+from pathlib import Path
 from typing import Sequence
 
 from jarvis.contracts import (
@@ -24,6 +31,15 @@ from jarvis.contracts import (
     VerifiedEvidenceSet,
 )
 from jarvis.retrieval.freshness import FreshnessChecker
+
+
+# Patterns for extracting specific identifiers from queries
+_FILENAME_RE = re.compile(r"[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf)")
+_CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class names like _build_foo, MyClass
+
+# Boost values
+_FILENAME_MATCH_BOOST = 0.10   # document path contains queried filename
+_IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
 
 
 class EvidenceBuilder:
@@ -43,6 +59,11 @@ class EvidenceBuilder:
 
         if self._db is None:
             return self._stub_build(results, fragments)
+
+        # Extract filename and identifier terms from query for boost scoring
+        query_text = " ".join(f.text for f in fragments)
+        query_filenames = {m.lower() for m in _FILENAME_RE.findall(query_text)}
+        query_identifiers = {m for m in _CODE_IDENT_RE.findall(query_text) if len(m) > 4}
 
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
@@ -77,11 +98,29 @@ class EvidenceBuilder:
             )
             citation = self._freshness.refresh_citation(citation, doc)
 
-            # Freshness score boost: recently modified files rank higher
-            freshness_boost = self._freshness.compute_freshness_boost(doc)
-            boosted_score = result.rrf_score + freshness_boost
+            # --- Score boosting ---
+            boost = 0.0
 
-            text = chunk_row[0] if chunk_row[0] else result.snippet
+            # Freshness boost: recently modified files rank higher
+            boost += self._freshness.compute_freshness_boost(doc)
+
+            # Filename match boost: document path contains queried filename
+            if query_filenames and doc.path:
+                doc_filename = Path(doc.path).name.lower()
+                if doc_filename in query_filenames:
+                    boost += _FILENAME_MATCH_BOOST
+
+            # Identifier match boost: chunk contains queried code identifier
+            chunk_text = chunk_row[0] if chunk_row[0] else ""
+            if query_identifiers and chunk_text:
+                for ident in query_identifiers:
+                    if ident in chunk_text:
+                        boost += _IDENTIFIER_MATCH_BOOST
+                        break  # One boost per chunk
+
+            boosted_score = result.rrf_score + boost
+
+            text = chunk_text or result.snippet
             heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
             items.append(EvidenceItem(
                 chunk_id=result.chunk_id,
@@ -92,6 +131,9 @@ class EvidenceBuilder:
                 source_path=doc.path,
                 heading_path=heading_path,
             ))
+
+        # Re-sort by boosted score (boosts may reorder results)
+        items.sort(key=lambda x: x.relevance_score, reverse=True)
 
         return VerifiedEvidenceSet(
             items=tuple(items), query_fragments=tuple(fragments)
