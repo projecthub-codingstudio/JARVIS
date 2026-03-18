@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -89,6 +90,7 @@ def run_indexing(
     db: object,
     kb_path: Path,
     *,
+    governor: Governor | None = None,
     metrics: MetricsCollector | None = None,
     error_monitor: ErrorMonitor | None = None,
     reporter: Callable[[str], None] | None = None,
@@ -116,11 +118,25 @@ def run_indexing(
     files = [f for f in kb_path.rglob("*") if f.is_file() and is_indexable(f)]
 
     for path in files:
+        if error_monitor is not None and error_monitor.read_only_mode:
+            break
+        if governor is not None and governor.should_pause_indexing():
+            if reporter is not None:
+                reporter("   Indexing paused by Governor (thermal/battery)")
+            break
+        if governor is not None and governor.should_backoff_indexing():
+            time.sleep(0.1)
         try:
             pipeline.index_file(path)  # type: ignore[union-attr]
         except Exception as exc:
             if error_monitor is not None:
-                code = "SQLITE_LOCK" if "locked" in str(exc).lower() else "INDEX_WRITE_FAILED"
+                lower_exc = str(exc).lower()
+                if "locked" in lower_exc:
+                    code = "SQLITE_LOCK"
+                elif "integrity" in lower_exc or "malformed" in lower_exc:
+                    code = "SQLITE_INTEGRITY"
+                else:
+                    code = "INDEX_WRITE_FAILED"
                 error_monitor.record_error(code, category="index")
             if reporter is not None:
                 reporter(f"   Index failed: {path.name} ({exc})")
@@ -138,6 +154,12 @@ def run_indexing(
         bg_pipeline = create_pipeline(bg_db, metrics=metrics)
         total_updated = 0
         while True:
+            if error_monitor is not None and error_monitor.read_only_mode:
+                break
+            if governor is not None and governor.should_pause_indexing():
+                break
+            if governor is not None and governor.should_backoff_indexing():
+                time.sleep(0.25)
             updated = bg_pipeline.backfill_morphemes(batch_size=50)  # type: ignore[union-attr]
             total_updated += updated
             if updated == 0:
@@ -165,6 +187,12 @@ def run_indexing(
         )
         total_updated = 0
         while True:
+            if error_monitor is not None and error_monitor.read_only_mode:
+                break
+            if governor is not None and governor.should_pause_indexing():
+                break
+            if governor is not None and governor.should_backoff_indexing():
+                time.sleep(0.25)
             updated = bg_pipeline.backfill_embeddings(batch_size=32)  # type: ignore[union-attr]
             total_updated += updated
             if updated == 0:
@@ -182,6 +210,7 @@ def run_indexing(
 def start_file_watcher(
     kb_path: Path,
     *,
+    governor: Governor | None = None,
     metrics: MetricsCollector | None = None,
     error_monitor: ErrorMonitor | None = None,
     reporter: Callable[[str], None] | None = None,
@@ -197,6 +226,7 @@ def start_file_watcher(
     watcher_db: object | None = None
     watcher_pipeline: object | None = None
     db_lock = threading.Lock()
+    pending_events = 0
 
     def _ensure_thread_db() -> None:
         nonlocal watcher_db, watcher_pipeline
@@ -205,13 +235,23 @@ def start_file_watcher(
             watcher_pipeline = create_pipeline(watcher_db, metrics=metrics)
 
     def on_change(path: Path, event_type: str, dest_path: Path | None = None) -> None:
+        nonlocal pending_events
         if path.name.startswith("~$") or path.name.startswith("."):
             return
 
         with db_lock:
+            pending_events += 1
             _ensure_thread_db()
             assert watcher_pipeline is not None
             try:
+                if error_monitor is not None and error_monitor.read_only_mode:
+                    return
+                if governor is not None and governor.should_pause_indexing():
+                    if reporter is not None:
+                        reporter(f"   [indexer] paused by Governor: {path.name}")
+                    return
+                if governor is not None and governor.should_backoff_indexing():
+                    time.sleep(0.2)
                 if event_type == "dir_deleted":
                     count = watcher_pipeline.remove_directory(path)  # type: ignore[union-attr]
                     if count and reporter is not None:
@@ -238,14 +278,23 @@ def start_file_watcher(
                         reporter(f"   [indexer] indexed: {path.name}")
             except Exception as exc:
                 if error_monitor is not None:
-                    code = "SQLITE_LOCK" if "locked" in str(exc).lower() else "INDEX_WRITE_FAILED"
+                    lower_exc = str(exc).lower()
+                    if "locked" in lower_exc:
+                        code = "SQLITE_LOCK"
+                    elif "integrity" in lower_exc or "malformed" in lower_exc:
+                        code = "SQLITE_INTEGRITY"
+                    else:
+                        code = "INDEX_WRITE_FAILED"
                     error_monitor.record_error(code, category="index")
                 if reporter is not None:
                     reporter(f"   [indexer] {event_type} failed: {path.name} ({exc})")
                 logger.warning("Watch event failed for %s: %s", path.name, exc)
+            finally:
+                pending_events = max(0, pending_events - 1)
 
     watcher = FileWatcher(watched_folders=[kb_path], on_change=on_change)
     watcher.start()
+    setattr(watcher, "pending_event_count", lambda: pending_events)
     return watcher
 
 
@@ -258,21 +307,28 @@ def create_llm_backend(
     allow_mlx: bool = True,
 ) -> MLXRuntime:
     """Create the LLM runtime with MLX primary and llama.cpp fallback."""
+    max_context_chars = max(2048, (decision.context_window // 2) * 4)
     if decision.backend == "mlx" and allow_mlx:
-        try:
-            from jarvis.runtime.mlx_backend import MLXBackend
+        for attempt in range(2):
+            try:
+                from jarvis.runtime.mlx_backend import MLXBackend
 
-            backend = MLXBackend()
-            backend.load(decision)
-            if reporter is not None:
-                reporter(f"   Backend: MLX ({backend.model_id})")
-            return MLXRuntime(backend=backend, model_id=decision.model_id, metrics=metrics)
-        except Exception as exc:
-            if metrics is not None:
-                metrics.increment(MetricName.MODEL_LOAD_FAILURE_COUNT)
-            if error_monitor is not None:
-                error_monitor.record_error("MODEL_LOAD_FAILED", category="model")
-            logger.warning("MLX backend failed: %s — falling back to Ollama", exc)
+                backend = MLXBackend()
+                backend.load(decision)
+                if reporter is not None:
+                    reporter(f"   Backend: MLX ({backend.model_id})")
+                return MLXRuntime(
+                    backend=backend,
+                    model_id=decision.model_id,
+                    max_context_chars=max_context_chars,
+                    metrics=metrics,
+                )
+            except Exception as exc:
+                if metrics is not None:
+                    metrics.increment(MetricName.MODEL_LOAD_FAILURE_COUNT)
+                if error_monitor is not None:
+                    error_monitor.record_error("MODEL_LOAD_FAILED", category="model")
+                logger.warning("MLX backend failed (attempt %d): %s", attempt + 1, exc)
 
     try:
         from jarvis.runtime.llamacpp_backend import LlamaCppBackend
@@ -283,12 +339,19 @@ def create_llm_backend(
             backend="llamacpp",
             model_id=decision.model_id,
             context_window=decision.context_window,
+            max_retrieved_chunks=decision.max_retrieved_chunks,
+            generation_timeout_ms=decision.generation_timeout_ms,
             reasoning_enabled=decision.reasoning_enabled,
         )
         backend.load(fallback_decision)
         if reporter is not None:
             reporter(f"   Backend: Ollama ({backend.model_id})")
-        return MLXRuntime(backend=backend, model_id=decision.model_id, metrics=metrics)
+        return MLXRuntime(
+            backend=backend,
+            model_id=decision.model_id,
+            max_context_chars=max_context_chars,
+            metrics=metrics,
+        )
     except Exception as exc:
         if metrics is not None:
             metrics.increment(MetricName.MODEL_LOAD_FAILURE_COUNT)
@@ -298,7 +361,7 @@ def create_llm_backend(
 
     if reporter is not None:
         reporter("   Backend: stub (no LLM available)")
-    return MLXRuntime(model_id="stub", metrics=metrics)
+    return MLXRuntime(model_id="stub", max_context_chars=max_context_chars, metrics=metrics)
 
 
 def build_runtime_context(
@@ -314,6 +377,11 @@ def build_runtime_context(
     config = JarvisConfig(data_dir=data_dir) if data_dir is not None else None
     result = bootstrap(config)
     error_monitor = ErrorMonitor()
+    watcher_pending = lambda: 0
+    governor = Governor(
+        metrics=result.metrics,
+        indexing_queue_depth_provider=lambda: watcher_pending(),
+    )
 
     chunk_count = 0
     watcher = None
@@ -321,6 +389,7 @@ def build_runtime_context(
         chunk_count, _ = run_indexing(
             result.db,
             knowledge_base_path,
+            governor=governor,
             metrics=result.metrics,
             error_monitor=error_monitor,
             reporter=reporter,
@@ -328,23 +397,26 @@ def build_runtime_context(
         if start_watcher_enabled:
             watcher = start_file_watcher(
                 knowledge_base_path,
+                governor=governor,
                 metrics=result.metrics,
                 error_monitor=error_monitor,
                 reporter=reporter,
             )
+            watcher_pending = getattr(watcher, "pending_event_count", watcher_pending)
     elif reporter is not None:
         reporter(f"   Knowledge base: not found ({knowledge_base_path})")
 
     retrieval_db = result.db if has_indexed_data(result.db) else None
 
-    governor = Governor(metrics=result.metrics)
-    decision = governor.select_runtime(requested_tier="balanced")
+    decision = governor.select_runtime(requested_tier=governor.suggest_idle_requested_tier())
     if model_id != decision.model_id or not decision.model_id:
         decision = RuntimeDecision(
             tier=decision.tier,
             backend=decision.backend,
             model_id=model_id,
             context_window=decision.context_window,
+            max_retrieved_chunks=decision.max_retrieved_chunks,
+            generation_timeout_ms=decision.generation_timeout_ms,
             reasoning_enabled=decision.reasoning_enabled,
         )
 

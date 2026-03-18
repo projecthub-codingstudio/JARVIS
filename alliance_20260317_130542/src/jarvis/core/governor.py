@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Callable
 
 from jarvis.contracts import (
     GovernorMode,
@@ -29,6 +30,10 @@ from jarvis.contracts import (
 from jarvis.observability.metrics import MetricName, MetricsCollector
 
 logger = logging.getLogger(__name__)
+
+_TTFT_DEGRADE_THRESHOLD_MS = 4000.0
+_INDEX_QUEUE_RESTRICT_THRESHOLD = 8
+_INDEX_QUEUE_DEGRADED_THRESHOLD = 20
 
 
 def _sample_system_state() -> SystemStateSnapshot:
@@ -134,9 +139,11 @@ class Governor:
         *,
         memory_limit_gb: float = 16.0,
         metrics: MetricsCollector | None = None,
+        indexing_queue_depth_provider: Callable[[], int] | None = None,
     ) -> None:
         self._memory_limit_gb = memory_limit_gb
         self._metrics = metrics
+        self._indexing_queue_depth_provider = indexing_queue_depth_provider
         self._last_state: SystemStateSnapshot | None = None
 
     @property
@@ -164,15 +171,67 @@ class Governor:
 
     def sample(self) -> SystemStateSnapshot:
         """Sample current system state."""
-        self._last_state = _sample_system_state()
+        state = _sample_system_state()
+        if self._indexing_queue_depth_provider is not None:
+            try:
+                queue_depth = max(0, int(self._indexing_queue_depth_provider()))
+            except Exception:
+                queue_depth = 0
+            state = SystemStateSnapshot(
+                timestamp=state.timestamp,
+                memory_pressure_pct=state.memory_pressure_pct,
+                swap_used_mb=state.swap_used_mb,
+                cpu_pct=state.cpu_pct,
+                gpu_pct=state.gpu_pct,
+                thermal_state=state.thermal_state,
+                on_ac_power=state.on_ac_power,
+                battery_pct=state.battery_pct,
+                indexing_queue_depth=queue_depth,
+            )
+        self._last_state = state
         if self._metrics is not None and self._last_state.swap_used_mb > 0:
             self._metrics.increment(MetricName.SWAP_DETECTED_COUNT)
         return self._last_state
+
+    def should_pause_indexing(self) -> bool:
+        """Return True when background indexing should pause entirely."""
+        state = self.sample()
+        if state.thermal_state in ("serious", "critical"):
+            return True
+        return not state.on_ac_power and state.battery_pct < 30
+
+    def should_backoff_indexing(self) -> bool:
+        """Return True when indexing should slow down/back off."""
+        state = self.sample()
+        if state.thermal_state == "fair":
+            return True
+        return state.indexing_queue_depth >= _INDEX_QUEUE_RESTRICT_THRESHOLD
+
+    def suggest_idle_requested_tier(self) -> RuntimeTier:
+        """Choose the optimistic requested tier before safety downgrades."""
+        state = self.sample()
+        if (
+            state.on_ac_power
+            and state.cpu_pct <= 20
+            and state.memory_pressure_pct < 60
+            and state.swap_used_mb < 1024
+            and state.thermal_state in ("nominal", "fair")
+            and state.indexing_queue_depth < _INDEX_QUEUE_RESTRICT_THRESHOLD
+        ):
+            return "deep"
+        if not state.on_ac_power and state.battery_pct < 30:
+            return "fast"
+        return "balanced"
 
     def select_runtime(self, requested_tier: RuntimeTier = "balanced") -> RuntimeDecision:
         """Select runtime tier based on system state. Per Spec Task 0.2."""
         state = self.sample()
         tier = _select_tier(state, requested_tier)
+
+        if state.indexing_queue_depth >= _INDEX_QUEUE_DEGRADED_THRESHOLD and tier == "deep":
+            tier = "balanced"
+        if state.indexing_queue_depth >= _INDEX_QUEUE_RESTRICT_THRESHOLD and tier in ("balanced", "deep"):
+            tier = "fast"
 
         if tier != requested_tier:
             logger.info(
@@ -183,16 +242,43 @@ class Governor:
 
         model_map: dict[RuntimeTier, str] = {
             "fast": "exaone3.5:7.8b",
-            "balanced": "qwen3:30b-a3b",
+            "balanced": "qwen3:14b",
             "deep": "qwen3:30b-a3b",
             "unloaded": "",
         }
+
+        context_window_map: dict[RuntimeTier, int] = {
+            "fast": 4096,
+            "balanced": 8192,
+            "deep": 16384,
+            "unloaded": 2048,
+        }
+        chunk_map: dict[RuntimeTier, int] = {
+            "fast": 4,
+            "balanced": 8,
+            "deep": 10,
+            "unloaded": 2,
+        }
+        timeout_map: dict[RuntimeTier, int] = {
+            "fast": 15000,
+            "balanced": 30000,
+            "deep": 45000,
+            "unloaded": 8000,
+        }
+
+        if self._metrics is not None:
+            last_ttft = self._metrics.get_last(MetricName.TTFT_MS)
+            if last_ttft is not None and last_ttft.value >= _TTFT_DEGRADE_THRESHOLD_MS:
+                chunk_map[tier] = max(2, chunk_map[tier] - 2)
+                context_window_map[tier] = max(2048, context_window_map[tier] // 2)
 
         return RuntimeDecision(
             tier=tier,
             backend="mlx" if tier != "unloaded" else "llamacpp",
             model_id=model_map.get(tier, ""),
-            context_window=8192 if tier != "deep" else 16384,
+            context_window=context_window_map[tier],
+            max_retrieved_chunks=chunk_map[tier],
+            generation_timeout_ms=timeout_map[tier],
             reasoning_enabled=tier == "deep",
         )
 

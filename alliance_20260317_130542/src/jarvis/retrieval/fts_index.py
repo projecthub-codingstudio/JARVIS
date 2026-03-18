@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from time import sleep
 from typing import Sequence
 
 from jarvis.contracts import SearchHit, TypedQueryFragment
@@ -16,6 +17,7 @@ from jarvis.observability.metrics import MetricName, MetricsCollector
 from jarvis.retrieval.tokenizer_kiwi import KiwiTokenizer
 
 logger = logging.getLogger(__name__)
+_LOCK_RETRY_DELAYS = (0.02, 0.05, 0.1)
 
 # Singleton tokenizer (Kiwi model loading is expensive)
 _kiwi: KiwiTokenizer | None = None
@@ -84,21 +86,32 @@ class FTSIndex:
         logger.debug("FTS query: %s", fts_query)
 
         started_at = time.perf_counter()
-        try:
-            rows = self._db.execute(
-                "SELECT c.chunk_id, c.document_id, c.text, c.byte_start, c.byte_end,"
-                " c.line_start, c.line_end, rank"
-                " FROM chunks c"
-                " JOIN chunks_fts f ON c.rowid = f.rowid"
-                " WHERE chunks_fts MATCH ?"
-                " ORDER BY rank"
-                " LIMIT ?",
-                (fts_query, top_k),
-            ).fetchall()
-        except sqlite3.OperationalError as exc:
-            if self._metrics is not None and "locked" in str(exc).lower():
-                self._metrics.increment(MetricName.SQLITE_LOCK_COUNT)
-            return []
+        rows = []
+        for attempt, delay in enumerate((0.0, *_LOCK_RETRY_DELAYS), 1):
+            if delay:
+                sleep(delay)
+            try:
+                rows = self._db.execute(
+                    "SELECT c.chunk_id, c.document_id, c.text, c.byte_start, c.byte_end,"
+                    " c.line_start, c.line_end, rank"
+                    " FROM chunks c"
+                    " JOIN chunks_fts f ON c.rowid = f.rowid"
+                    " WHERE chunks_fts MATCH ?"
+                    " ORDER BY rank"
+                    " LIMIT ?",
+                    (fts_query, top_k),
+                ).fetchall()
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower():
+                    if self._metrics is not None:
+                        self._metrics.increment(
+                            MetricName.SQLITE_LOCK_COUNT,
+                            tags={"attempt": str(attempt)},
+                        )
+                    if attempt <= len(_LOCK_RETRY_DELAYS):
+                        continue
+                return []
 
         hits: list[SearchHit] = []
         for row in rows:

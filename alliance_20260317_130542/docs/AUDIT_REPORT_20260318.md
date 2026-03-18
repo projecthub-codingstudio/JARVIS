@@ -12,8 +12,8 @@
 `docs/superpowers/specs/`, `docs/superpowers/plans/` 문서를 기준으로 다시 대조했다.
 
 - 아키텍처 핵심 요구(하이브리드 검색, 승인형 내보내기, Governor, 최신성, 메뉴바 브리지)는 대부분 구현됐다.
-- 부분 구현으로 남는 축은 `Tracing`, `Governor-기반 chunk/context 조절`, `AC 전원 승격`, `인덱싱 백오프`, `운영 하드닝`이다.
-- 명세와 구현의 차이는 주로 `타입/이름 계약`, `관측성 심화`, `Degradation Matrix` 일부, `docs/DECISIONS.md` 및 `docs/IMPLEMENTATION_PLAN.md` 미생성에 남아 있다.
+- 부분 구현으로 남는 축은 `ModelRouter의 Governor 결합 심화`, `문장 수준 인용 검증`, `관측성 심화`, `운영 하드닝`이다.
+- 명세와 구현의 차이는 주로 `타입/이름 계약`, `Reranker/MeCab-ko의 명시적 유보`, `90% coverage 기준 미도달`에 남아 있다.
 
 ---
 
@@ -82,7 +82,7 @@
 | Runtime: 임베딩 엔진 | ✅ | `runtime/embedding_runtime.py` | BGE-M3 임베딩 구현 |
 | Runtime: Reranker | ❌ | — | 명시적 유보 |
 | Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
-| Observability: Tracing | 🔧 | `observability/tracing.py` | no-op tracer 유지, 추적 이벤트 수집은 미구현 |
+| Observability: Tracing | 🔧 | `observability/tracing.py` | 경량 in-memory tracer 구현, 외부 export/전면 연동은 미완 |
 | Tools: ReadFile | ✅ | `tools/read_file.py` | 허용된 루트 내 텍스트 파일 읽기 구현 |
 | Tools: DraftExport | ✅ | `tools/draft_export.py` | 승인 게이트 연동 후 실제 export 수행 |
 
@@ -120,7 +120,7 @@
 | 레벨 2 — 승인형 쓰기 | ✅ | `draft_export`만 승인 후 실제 쓰기 허용 |
 | 레벨 3-4 (자동화) | ❌ | 명시적 제외 |
 | 인용 필수 | ✅ | repl.py 인용 표시 |
-| Hard kill (파괴 명령 차단) | ❌ | 분류기 없음 |
+| Hard kill (파괴 명령 차단) | ✅ | 파괴적/대량 삭제 요청 차단 |
 | 연속 에러 임계치 | ✅ | 반복 오류 도구 차단, degraded/search-only, safe mode 구현 |
 
 ### Section 11: 인덱싱/최신성 정책
@@ -142,16 +142,16 @@
 | Feature | Status | Notes |
 |---|---|---|
 | 메모리/swap/CPU/thermal/battery 감지 | ✅ | psutil + pmset |
-| 인덱싱 큐 길이 | ❌ | 항상 0 |
-| AC+idle → 상위 모델 허용 | ❌ | on_ac_power 미사용 |
+| 인덱싱 큐 길이 | ✅ | watcher pending event count를 Governor에 반영 |
+| AC+idle → 상위 모델 허용 | ✅ | AC + idle + 저압 상태에서 deep tier 요청 |
 | AC+work → 14B | ✅ | balanced tier |
 | 배터리 → deep 차단 | ✅ | battery < 30% |
 | Swap ≥4GB → unloaded | ✅ | |
 | Swap ≥2GB → fast | ✅ | |
 | Thermal serious → fast | ✅ | |
 | Thermal critical → unloaded | ✅ | |
-| TTFT 임계 → 컨텍스트 축소 | ❌ | |
-| Governor 상태별 chunk 수 조절 | ❌ | 고정값 사용 |
+| TTFT 임계 → 컨텍스트 축소 | ✅ | 최근 TTFT 기준 context/chunk budget 축소 |
+| Governor 상태별 chunk 수 조절 | ✅ | tier별 retrieved chunk budget 적용 |
 
 ### Section 13: 리스크 대응
 
@@ -181,10 +181,10 @@
 | tools/ (read_file, search_files, draft_export) | ✅ | 3개 도구 모두 구현 및 등록 가능 |
 | cli/ (repl, approval) | ✅ | approval이 export 흐름과 연동됨 |
 | app/ (bootstrap, config) | ✅ | 전체 구현 |
-| observability/ (metrics, tracing, health) | 🔧 | tracing no-op, health 최소 |
+| observability/ (metrics, tracing, health) | 🔧 | tracing/health 구현, 외부 export 및 운영 세분화는 부분 구현 |
 | sql/schema.sql | ✅ | 5 테이블 + FTS5 + 트리거 |
-| docs/DECISIONS.md | ❌ | 미생성 |
-| docs/IMPLEMENTATION_PLAN.md | ❌ | 미생성 |
+| docs/DECISIONS.md | ✅ | 생성됨 |
+| docs/IMPLEMENTATION_PLAN.md | ✅ | 생성됨 |
 
 ### 프로토콜 구현 현황 (12개)
 
@@ -208,12 +208,12 @@
 
 | 장애 모드 | Status | Notes |
 |---|---|---|
-| 모델 로드 실패 1회 재시도 | 🔧 | MLX→Ollama→stub 폴백 (재시도 아닌 대체) |
+| 모델 로드 실패 1회 재시도 | ✅ | MLX 1회 재시도 후 Ollama fallback |
 | 모델 2회 연속 실패 → degraded | ✅ | `core/error_monitor.py` |
 | 모델 3회 연속 → 검색 전용 | ✅ | `core/error_monitor.py`, `core/orchestrator.py` |
-| SQLite 락 읽기 재시도 | ❌ | |
-| SQLite 무결성 실패 → 읽기 전용 | ❌ | |
-| 임베딩 백로그 최근 우선 | ❌ | DB 스캔 순서 |
+| SQLite 락 읽기 재시도 | ✅ | FTS 검색에서 짧은 재시도 후 실패 기록 |
+| SQLite 무결성 실패 → 읽기 전용 | ✅ | read-only + rebuild flag |
+| 임베딩 백로그 최근 우선 | ✅ | `updated_at DESC` recent-first 처리 |
 | STALE 경고 + 기존 색인 사용 | ✅ | 해시 비교 |
 | ACCESS_LOST 상태 | ✅ | |
 | 5분 내 5에러 → 도구 중단 | ✅ | `core/error_monitor.py`, `core/tool_registry.py` |
@@ -234,11 +234,11 @@
 
 | 조건 | Status | Notes |
 |---|---|---|
-| elevated: 10 chunks, max context | ❌ | top_k 고정 |
-| baseline: 8 chunks, standard | ❌ | governor 미연동 |
-| degraded: 4 chunks, reduced | ❌ | governor 미연동 |
-| thermal 상승 시 인덱싱 백오프 | ❌ | 워처 무조건 동작 |
-| 배터리 모드 인덱싱 중지 | ❌ | 미연동 |
+| elevated: 10 chunks, max context | ✅ | deep tier 10 chunks / 16K window |
+| baseline: 8 chunks, standard | ✅ | balanced tier 8 chunks / 8K window |
+| degraded: 4 chunks, reduced | ✅ | fast tier 4 chunks / 4K window |
+| thermal 상승 시 인덱싱 백오프 | ✅ | fair/serious 상태에서 backoff/pause |
+| 배터리 모드 인덱싱 중지 | ✅ | 저배터리 비AC 상태에서 pause |
 | swap 감지 시 상위 승격 금지 | ✅ | governor 구현 |
 
 ---
@@ -258,11 +258,11 @@
 
 | 항목 | 명세 위치 | 현재 상태 |
 |------|-----------|-----------|
-| Governor → chunk 수/컨텍스트 크기 조절 | Sec 12, 15 | ❌ |
+| Governor → chunk 수/컨텍스트 크기 조절 | Sec 12, 15 | ✅ |
 | 연속 에러 카운터 (모델 2회, SQLite 3회) | Sec 10.3, 13 | ✅ degraded/write-block 기본 구현 |
 | Safe mode (모델+인덱스 동시 실패) | Sec 13 | ✅ |
-| 인덱싱 thermal/battery 백오프 | Sec 12.2 | ❌ |
-| AC 전원 시 상위 모델 승격 허용 | Sec 12.2 | ❌ |
+| 인덱싱 thermal/battery 백오프 | Sec 12.2 | ✅ |
+| AC 전원 시 상위 모델 승격 허용 | Sec 12.2 | ✅ |
 
 ### P2 — 관측성/도구 Gap
 

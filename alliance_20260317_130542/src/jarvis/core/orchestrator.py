@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from jarvis.contracts import (
     AnswerDraft,
@@ -33,6 +34,13 @@ from jarvis.contracts import (
 )
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricName, MetricsCollector
+
+_DESTRUCTIVE_REQUEST_PATTERNS = (
+    re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
+    re.compile(r"\b(format|wipe|erase)\b", re.IGNORECASE),
+    re.compile(r"(모두|전체).*(삭제|지워|제거)"),
+    re.compile(r"(파일|폴더|디렉터리).*(전부|모두).*(삭제|제거)"),
+)
 
 
 class Orchestrator:
@@ -76,6 +84,20 @@ class Orchestrator:
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
         turn = ConversationTurn(user_input=user_input)
+
+        if self._is_destructive_request(user_input):
+            turn.assistant_output = (
+                "파괴적이거나 대량 삭제로 이어질 수 있는 요청은 안전 정책상 수행할 수 없습니다."
+            )
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            self._task_log_store.log_entry(TaskLogEntry(
+                turn_id=turn.turn_id,
+                stage="blocked",
+                status=TaskStatus.SKIPPED,
+                metadata={"reason": "hard_kill"},
+            ))
+            return turn
 
         # 1. Governor pre-check
         if not self._governor.check_resource_budget():
@@ -183,8 +205,22 @@ class Orchestrator:
         if not fragments:
             return VerifiedEvidenceSet(items=(), query_fragments=())
 
-        fts_hits = self._fts_retriever.search(fragments)
-        vector_hits = self._vector_retriever.search(fragments)
+        runtime_decision = self._resolve_runtime_decision()
+        retrieval_top_k = max(4, runtime_decision.max_retrieved_chunks * 2)
+
+        can_parallelize = (
+            getattr(self._fts_retriever, "_db", None) is None
+            and getattr(self._vector_retriever, "_db", None) is None
+        )
+        if can_parallelize:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fts_future = executor.submit(self._fts_retriever.search, fragments, retrieval_top_k)
+                vector_future = executor.submit(self._vector_retriever.search, fragments, retrieval_top_k)
+                fts_hits = fts_future.result()
+                vector_hits = vector_future.result()
+        else:
+            fts_hits = self._fts_retriever.search(fragments, retrieval_top_k)
+            vector_hits = self._vector_retriever.search(fragments, retrieval_top_k)
 
         # Document-targeted search: if query mentions a filename,
         # also search within that specific document's chunks
@@ -193,8 +229,17 @@ class Orchestrator:
             fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in
                                          {t.chunk_id for t in targeted_hits}]
 
-        hybrid_results = self._hybrid_fusion.fuse(fts_hits, vector_hits)
+        hybrid_results = self._hybrid_fusion.fuse(
+            fts_hits,
+            vector_hits,
+            top_k=runtime_decision.max_retrieved_chunks,
+        )
         evidence = self._evidence_builder.build(hybrid_results, fragments)
+        if len(evidence.items) > runtime_decision.max_retrieved_chunks:
+            evidence = VerifiedEvidenceSet(
+                items=evidence.items[:runtime_decision.max_retrieved_chunks],
+                query_fragments=evidence.query_fragments,
+            )
         return evidence
 
     def _targeted_file_search(
@@ -291,3 +336,26 @@ class Orchestrator:
                 snippet = snippet[:140] + "..."
             lines.append(f"{item.citation.label} {source}: {snippet}")
         return "\n".join(lines)
+
+    def _resolve_runtime_decision(self):
+        select_runtime = getattr(self._governor, "select_runtime", None)
+        if callable(select_runtime):
+            requested_tier = "balanced"
+            suggest_idle = getattr(self._governor, "suggest_idle_requested_tier", None)
+            if callable(suggest_idle):
+                requested_tier = suggest_idle()
+            if self._error_monitor is not None and self._error_monitor.degraded_mode:
+                requested_tier = "fast"
+            return select_runtime(requested_tier)
+
+        class _FallbackDecision:
+            max_retrieved_chunks = 4 if self._governor.should_degrade() else 8
+
+        return _FallbackDecision()
+
+    @staticmethod
+    def _is_destructive_request(user_input: str) -> bool:
+        text = user_input.strip()
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in _DESTRUCTIVE_REQUEST_PATTERNS)

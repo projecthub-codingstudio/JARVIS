@@ -73,12 +73,12 @@ class ToolRegistry:
             )
         if (
             self._error_monitor is not None
-            and self._error_monitor.write_blocked
+            and (self._error_monitor.write_blocked or self._error_monitor.read_only_mode)
             and tool_name == ToolName.DRAFT_EXPORT
         ):
             raise ToolError(
                 ErrorCode.TOOL_EXECUTION_FAILED,
-                "Write operations are temporarily blocked due to repeated SQLite lock failures",
+                "Write operations are temporarily blocked due to runtime safety policy",
             )
         if tool_name not in self._ALLOWED_TOOLS:
             raise ToolError(
