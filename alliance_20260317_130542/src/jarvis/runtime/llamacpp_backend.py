@@ -21,6 +21,7 @@ _OLLAMA_BASE = "http://localhost:11434"
 
 # Model ID mapping: short alias -> Ollama model tag
 _MODEL_ALIASES: dict[str, str] = {
+    "qwen3-14b": "qwen3:14b",
     "qwen3-30b-a3b": "qwen3:30b-a3b",
     "kanana-30b-a3b": "qwen3:30b-a3b",
     "exaone-deep-7.8b": "exaone3.5:7.8b",
@@ -138,6 +139,7 @@ class LlamaCppBackend:
             "system": system_message,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "options": {
                 "num_ctx": self._context_window,
                 "temperature": 0.7,

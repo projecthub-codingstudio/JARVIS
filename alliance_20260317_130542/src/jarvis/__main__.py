@@ -34,11 +34,10 @@ logger = logging.getLogger(__name__)
 # Default knowledge base path
 _DEFAULT_KB_PATH = Path("/Users/codingstudio/__PROJECTHUB__/JARVIS/knowledge_base")
 
-_SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    ".md", ".markdown", ".txt", ".rst", ".cfg", ".toml", ".ini",
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json",
-    ".pdf", ".docx", ".xlsx", ".hwpx", ".hwp",
-})
+def _is_indexable(path: Path) -> bool:
+    """Check if a file can be indexed (registered extension or text auto-detect)."""
+    from jarvis.indexing.parsers import is_indexable
+    return is_indexable(path)
 
 
 def _has_indexed_data(db: object) -> bool:
@@ -75,13 +74,31 @@ def _run_indexing(db: object, kb_path: Path) -> tuple[int, object]:
     """
     pipeline = _create_pipeline(db)
 
+    # Clean up stale documents (files moved/deleted since last run)
+    stale_rows = db.execute(  # type: ignore[union-attr]
+        "SELECT document_id, path FROM documents WHERE indexing_status = 'INDEXED'"
+    ).fetchall()
+    stale_count = 0
+    for doc_id, doc_path in stale_rows:
+        if not Path(doc_path).exists():
+            db.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))  # type: ignore[union-attr]
+            db.execute(  # type: ignore[union-attr]
+                "UPDATE documents SET indexing_status = 'TOMBSTONED' WHERE document_id = ?",
+                (doc_id,),
+            )
+            stale_count += 1
+    if stale_count:
+        db.commit()  # type: ignore[union-attr]
+        print(f"   Cleaned up {stale_count} stale documents")
+
     files = [f for f in kb_path.rglob("*")
-             if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS]
+             if f.is_file() and _is_indexable(f)]
 
     for f in files:
         try:
             pipeline.index_file(f)  # type: ignore[union-attr]
         except Exception as e:
+            print(f"   ⚠ Index failed: {f.name} ({e})")
             logger.warning("Index failed for %s: %s", f.name, e)
 
     total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]  # type: ignore[union-attr]
@@ -139,23 +156,41 @@ def _start_file_watcher(db: object, kb_path: Path) -> object:
             watcher_db = init_database(config)
             watcher_pipeline = _create_pipeline(watcher_db)
 
-    def on_change(path: Path, event_type: str) -> None:
-        # Skip unsupported extensions and temp files
-        if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
-            return
+    def on_change(path: Path, event_type: str, dest_path: Path | None = None) -> None:
+        # Skip temp files
         if path.name.startswith("~$") or path.name.startswith("."):
             return
 
         with db_lock:
             _ensure_thread_db()
             try:
-                if event_type == "deleted":
+                if event_type == "dir_deleted":
+                    count = watcher_pipeline.remove_directory(path)  # type: ignore[union-attr]
+                    if count:
+                        print(f"\n   [indexer] dir removed: {path.name}/ ({count} files)")
+
+                elif event_type == "dir_moved" and dest_path is not None:
+                    count = watcher_pipeline.move_directory(path, dest_path)  # type: ignore[union-attr]
+                    if count:
+                        print(f"\n   [indexer] dir moved: {path.name}/ → {dest_path.name}/ ({count} files)")
+
+                elif event_type == "moved" and dest_path is not None:
+                    watcher_pipeline.move_file(path, dest_path)  # type: ignore[union-attr]
+                    print(f"\n   [indexer] moved: {path.name} → {dest_path.name}")
+
+                elif event_type == "deleted":
+                    # Deleted files can't be probed — remove by path directly
                     watcher_pipeline.remove_file(path)  # type: ignore[union-attr]
                     print(f"\n   [indexer] removed: {path.name}")
+
                 elif event_type in ("created", "modified"):
+                    if not _is_indexable(path):
+                        return
                     watcher_pipeline.reindex_file(path)  # type: ignore[union-attr]
                     print(f"\n   [indexer] indexed: {path.name}")
+
             except Exception as e:
+                print(f"\n   ⚠ [indexer] {event_type} failed: {path.name} ({e})")
                 logger.warning("Watch event failed for %s: %s", path.name, e)
 
     watcher = FileWatcher(watched_folders=[kb_path], on_change=on_change)
@@ -211,8 +246,8 @@ def main() -> None:
 
     result = bootstrap()
 
-    # Model selection — default: qwen3:30b-a3b (best table/reasoning quality)
-    model_id = "qwen3:30b-a3b"
+    # Model selection — default: qwen3:14b (14B-class per tech spec)
+    model_id = "qwen3:14b"
     if len(sys.argv) > 1 and sys.argv[1].startswith("--model="):
         model_id = sys.argv[1].split("=", 1)[1]
 

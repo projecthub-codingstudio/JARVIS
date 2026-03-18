@@ -304,6 +304,73 @@ class TestParseHwpx:
         assert "한글" in text
 
 
+# --- SQL parse tests ---
+
+
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "corpus"
+
+
+class TestParseSql:
+    def test_detect_type_sql(self, tmp_path: Path) -> None:
+        f = tmp_path / "schema.sql"
+        f.write_text("CREATE TABLE t (id INT);")
+        assert DocumentParser().detect_type(f) == "sql"
+
+    def test_detect_type_ddl(self, tmp_path: Path) -> None:
+        f = tmp_path / "schema.ddl"
+        f.write_text("CREATE TABLE t (id INT);")
+        assert DocumentParser().detect_type(f) == "sql"
+
+    def test_parse_sql_utf8(self, tmp_path: Path) -> None:
+        """UTF-8 SQL file with CREATE TABLE is parsed with metadata header."""
+        f = tmp_path / "test.sql"
+        f.write_text("CREATE TABLE users (\n    id INT PRIMARY KEY,\n    name TEXT\n);")
+        text = DocumentParser().parse(f)
+        assert "[SQL Tables: users]" in text
+        assert "CREATE TABLE users" in text
+
+    def test_parse_sql_fixture(self) -> None:
+        """Parse the UTF-8 SQL fixture with multiple tables and index."""
+        fixture = FIXTURES_DIR / "sample_create_table.sql"
+        text = DocumentParser().parse(fixture)
+        assert "tbl_daily_price" in text
+        assert "tbl_stock_master" in text
+        assert "[SQL Tables:" in text
+        assert "[SQL Indexes:" in text
+        assert "종목 마스터" in text  # Korean comment preserved
+
+    def test_parse_sql_euckr(self) -> None:
+        """Parse EUC-KR encoded Korean SQL file (MS SQL Server export)."""
+        fixture = FIXTURES_DIR / "sample_korean_euckr.sql"
+        text = DocumentParser().parse(fixture)
+        assert "tbl_day_chart" in text
+        assert "종가" in text  # Korean column name decoded correctly
+        assert "거래량" in text
+        assert "[Descriptions:" in text  # Extended properties extracted
+
+    def test_parse_sql_with_views(self, tmp_path: Path) -> None:
+        """SQL file with CREATE VIEW is detected."""
+        f = tmp_path / "views.sql"
+        f.write_text("CREATE VIEW v_active_users AS\nSELECT * FROM users WHERE active = 1;")
+        text = DocumentParser().parse(f)
+        assert "[SQL Views: v_active_users]" in text
+
+    def test_parse_sql_plain(self, tmp_path: Path) -> None:
+        """SQL file with no DDL still returns raw content."""
+        f = tmp_path / "query.sql"
+        f.write_text("SELECT * FROM orders WHERE status = 'pending';")
+        text = DocumentParser().parse(f)
+        assert "SELECT * FROM orders" in text
+
+    def test_parse_sql_korean_inline_comments(self, tmp_path: Path) -> None:
+        """Korean inline comments are preserved."""
+        f = tmp_path / "korean.sql"
+        content = "-- 사용자 테이블\nCREATE TABLE users (id INT);"
+        f.write_text(content)
+        text = DocumentParser().parse(f)
+        assert "사용자 테이블" in text
+
+
 # --- CreateRecord tests ---
 
 

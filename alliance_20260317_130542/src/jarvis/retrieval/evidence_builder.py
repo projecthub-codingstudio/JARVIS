@@ -2,6 +2,11 @@
 
 When db is provided, resolves chunk text and verifies citation freshness.
 Without db, falls back to stub behavior for backward compatibility.
+
+Per Spec Section 11.2:
+  - Applies freshness score boost for recently modified files
+  - STALE auto-detection via content hash comparison
+  - STALE/MISSING citations are included but flagged for warning display
 """
 from __future__ import annotations
 
@@ -72,6 +77,10 @@ class EvidenceBuilder:
             )
             citation = self._freshness.refresh_citation(citation, doc)
 
+            # Freshness score boost: recently modified files rank higher
+            freshness_boost = self._freshness.compute_freshness_boost(doc)
+            boosted_score = result.rrf_score + freshness_boost
+
             text = chunk_row[0] if chunk_row[0] else result.snippet
             heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
             items.append(EvidenceItem(
@@ -79,7 +88,7 @@ class EvidenceBuilder:
                 document_id=result.document_id,
                 text=text,
                 citation=citation,
-                relevance_score=result.rrf_score,
+                relevance_score=boosted_score,
                 source_path=doc.path,
                 heading_path=heading_path,
             ))
