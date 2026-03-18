@@ -1,0 +1,311 @@
+# JARVIS 구현 상태 검수 보고서
+
+**검수일**: 2026-03-18
+**기술문서**: TASK-E93DF600.md (아키텍처 분석), TASK-9A8DC5D5.md (구현 명세)
+**구현 경로**: alliance_20260317_130542/
+
+---
+
+## 전체 요약
+
+| 구분 | ✅ 완료 | 🔧 부분 구현 | ❌ 미구현 |
+|------|:---:|:---:|:---:|
+| 아키텍처 (E93DF600) | 38 | 16 | 12 |
+| 구현 명세 (9A8DC5D5) | 42 | 23 | 19 |
+
+---
+
+## 1. 잘 구현된 핵심 영역
+
+| 영역 | 상태 | 핵심 파일 |
+|------|------|-----------|
+| **Contracts 계층** | ✅ 완벽 | 프로토콜 12개, 모델 12개, 에러 19개 코드, 상태 6개 enum |
+| **인덱싱 파이프라인** | ✅ 프로덕션급 | PDF/DOCX/PPTX/XLSX/HWPX/HWP/SQL + 100개 확장자 + 텍스트 자동감지 |
+| **FTS5 + Kiwi 형태소** | ✅ | 한국어 형태소 확장 검색, 지연 큐 backfill |
+| **Governor 시스템 감지** | ✅ | psutil + pmset 실제 센서, swap/thermal/battery 임계값 |
+| **LLM 듀얼 백엔드** | ✅ | MLX primary + Ollama fallback + stub 3단 폴백 |
+| **Freshness 체계** | ✅ | STALE 자동감지(SHA-256 해시 비교), freshness boost, tombstone, 한국어 경고 |
+| **파일 워처** | ✅ | 생성/수정/삭제/이동/디렉토리이름변경 전부 처리, stale 자동 정리 |
+
+---
+
+## 2. 아키텍처 명세 (TASK-E93DF600) 검수
+
+### Section 4: 시스템 요구사항
+
+| Feature | Status | Implementation File | Notes |
+|---|---|---|---|
+| M1 Max 64GB 타겟 | ✅ | `app/config.py:32` | `memory_limit_gb = 16.0` (worst-case 기준) |
+| 순차 모델 로딩 (동시 금지) | 🔧 | `runtime/model_router.py` | 인터페이스 존재, `request_load()`/`release()` NotImplementedError |
+| 15-20GB 메모리 버짓 | ✅ | `core/governor.py:115`, `app/config.py:32` | Governor 16GB 제한 |
+| Swap/thermal/battery 정책 | ✅ | `core/governor.py:33-106` | psutil + pmset 실제 센서 |
+
+### Section 5/6: 아키텍처 결정 매트릭스
+
+| Feature | Status | Implementation File | Notes |
+|---|---|---|---|
+| CLI REPL | ✅ | `cli/repl.py` | 인용 표시, 경고 포함 |
+| 메뉴바 UI | ❌ | — | Phase 2 명시 유보 |
+| MLX primary 런타임 | ✅ | `runtime/mlx_backend.py` | mlx_lm.load/generate, Metal cache clear |
+| llama.cpp (Ollama) fallback | ✅ | `runtime/llamacpp_backend.py` | REST API, think:false, keep_alive=0 |
+| SQLite FTS5 | ✅ | `sql/schema.sql:50-70`, `retrieval/fts_index.py` | FTS5 + 트리거 + lexical_morphs |
+| Vector DB (LanceDB) | ❌ | `retrieval/vector_index.py` | stub (고정 결과 반환) |
+| Hybrid search + RRF | ✅ | `retrieval/hybrid_search.py` | RRF k=60, FTS+vector 결합 |
+| BGE-M3 / Qwen3-Embedding | ❌ | `runtime/embedding_runtime.py` | stub (제로벡터) |
+| Kiwi 형태소 | ✅ | `retrieval/tokenizer_kiwi.py` | content-POS filter (NNG, NNP, VV 등) |
+| MeCab-ko | ❌ | — | 명시적 유보 |
+| 선택 폴더 인덱싱 | ✅ | `app/config.py:14`, `__main__.py:35` | knowledge_base/ 제한 |
+| FSEvents 증분 인덱싱 | 🔧 | `indexing/file_watcher.py` | watchdog 사용 (macOS에서 FSEvents 내부 사용) |
+| 승인 게이트 | 🔧 | `cli/approval.py`, `tools/draft_export.py` | 객체 존재, 오케스트레이터 미연동 |
+
+### Section 7: 코어 아키텍처 계층
+
+| Feature | Status | Implementation File | Notes |
+|---|---|---|---|
+| Interface: CLI REPL | ✅ | `cli/repl.py` | 출처 유형, staleness 경고, 한국어 메시지 |
+| Interface: 승인 패널 | 🔧 | `cli/approval.py` | Gateway 존재, 도구 호출과 미통합 |
+| Orchestration: Governor | ✅ | `core/governor.py` | 실제 psutil+pmset, tier 다운그레이드 |
+| Orchestration: Planner | ✅ | `core/planner.py` | Ollama 이중언어 키워드 추출, fallback |
+| Orchestration: ToolRegistry | ✅ | `core/tool_registry.py` | 3-tool 허용목록 |
+| Orchestration: Orchestrator | ✅ | `core/orchestrator.py` | 7단계: governor→planner→검색→증거→생성→저장 |
+| Knowledge: Parser | ✅ | `indexing/parsers.py` | 10+ 포맷, CP949/EUC-KR/UTF-16 BOM |
+| Knowledge: Chunker | ✅ | `indexing/chunker.py` | heading-aware, 250-500 토큰, UTF-8 경계 |
+| Knowledge: FTS5 | ✅ | `retrieval/fts_index.py` | 형태소 확장 검색 |
+| Knowledge: Vector index | ❌ | `retrieval/vector_index.py` | stub only |
+| Knowledge: 문서 레지스트리 | ✅ | `sql/schema.sql`, `indexing/index_pipeline.py` | documents+chunks 스키마 |
+| Memory: 대화 저장소 | ✅ | `memory/conversation_store.py` | SQLite + in-memory fallback |
+| Memory: 작업 로그 | ✅ | `memory/task_log.py` | task_logs 테이블 |
+| Runtime: MLX/llama.cpp | ✅ | `runtime/mlx_backend.py`, `runtime/llamacpp_backend.py` | 양쪽 구현 완료 |
+| Runtime: 임베딩 엔진 | ❌ | `runtime/embedding_runtime.py` | stub |
+| Runtime: Reranker | ❌ | — | 명시적 유보 |
+| Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
+| Observability: Tracing | 🔧 | `observability/tracing.py` | no-op stub (Phase 2) |
+| Tools: ReadFile | 🔧 | `tools/read_file.py` | NotImplementedError |
+| Tools: DraftExport | 🔧 | `tools/draft_export.py` | NotImplementedError |
+
+### Section 8: 핵심 데이터 플로우 (10단계)
+
+| Step | Feature | Status | Notes |
+|---|---|---|---|
+| 1 | 한국어 질의 입력 | ✅ | REPL stdin |
+| 2 | 의도 분류 | ✅ | Planner.analyze() |
+| 3 | FTS + vector 병렬 검색 | 🔧 | 순차 실행, vector는 stub |
+| 4 | Freshness 검증 | ✅ | 해시 비교 STALE + boost |
+| 5 | 컨텍스트 조합 (증거 + 대화) | 🔧 | 증거만 포함, 대화 히스토리 미주입 |
+| 6 | Governor 모델 tier 선택 | ✅ | 다운그레이드 로직 |
+| 7 | LLM 답변 생성 | ✅ | 한국어 시스템 프롬프트 |
+| 8 | 인용 검증 | 🔧 | 표시만, 문장 수준 환각 감지 없음 |
+| 9 | 답변 + 인용 렌더링 | ✅ | 파일명, 유형, 경고, 인용문 |
+| 10 | 메트릭 + task_log 기록 | 🔧 | task_log O, Orchestrator 메트릭 미연동 |
+
+### Section 9: 모델 전략
+
+| Feature | Status | Notes |
+|---|---|---|
+| 14B 기본 + 상위 승격 | ✅ | qwen3:14b 기본, governor 승격 제어 |
+| 후보 모델 3종 (Qwen3-14B, EXAONE, Kanana) | ✅ | 양쪽 백엔드에 alias 등록 |
+| 30B 상시 상주 금지 | ✅ | battery/pressure 시 deep 차단 |
+| MLX primary | ✅ | Metal cache clear 포함 |
+| llama.cpp fallback | ✅ | keep_alive=0 언로드 |
+
+### Section 10: 보안/접근 제어
+
+| Feature | Status | Notes |
+|---|---|---|
+| 레벨 0 — 텍스트 전용 | ✅ | KB 없으면 stub 모드 |
+| 레벨 1 — 선택 폴더 읽기 | ✅ | watched_folders 제한 |
+| 레벨 2 — 승인형 쓰기 | 🔧 | 객체 존재, 미연동 |
+| 레벨 3-4 (자동화) | ❌ | 명시적 제외 |
+| 인용 필수 | ✅ | repl.py 인용 표시 |
+| Hard kill (파괴 명령 차단) | ❌ | 분류기 없음 |
+| 연속 에러 임계치 | ❌ | 카운터 없음 |
+
+### Section 11: 인덱싱/최신성 정책
+
+| Feature | Status | Notes |
+|---|---|---|
+| 선택 폴더만 수집 | ✅ | kb_path 제한 |
+| 포맷별 파서 | ✅ | Tier 1-3 전체 |
+| 바이너리/대용량 제외 | ✅ | _BINARY_EXTENSIONS + 1MB 프로브 |
+| 증분 인덱싱 | ✅ | watchdog + 시작 시 stale 정리 |
+| 메타데이터 우선, 임베딩 지연 | ✅ | backfill_morphemes daemon |
+| Freshness 점수 보정 | ✅ | 4단계 boost (+2%~+15%) |
+| Tombstone | ✅ | 삭제 시 즉시 처리 |
+| SSD 쓰기량 주간 기록 | ❌ | |
+| 대화 로그 요약 계층 | ❌ | 원본만 저장 |
+
+### Section 12: Governor 리소스 관리
+
+| Feature | Status | Notes |
+|---|---|---|
+| 메모리/swap/CPU/thermal/battery 감지 | ✅ | psutil + pmset |
+| 인덱싱 큐 길이 | ❌ | 항상 0 |
+| AC+idle → 상위 모델 허용 | ❌ | on_ac_power 미사용 |
+| AC+work → 14B | ✅ | balanced tier |
+| 배터리 → deep 차단 | ✅ | battery < 30% |
+| Swap ≥4GB → unloaded | ✅ | |
+| Swap ≥2GB → fast | ✅ | |
+| Thermal serious → fast | ✅ | |
+| Thermal critical → unloaded | ✅ | |
+| TTFT 임계 → 컨텍스트 축소 | ❌ | |
+| Governor 상태별 chunk 수 조절 | ❌ | 고정값 사용 |
+
+### Section 13: 리스크 대응
+
+| Risk | Status | Notes |
+|---|---|---|
+| 한국어 검색 정확도 | 🔧 | Kiwi O, reranker 유보 |
+| 30B 메모리 압박 | ✅ | 14B 기본, governor 차단 |
+| Stale index 오답 | ✅ | 해시 비교, tombstone, UI 경고 |
+| 과도한 권한 요구 | ✅ | 선택 폴더만 |
+| 배터리/발열 | ✅ | governor 정책 |
+| 모델 품질 미달 | ✅ | 양쪽 백엔드, hot-swap |
+
+---
+
+## 3. 구현 명세 (TASK-9A8DC5D5) 검수
+
+### 모듈 구조 (37개 파일)
+
+| 모듈 | Status | Notes |
+|---|---|---|
+| contracts/ (models, protocols, states, errors) | ✅ | 전체 구현 |
+| core/ (orchestrator, governor, planner, tool_registry) | ✅ | 전체 구현 |
+| retrieval/ (query_decomposer, fts_index, vector_index, hybrid_search, evidence_builder, freshness, tokenizer_kiwi) | 🔧 | vector_index stub |
+| indexing/ (parsers, chunker, file_watcher, index_pipeline, tombstone) | ✅ | 전체 구현 |
+| runtime/ (mlx_runtime, mlx_backend, llamacpp_backend, model_router, embedding_runtime) | 🔧 | model_router, embedding stub |
+| memory/ (conversation_store, task_log) | ✅ | 전체 구현 |
+| tools/ (read_file, search_files, draft_export) | 🔧 | 3개 모두 NotImplementedError |
+| cli/ (repl, approval) | 🔧 | approval 미연동 |
+| app/ (bootstrap, config) | ✅ | 전체 구현 |
+| observability/ (metrics, tracing, health) | 🔧 | tracing no-op, health 최소 |
+| sql/schema.sql | ✅ | 5 테이블 + FTS5 + 트리거 |
+| docs/DECISIONS.md | ❌ | 미생성 |
+| docs/IMPLEMENTATION_PLAN.md | ❌ | 미생성 |
+
+### 프로토콜 구현 현황 (12개)
+
+| Protocol | Impl | Check |
+|---|---|---|
+| QueryDecomposerProtocol | QueryDecomposer | ✅ |
+| FTSRetrieverProtocol | FTSIndex | ✅ |
+| VectorRetrieverProtocol | VectorIndex | ✅ (stub) |
+| HybridFusionProtocol | HybridSearch | ✅ |
+| EvidenceBuilderProtocol | EvidenceBuilder | ✅ |
+| LLMGeneratorProtocol | MLXRuntime | ✅ |
+| LLMBackendProtocol | MLXBackend, LlamaCppBackend | ✅ |
+| EmbeddingRuntimeProtocol | EmbeddingRuntime | ✅ (stub) |
+| GovernorProtocol | Governor, GovernorStub | ✅ |
+| ConversationStoreProtocol | ConversationStore | ✅ |
+| TaskLogStoreProtocol | TaskLogStore | ✅ |
+| ToolRegistryProtocol | ToolRegistry | ✅ |
+| ApprovalGatewayProtocol | CLIApprovalGateway | ✅ |
+
+### 장애 처리 (Section 13)
+
+| 장애 모드 | Status | Notes |
+|---|---|---|
+| 모델 로드 실패 1회 재시도 | 🔧 | MLX→Ollama→stub 폴백 (재시도 아닌 대체) |
+| 모델 2회 연속 실패 → degraded | ❌ | 연속 카운터 없음 |
+| 모델 3회 연속 → 검색 전용 | ❌ | |
+| SQLite 락 읽기 재시도 | ❌ | |
+| SQLite 무결성 실패 → 읽기 전용 | ❌ | |
+| 임베딩 백로그 최근 우선 | ❌ | DB 스캔 순서 |
+| STALE 경고 + 기존 색인 사용 | ✅ | 해시 비교 |
+| ACCESS_LOST 상태 | ✅ | |
+| 5분 내 5에러 → 도구 중단 | ❌ | |
+| 10분 내 이중 실패 → safe mode | ❌ | |
+
+### 테스트 전략
+
+| Test Layer | Status | Notes |
+|---|---|---|
+| tests/contracts/ | ✅ | 프로토콜, 모델, 상태, 에러, 아키텍처 적합성 |
+| tests/unit/ | 🔧 | metrics, orchestrator, conversation, task_log 존재 |
+| tests/integration/ | 🔧 | schema 테스트만 존재 |
+| tests/perf/ | ❌ | 디렉토리만 존재 |
+| tests/e2e/ | ✅ | smoke + orchestrator 통합 |
+| 90% branch coverage | ❌ | coverage 설정 없음 |
+
+### Degradation Matrix (Section 15)
+
+| 조건 | Status | Notes |
+|---|---|---|
+| elevated: 10 chunks, max context | ❌ | top_k 고정 |
+| baseline: 8 chunks, standard | ❌ | governor 미연동 |
+| degraded: 4 chunks, reduced | ❌ | governor 미연동 |
+| thermal 상승 시 인덱싱 백오프 | ❌ | 워처 무조건 동작 |
+| 배터리 모드 인덱싱 중지 | ❌ | 미연동 |
+| swap 감지 시 상위 승격 금지 | ✅ | governor 구현 |
+
+---
+
+## 4. 주요 미구현 항목 (우선순위순)
+
+### P0 — 핵심 기능 Gap
+
+| 항목 | 명세 위치 | 현재 상태 | 영향 |
+|------|-----------|-----------|------|
+| **벡터 인덱스 (LanceDB + BGE-M3)** | Sec 5, 7, 9 | ❌ stub | 하이브리드 검색의 semantic 측면 전무 |
+| **임베딩 런타임** | Sec 7, 9 | ❌ stub | 벡터 검색 불가 |
+| **ModelRouter 순차 로딩** | Sec 4, 9 | 🔧 stub | 메모리 버짓 강제 불가 |
+| **대화 히스토리 → LLM 컨텍스트** | Sec 8 step 5 | ❌ | 멀티턴 대화 맥락 유실 |
+
+### P1 — 안정성/운영 Gap
+
+| 항목 | 명세 위치 | 현재 상태 |
+|------|-----------|-----------|
+| Governor → chunk 수/컨텍스트 크기 조절 | Sec 12, 15 | ❌ |
+| 연속 에러 카운터 (모델 2회, SQLite 3회) | Sec 10.3, 13 | ❌ |
+| Safe mode (모델+인덱스 동시 실패) | Sec 13 | ❌ |
+| 인덱싱 thermal/battery 백오프 | Sec 12.2 | ❌ |
+| AC 전원 시 상위 모델 승격 허용 | Sec 12.2 | ❌ |
+
+### P2 — 관측성/도구 Gap
+
+| 항목 | 명세 위치 | 현재 상태 |
+|------|-----------|-----------|
+| retrieval_top5_hit, citation_stale_rate 등 5개 메트릭 | Sec 12 | ❌ |
+| 구조화된 JSON 로깅 | Sec 12 | ❌ |
+| Health check 확장 | Sec 12 | ❌ |
+| Tool 실행 (read_file, search_files, draft_export) | Sec 8.2, 10 | 🔧 |
+| 50-query 벤치마크 하네스 | Sec 16 | ❌ |
+
+### P3 — 명세 정합성 (이름/타입 불일치)
+
+| 항목 | 명세 값 | 구현 값 |
+|------|---------|---------|
+| Governor tier 이름 | baseline/elevated/degraded | fast/balanced/deep/unloaded |
+| TypedQueryFragment.kind | symbol/literal/prose | keyword/semantic |
+| 6개 dataclass 이름 | UserQuery, RankedChunk 등 | str, HybridSearchResult 등 |
+| DDL 컬럼명 다수 | file_path, mtime_epoch_ms | path, modified_at |
+
+---
+
+## 5. Phase 진행도
+
+```
+Phase 0 ████████████████████░░ 90%  (50-query 하네스 미완)
+Phase 1 ██████████████░░░░░░░░ 65%  (벡터, 도구, 승인 미완)
+Phase 2 ░░░░░░░░░░░░░░░░░░░░░  0%  (음성, 메뉴바 UI)
+```
+
+---
+
+## 6. 오늘 (2026-03-18) 세션에서 수정된 항목
+
+| 수정 항목 | 파일 | 내용 |
+|-----------|------|------|
+| Qwen3 thinking 비활성화 | `llamacpp_backend.py` | `think: false` 추가 |
+| 기본 모델 변경 | `__main__.py` | qwen3:30b-a3b → qwen3:14b |
+| PPTX 파서 추가 | `parsers.py`, `pyproject.toml` | python-pptx 기반 슬라이드 파싱 |
+| 텍스트 자동감지 | `parsers.py` | is_indexable(), is_text_file() |
+| 84개 확장자 등록 | `parsers.py` | 코드/데이터/웹/설정 파일 |
+| Windows 인코딩 지원 | `parsers.py` | BOM 감지, CP949/EUC-KR/UTF-16 LE |
+| 파일 이동/삭제 처리 | `file_watcher.py`, `index_pipeline.py` | on_moved, dir_deleted, dir_moved |
+| 시작 시 stale 정리 | `__main__.py` | 파일 없는 document 자동 tombstone |
+| SQL 파서 구조화 | `parsers.py` | 컬럼 정의 테이블 추출, GO 노이즈 제거 |
+| Freshness STALE 자동감지 | `freshness.py` | SHA-256 해시 비교 |
+| Freshness 점수 보정 | `freshness.py`, `evidence_builder.py` | 4단계 시간 기반 boost |
+| 한국어 경고 메시지 | `repl.py` | STALE/MISSING/ACCESS_LOST 한국어화 |
+| 인덱싱 에러 표시 | `__main__.py` | print 추가 (logging.ERROR에 묻히지 않도록) |

@@ -1,10 +1,13 @@
 """Document parsers — extract text content from various file formats.
 
 Parser Tiers per PHASE1_ARCHITECTURE_CORE_DESIGN.md Section 12:
-  Tier 1 (committed): Markdown, plain text, source code, PDF, DOCX, XLSX
+  Tier 1 (committed): Markdown, plain text, source code, PDF, DOCX, XLSX, PPTX
   Tier 2 (conditional): HWPX (formatting-loss caveats accepted)
 
 Parser routing per Implementation Spec Task 1.1.
+
+Text file auto-detection: files with unregistered extensions are probed
+for text content and indexed as plain text if readable.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from jarvis.contracts import AccessStatus, DocumentRecord, IndexingStatus
 logger = logging.getLogger(__name__)
 
 # --- Extension → type mapping ---
+# Known extensions are mapped to a parser type.
+# Unknown extensions go through text auto-detection (see is_indexable).
 
 _EXTENSION_TYPE_MAP: dict[str, str] = {
     # Text / Markdown
@@ -25,21 +30,96 @@ _EXTENSION_TYPE_MAP: dict[str, str] = {
     ".markdown": "markdown",
     ".txt": "text",
     ".rst": "text",
+    ".log": "text",
+    ".csv": "text",
+    ".tsv": "text",
+    # Config / Data
     ".cfg": "text",
     ".toml": "text",
     ".ini": "text",
-    # Code
+    ".env": "text",
+    ".properties": "text",
+    ".conf": "text",
+    ".xml": "text",
+    ".html": "text",
+    ".htm": "text",
+    ".css": "text",
+    ".scss": "text",
+    ".less": "text",
+    ".svg": "text",
+    # Code: Python
     ".py": "python",
+    ".pyi": "python",
+    # Code: JavaScript / TypeScript
     ".ts": "typescript",
     ".tsx": "typescript",
     ".js": "javascript",
     ".jsx": "javascript",
+    # Code: JVM
+    ".java": "code",
+    ".kt": "code",
+    ".kts": "code",
+    ".scala": "code",
+    ".groovy": "code",
+    ".gradle": "code",
+    # Code: C / C++ / Objective-C
+    ".c": "code",
+    ".h": "code",
+    ".cpp": "code",
+    ".hpp": "code",
+    ".cc": "code",
+    ".cxx": "code",
+    ".m": "code",
+    ".mm": "code",
+    # Code: .NET
+    ".cs": "code",
+    ".fs": "code",
+    ".vb": "code",
+    # Code: Systems / Modern
+    ".go": "code",
+    ".rs": "code",
+    ".swift": "code",
+    ".zig": "code",
+    # Code: Scripting
+    ".rb": "code",
+    ".php": "code",
+    ".pl": "code",
+    ".pm": "code",
+    ".lua": "code",
+    ".r": "code",
+    ".jl": "code",
+    ".ex": "code",
+    ".exs": "code",
+    ".erl": "code",
+    ".clj": "code",
+    ".cljs": "code",
+    # Code: Shell
+    ".sh": "code",
+    ".bash": "code",
+    ".zsh": "code",
+    ".fish": "code",
+    ".ps1": "code",
+    ".bat": "code",
+    ".cmd": "code",
+    # Code: Config as code
+    ".tf": "code",
+    ".hcl": "code",
+    ".proto": "code",
+    ".graphql": "code",
+    ".gql": "code",
+    # Data / Markup
     ".yaml": "yaml",
     ".yml": "yaml",
     ".json": "json",
+    ".json5": "json",
+    ".jsonl": "json",
+    # Code: SQL
+    ".sql": "sql",
+    ".ddl": "sql",
     # Tier 1: binary document formats
     ".pdf": "pdf",
     ".docx": "docx",
+    ".pptx": "pptx",
     ".xlsx": "xlsx",
     # Tier 2: Korean document formats
     ".hwpx": "hwpx",
@@ -48,7 +128,104 @@ _EXTENSION_TYPE_MAP: dict[str, str] = {
 }
 
 # Types that require specialized parsers (not plain read_text)
-_BINARY_TYPES: frozenset[str] = frozenset({"pdf", "docx", "xlsx", "hwpx", "hwp"})
+_BINARY_TYPES: frozenset[str] = frozenset({"pdf", "docx", "pptx", "xlsx", "hwpx", "hwp"})
+
+# Extensions that are always binary — never attempt text detection
+_BINARY_EXTENSIONS: frozenset[str] = frozenset({
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif", ".svg",
+    # Audio / Video
+    ".mp3", ".mp4", ".wav", ".flac", ".ogg", ".avi", ".mov", ".mkv", ".webm",
+    # Archives
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    # Executables / Libraries
+    ".exe", ".dll", ".so", ".dylib", ".o", ".a", ".pyc", ".pyo", ".class", ".wasm",
+    # Fonts
+    ".ttf", ".otf", ".woff", ".woff2",
+    # Other binary
+    ".db", ".sqlite", ".sqlite3", ".bin", ".dat", ".parquet", ".avro",
+    ".DS_Store",
+})
+
+# Max file size for text auto-detection (skip very large unknown files)
+_MAX_TEXT_PROBE_BYTES = 1_048_576  # 1MB
+
+# Encoding probe order for text detection and reading.
+# Covers: macOS/Linux UTF-8, Windows 10/11 Korean (CP949/EUC-KR),
+# Windows Notepad "유니코드" (UTF-16 LE/BE), legacy Latin-1.
+_TEXT_ENCODINGS = ("utf-8", "cp949", "euc-kr", "utf-16", "latin-1")
+
+# BOM signatures for UTF encoding detection
+_BOM_MAP: list[tuple[bytes, str]] = [
+    (b"\xff\xfe", "utf-16-le"),   # Windows "유니코드" (Notepad default)
+    (b"\xfe\xff", "utf-16-be"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),  # Windows "UTF-8" (with BOM)
+]
+
+
+def _detect_encoding(sample: bytes) -> str | None:
+    """Detect text encoding from a byte sample.
+
+    Checks BOM first, then tries common encodings.
+    Returns the encoding name or None if all fail.
+    """
+    # 1. BOM detection (Windows text editors)
+    for bom, enc in _BOM_MAP:
+        if sample.startswith(bom):
+            return enc
+
+    # 2. Try encodings in order
+    for enc in _TEXT_ENCODINGS:
+        try:
+            sample.decode(enc)
+            return enc
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    return None
+
+
+def is_text_file(path: Path) -> bool:
+    """Probe whether a file is text-readable.
+
+    Handles Windows text files (CP949, EUC-KR, UTF-16 LE with BOM)
+    and macOS/Linux UTF-8. Korean encoding is detected without data loss.
+    """
+    if path.suffix.lower() in _BINARY_EXTENSIONS:
+        return False
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size == 0 or size > _MAX_TEXT_PROBE_BYTES:
+        return False
+    try:
+        sample = path.read_bytes()[:8192]
+
+        # UTF-16 files contain null bytes normally — check BOM first
+        for bom, _enc in _BOM_MAP:
+            if sample.startswith(bom):
+                return True
+
+        # For non-BOM files, null bytes indicate binary
+        if b"\x00" in sample:
+            return False
+
+        return _detect_encoding(sample) is not None
+    except OSError:
+        return False
+
+
+def is_indexable(path: Path) -> bool:
+    """Check if a file can be indexed — registered extension OR text auto-detect."""
+    suffix = path.suffix.lower()
+    if suffix in _EXTENSION_TYPE_MAP:
+        return True
+    if suffix in _BINARY_EXTENSIONS:
+        return False
+    if path.name.startswith(".") or path.name.startswith("~$"):
+        return False
+    return is_text_file(path)
 
 
 # --- Individual format parsers ---
@@ -96,6 +273,45 @@ def _parse_docx(path: Path) -> str:
             cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
             if cells:
                 parts.append(" | ".join(cells))
+
+    return "\n\n".join(parts)
+
+
+def _parse_pptx(path: Path) -> str:
+    """Extract text from PPTX using python-pptx.
+
+    Extracts slide titles, body text, table cells, and notes.
+    Each slide is separated by a slide header for chunker context.
+    """
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    parts: list[str] = []
+
+    for slide_num, slide in enumerate(prs.slides, 1):
+        slide_parts: list[str] = []
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        slide_parts.append(text)
+
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        slide_parts.append(" | ".join(cells))
+
+        # Slide notes
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+            if notes:
+                slide_parts.append(f"[Notes] {notes}")
+
+        if slide_parts:
+            parts.append(f"[Slide {slide_num}]\n" + "\n".join(slide_parts))
 
     return "\n\n".join(parts)
 
@@ -179,6 +395,164 @@ def _parse_hwpx_fallback(path: Path) -> str:
     return "\n".join(parts)
 
 
+def _parse_sql(path: Path) -> str:
+    """Extract structured text from SQL files with encoding detection.
+
+    Handles legacy Korean SQL files (EUC-KR, CP949) commonly exported from
+    MS SQL Server Management Studio and Korean database tools.
+
+    Produces a structured output optimized for RAG retrieval:
+      1. Summary header with table/view names
+      2. Column definitions table (name | type | nullable | description)
+      3. Consolidated SQL body (GO statements collapsed)
+    """
+    import re as _re
+
+    raw = path.read_bytes()
+
+    # Encoding detection via shared BOM-aware detector
+    detected = _detect_encoding(raw[:8192])
+    if detected:
+        try:
+            text = raw.decode(detected)
+        except (UnicodeDecodeError, UnicodeError):
+            text = ""
+    else:
+        text = ""
+
+    if not text:
+        for encoding in _TEXT_ENCODINGS:
+            try:
+                text = raw.decode(encoding)
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+    if not text:
+        text = raw.decode("utf-8", errors="replace")
+
+    # --- Extract structured metadata ---
+
+    # Table names
+    tables = _re.findall(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\[?(\w+)\]?\.)?\[?(\w+)\]?",
+        text, _re.IGNORECASE,
+    )
+    # View names
+    views = _re.findall(
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:\[?(\w+)\]?\.)?\[?(\w+)\]?",
+        text, _re.IGNORECASE,
+    )
+    # Index names
+    indexes = _re.findall(
+        r"CREATE\s+(?:UNIQUE\s+)?(?:CLUSTERED\s+)?(?:NONCLUSTERED\s+)?INDEX\s+\[?(\w+)\]?",
+        text, _re.IGNORECASE,
+    )
+
+    # Extended property descriptions: column_name → description
+    # Each EXEC sp_addextendedproperty is a single line/block
+    ext_prop_map: dict[str, str] = {}
+    table_descs: dict[str, str] = {}
+    for m in _re.finditer(
+        r"sp_addextendedproperty\s+.*?@value\s*=\s*N'([^']+)'.*?@level1name\s*=\s*N'([^']+)'(.*?)(?:GO|$)",
+        text, _re.IGNORECASE | _re.DOTALL,
+    ):
+        desc_value = m.group(1)
+        table_name = m.group(2)
+        remainder = m.group(3)
+        col_match = _re.search(r"@level2name\s*=\s*N'([^']+)'", remainder, _re.IGNORECASE)
+        if col_match:
+            ext_prop_map[col_match.group(1)] = desc_value
+        else:
+            table_descs[table_name] = desc_value
+
+    # --- Extract column definitions from CREATE TABLE ---
+    column_sections: list[str] = []
+    for ct_match in _re.finditer(
+        r"CREATE\s+TABLE\s+(?:\[?\w+\]?\.)?\[?(\w+)\]?\s*\(",
+        text, _re.IGNORECASE,
+    ):
+        table_name = ct_match.group(1)
+        # Find matching closing paren using bracket counting
+        start = ct_match.end() - 1  # position of opening '('
+        depth = 0
+        body_end = start
+        for i in range(start, len(text)):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    body_end = i
+                    break
+        body = text[start + 1:body_end]
+
+        # Parse column lines (before CONSTRAINT keyword)
+        col_body = _re.split(r"\bCONSTRAINT\b", body, maxsplit=1, flags=_re.IGNORECASE)[0]
+        columns: list[str] = []
+        for col_match in _re.finditer(
+            r"\[(\w+)\]\s+\[?(\w+)\]?(?:\(([^)]+)\))?\s*(NOT\s+NULL|NULL)?",
+            col_body,
+        ):
+            col_name = col_match.group(1)
+            col_type = col_match.group(2)
+            col_size = f"({col_match.group(3)})" if col_match.group(3) else ""
+            nullable = col_match.group(4) or ""
+            desc = ext_prop_map.get(col_name, "")
+            columns.append(
+                f"  {col_name} | {col_type}{col_size} | {nullable} | {desc}"
+            )
+
+        if columns:
+            table_label = table_name
+            if table_name in table_descs:
+                table_label = f"{table_name} ({table_descs[table_name]})"
+            section = f"[Table: {table_label}]\n"
+            section += "  column | type | nullable | description\n"
+            section += "  " + "-" * 60 + "\n"
+            section += "\n".join(columns)
+            column_sections.append(section)
+
+    # --- Build output ---
+    output_parts: list[str] = []
+
+    # 1. Summary header
+    header_parts: list[str] = []
+    if tables:
+        names = [t[1] if t[1] else t[0] for t in tables]
+        header_parts.append(f"[SQL Tables: {', '.join(names)}]")
+    if views:
+        names = [v[1] if v[1] else v[0] for v in views]
+        header_parts.append(f"[SQL Views: {', '.join(names)}]")
+    if indexes:
+        header_parts.append(f"[SQL Indexes: {', '.join(indexes)}]")
+    if header_parts:
+        output_parts.append("\n".join(header_parts))
+
+    # 2. Column definitions (structured, easy for LLM to parse)
+    if column_sections:
+        output_parts.extend(column_sections)
+
+    # 3. Consolidated SQL body (collapse GO noise and deduplicate metadata)
+    clean_sql = _re.sub(r"\r\n", "\n", text)
+    clean_sql = _re.sub(r"\nGO\s*\n", "\n", clean_sql)
+    # Remove sp_addextendedproperty blocks (already in structured header)
+    clean_sql = _re.sub(
+        r"EXEC\s+sys\.sp_addextendedproperty\b.*?(?=\nEXEC|\nSET|\nCREATE|\Z)",
+        "", clean_sql, flags=_re.IGNORECASE | _re.DOTALL,
+    )
+    # Remove SET noise (ANSI_NULLS, QUOTED_IDENTIFIER, ANSI_PADDING)
+    clean_sql = _re.sub(
+        r"SET\s+(?:ANSI_NULLS|QUOTED_IDENTIFIER|ANSI_PADDING)\s+(?:ON|OFF)\s*\n",
+        "", clean_sql, flags=_re.IGNORECASE,
+    )
+    clean_sql = _re.sub(r"\n{3,}", "\n\n", clean_sql)
+    clean_sql = clean_sql.strip()
+    if clean_sql:
+        output_parts.append(clean_sql)
+
+    return "\n\n".join(output_parts)
+
+
 def _parse_hwp(path: Path) -> str:
     """Extract text from legacy binary HWP using pyhwp (hwp5txt).
 
@@ -210,21 +584,31 @@ def _parse_hwp(path: Path) -> str:
 _PARSER_DISPATCH: dict[str, object] = {
     "pdf": _parse_pdf,
     "docx": _parse_docx,
+    "pptx": _parse_pptx,
     "xlsx": _parse_xlsx,
     "hwpx": _parse_hwpx,
     "hwp": _parse_hwp,
+    "sql": _parse_sql,
 }
+
+# Types that use specialized parsers (binary formats + encoding-sensitive text formats)
+_DISPATCHED_TYPES: frozenset[str] = _BINARY_TYPES | frozenset({"sql"})
 
 
 class DocumentParser:
     """Parses files into raw text for downstream chunking and indexing.
 
-    Routes to specialized parsers for binary formats (PDF, DOCX, XLSX, HWPX, HWP).
+    Routes to specialized parsers for binary formats (PDF, DOCX, XLSX, PPTX, HWPX, HWP).
     Falls back to UTF-8 read_text for text-based formats.
+    Supports text auto-detection for unregistered extensions.
     """
 
     def detect_type(self, path: Path) -> str:
-        """Detect the document type from file extension."""
+        """Detect the document type from file extension.
+
+        Returns the mapped type for known extensions, or "text" for
+        unregistered extensions that pass text auto-detection.
+        """
         suffix = Path(path).suffix.lower()
         return _EXTENSION_TYPE_MAP.get(suffix, "text")
 
@@ -232,7 +616,7 @@ class DocumentParser:
         """Extract text content from a file.
 
         Routes to specialized parsers for binary formats.
-        Falls back to UTF-8 text read for all other formats.
+        Falls back to encoding-aware text read for all other formats.
 
         Raises:
             FileNotFoundError: If the file does not exist.
@@ -243,7 +627,7 @@ class DocumentParser:
 
         doc_type = self.detect_type(p)
 
-        if doc_type in _BINARY_TYPES:
+        if doc_type in _DISPATCHED_TYPES:
             parser_fn = _PARSER_DISPATCH[doc_type]
             try:
                 return parser_fn(p)  # type: ignore[operator]
@@ -251,7 +635,31 @@ class DocumentParser:
                 logger.warning("Parser failed for %s (%s): %s", p, doc_type, e)
                 raise
 
-        return p.read_text(encoding="utf-8")
+        return self._read_text_with_fallback(p)
+
+    def _read_text_with_fallback(self, path: Path) -> str:
+        """Read text with BOM-aware encoding detection.
+
+        Handles Windows 10/11 Korean text files (CP949, EUC-KR),
+        Windows Notepad UTF-16 LE/BE, and UTF-8 with BOM.
+        """
+        raw = path.read_bytes()
+
+        # BOM detection first (most reliable for Windows files)
+        detected = _detect_encoding(raw[:8192])
+        if detected:
+            try:
+                return raw.decode(detected)
+            except (UnicodeDecodeError, UnicodeError):
+                pass
+
+        # Full fallback chain
+        for encoding in _TEXT_ENCODINGS:
+            try:
+                return raw.decode(encoding)
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return raw.decode("utf-8", errors="replace")
 
     def create_record(self, path: Path) -> DocumentRecord:
         """Create a DocumentRecord for a file.

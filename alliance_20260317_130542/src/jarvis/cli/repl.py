@@ -160,7 +160,13 @@ class JarvisREPL:
             # Warning if stale/missing
             warning = ""
             if item.citation.state.needs_warning:
-                warning = f" ⚠ {item.citation.state.value}"
+                state_labels = {
+                    "STALE": "파일 변경됨 — 재인덱싱 필요",
+                    "MISSING": "파일 삭제됨",
+                    "ACCESS_LOST": "접근 불가",
+                }
+                label = state_labels.get(item.citation.state.value, item.citation.state.value)
+                warning = f" ⚠ {label}"
 
             print(f"  - {filename} ({source_type}){warning}")
 

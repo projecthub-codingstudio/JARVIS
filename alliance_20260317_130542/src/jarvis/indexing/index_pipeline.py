@@ -190,3 +190,82 @@ class IndexPipeline:
             return
         self._delete_chunks(existing.document_id)
         self._tombstone.create_tombstone(existing)
+
+    def remove_directory(self, dir_path: Path) -> int:
+        """Remove all documents whose path starts with dir_path.
+
+        Returns the number of documents tombstoned.
+        """
+        prefix = str(dir_path)
+        rows = self._db.execute(
+            "SELECT document_id, path, content_hash, size_bytes, indexing_status"
+            " FROM documents WHERE path LIKE ? AND indexing_status != ?",
+            (prefix + "%", IndexingStatus.TOMBSTONED.value),
+        ).fetchall()
+
+        count = 0
+        for row in rows:
+            doc = DocumentRecord(
+                document_id=row[0], path=row[1], content_hash=row[2],
+                size_bytes=row[3], indexing_status=IndexingStatus(row[4]),
+            )
+            self._delete_chunks(doc.document_id)
+            self._tombstone.create_tombstone(doc)
+            count += 1
+        return count
+
+    def move_file(self, old_path: Path, new_path: Path) -> DocumentRecord | None:
+        """Handle file move/rename: update path in DB, no re-parse needed if hash matches."""
+        existing = self._find_document_by_path(old_path)
+        if existing is None:
+            # Old path not indexed — just index the new path
+            if new_path.exists():
+                return self.index_file(new_path)
+            return None
+
+        if not new_path.exists():
+            # New path gone — treat as delete
+            self._delete_chunks(existing.document_id)
+            self._tombstone.create_tombstone(existing)
+            return None
+
+        # Update path in-place (preserves document_id and chunks)
+        new_record = self._parser.create_record(new_path)
+        if new_record.content_hash == existing.content_hash:
+            # Content unchanged — just update path
+            self._db.execute(
+                "UPDATE documents SET path = ?, updated_at = datetime('now')"
+                " WHERE document_id = ?",
+                (str(new_path), existing.document_id),
+            )
+            self._db.commit()
+            return replace(existing, path=str(new_path))
+
+        # Content changed during move — full reindex at new path
+        return self.reindex_file(new_path)
+
+    def move_directory(self, old_dir: Path, new_dir: Path) -> int:
+        """Handle directory move/rename: update all document paths under old_dir.
+
+        Returns the number of documents updated.
+        """
+        old_prefix = str(old_dir)
+        new_prefix = str(new_dir)
+        rows = self._db.execute(
+            "SELECT document_id, path FROM documents WHERE path LIKE ? AND indexing_status != ?",
+            (old_prefix + "%", IndexingStatus.TOMBSTONED.value),
+        ).fetchall()
+
+        count = 0
+        for doc_id, old_path_str in rows:
+            new_path_str = new_prefix + old_path_str[len(old_prefix):]
+            self._db.execute(
+                "UPDATE documents SET path = ?, updated_at = datetime('now')"
+                " WHERE document_id = ?",
+                (new_path_str, doc_id),
+            )
+            count += 1
+
+        if count:
+            self._db.commit()
+        return count
