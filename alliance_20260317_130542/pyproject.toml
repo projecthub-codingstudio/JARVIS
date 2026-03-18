@@ -16,6 +16,8 @@ dependencies = [
     "pymupdf>=1.24",
     "python-docx>=1.1",
     "python-pptx>=1.0",
+    "sentence-transformers>=3.0",
+    "lancedb>=0.8",
     "openpyxl>=3.1",
     "python-hwpx>=0.1",
     "psutil>=5.9",
@@ -48,7 +50,7 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["mlx.*", "kiwi.*", "pymupdf.*", "docx.*", "pptx.*", "openpyxl.*", "hwpx.*"]
+module = ["mlx.*", "kiwi.*", "pymupdf.*", "docx.*", "pptx.*", "openpyxl.*", "hwpx.*", "sentence_transformers.*", "lancedb.*", "torch.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
