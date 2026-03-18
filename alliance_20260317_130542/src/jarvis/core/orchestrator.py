@@ -10,6 +10,8 @@ Per Spec Section 2.1: the call chain is:
 """
 from __future__ import annotations
 
+import re
+
 from jarvis.contracts import (
     AnswerDraft,
     ConversationTurn,
@@ -121,6 +123,11 @@ class Orchestrator:
         """Access the last AnswerDraft for citation rendering."""
         return getattr(self, "_last_answer", None)
 
+    # Pattern to detect filenames in queries
+    _FILENAME_RE = re.compile(
+        r"([\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx))"
+    )
+
     def _retrieve_evidence(self, query: str) -> VerifiedEvidenceSet:
         fragments = self._query_decomposer.decompose(query)
         if not fragments:
@@ -128,9 +135,81 @@ class Orchestrator:
 
         fts_hits = self._fts_retriever.search(fragments)
         vector_hits = self._vector_retriever.search(fragments)
+
+        # Document-targeted search: if query mentions a filename,
+        # also search within that specific document's chunks
+        targeted_hits = self._targeted_file_search(query, fragments)
+        if targeted_hits:
+            fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in
+                                         {t.chunk_id for t in targeted_hits}]
+
         hybrid_results = self._hybrid_fusion.fuse(fts_hits, vector_hits)
         evidence = self._evidence_builder.build(hybrid_results, fragments)
         return evidence
+
+    def _targeted_file_search(
+        self, query: str, fragments: list[TypedQueryFragment]
+    ) -> list:
+        """Search within a specific document when filename is mentioned in query.
+
+        If the user says "pipeline.py의 함수를 알려줘", this finds pipeline.py
+        in the DB and searches only its chunks, bypassing BM25 noise from
+        large unrelated documents.
+        """
+        filenames = self._FILENAME_RE.findall(query)
+        if not filenames:
+            return []
+
+        # FTSIndex has a _db attribute
+        db = getattr(self._fts_retriever, "_db", None)
+        if db is None:
+            return []
+
+        from jarvis.contracts import SearchHit
+
+        targeted: list[SearchHit] = []
+        for filename in filenames:
+            # Find documents matching this filename
+            rows = db.execute(
+                "SELECT document_id FROM documents"
+                " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
+                (f"%/{filename}",),
+            ).fetchall()
+            if not rows:
+                # Try partial match (filename without path)
+                rows = db.execute(
+                    "SELECT document_id FROM documents"
+                    " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
+                    (f"%{filename}%",),
+                ).fetchall()
+
+            for (doc_id,) in rows:
+                # Get all chunks for this document, scored by keyword match
+                keyword_terms = [
+                    w for f in fragments if f.query_type == "keyword"
+                    for w in f.text.split() if len(w) > 2
+                ]
+
+                chunk_rows = db.execute(
+                    "SELECT chunk_id, document_id, text FROM chunks"
+                    " WHERE document_id = ?",
+                    (doc_id,),
+                ).fetchall()
+
+                for chunk_id, did, text in chunk_rows:
+                    # Score by how many query terms appear in this chunk
+                    matches = sum(1 for t in keyword_terms if t.lower() in text.lower())
+                    if matches > 0:
+                        targeted.append(SearchHit(
+                            chunk_id=chunk_id,
+                            document_id=did,
+                            score=matches * 5.0 + 10.0,  # High base score for targeted results
+                            snippet=text[:200],
+                        ))
+
+        # Sort by score descending, limit to top 5
+        targeted.sort(key=lambda h: h.score, reverse=True)
+        return targeted[:5]
 
     def _generate_answer(
         self,
