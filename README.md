@@ -134,6 +134,10 @@ python -m pytest tests/ -v
 
 [MIT License](LICENSE)
 
+## Release Notes
+
+- [2026-03-19 release notes](RELEASE_NOTES_2026-03-19.md)
+
 ---
 
 <div align="center">
