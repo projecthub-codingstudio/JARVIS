@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_hash    TEXT NOT NULL DEFAULT '',
     lexical_morphs TEXT NOT NULL DEFAULT '',
     heading_path  TEXT NOT NULL DEFAULT '',
+    embedding_ref TEXT DEFAULT NULL,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
