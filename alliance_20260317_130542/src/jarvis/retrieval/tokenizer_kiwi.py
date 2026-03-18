@@ -2,18 +2,27 @@
 
 Wraps the Kiwi tokenizer for Korean text segmentation,
 producing tokens suitable for FTS5 indexing.
+
+Falls back to whitespace tokenization if kiwipiepy is not installed.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 
+logger = logging.getLogger(__name__)
+
 
 class KiwiTokenizer:
-    """Korean morphological tokenizer using Kiwi."""
+    """Korean morphological tokenizer using Kiwi.
+
+    Falls back to whitespace tokenization if kiwipiepy is not installed.
+    """
 
     def __init__(self) -> None:
+        self._kiwi = None
         # Suppress Kiwi's "Quantization is not supported" stderr warning
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -23,6 +32,11 @@ class KiwiTokenizer:
             try:
                 from kiwipiepy import Kiwi
                 self._kiwi = Kiwi()
+            except (ImportError, Exception):
+                logger.warning(
+                    "kiwipiepy not installed — Korean morpheme tokenization disabled"
+                    " (whitespace fallback mode)"
+                )
             finally:
                 os.dup2(_stderr, 2)
                 os.close(_stderr)
@@ -39,9 +53,14 @@ class KiwiTokenizer:
     })
 
     def tokenize(self, text: str) -> list[str]:
-        """Tokenize text, returning all morphemes."""
+        """Tokenize text, returning all morphemes.
+
+        Falls back to whitespace split if kiwipiepy is unavailable.
+        """
         if not text.strip():
             return []
+        if self._kiwi is None:
+            return [w for w in text.split() if w.strip()]
         result = self._kiwi.tokenize(text)
         return [token.form for token in result if token.form.strip()]
 
@@ -50,9 +69,12 @@ class KiwiTokenizer:
 
         Filters out particles, endings, and punctuation for better
         FTS query precision.
+        Falls back to whitespace split if kiwipiepy is unavailable.
         """
         if not text.strip():
             return []
+        if self._kiwi is None:
+            return [w for w in text.split() if w.strip() and len(w) > 1]
         result = self._kiwi.tokenize(text)
         return [
             token.form for token in result
