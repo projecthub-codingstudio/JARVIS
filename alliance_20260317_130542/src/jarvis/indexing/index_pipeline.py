@@ -26,12 +26,14 @@ class IndexPipeline:
         chunker: Chunker,
         tombstone_manager: TombstoneManager,
         embedding_runtime: EmbeddingRuntimeProtocol,
+        vector_index: object | None = None,
     ) -> None:
         self._db = db
         self._parser = parser
         self._chunker = chunker
         self._tombstone = tombstone_manager
         self._embedding_runtime = embedding_runtime
+        self._vector_index = vector_index
 
     def _find_document_by_path(self, path: Path) -> DocumentRecord | None:
         row = self._db.execute(
@@ -132,6 +134,50 @@ class IndexPipeline:
         if updated:
             self._db.commit()
         return updated
+
+    def backfill_embeddings(self, *, batch_size: int = 32) -> int:
+        """Backfill embedding vectors for chunks that don't have them.
+
+        Per Spec Section 11.2: deferred queue, recent files first.
+        Returns the number of chunks processed.
+        """
+        rows = self._db.execute(
+            "SELECT c.chunk_id, c.document_id, c.text FROM chunks c"
+            " JOIN documents d ON c.document_id = d.document_id"
+            " WHERE c.embedding_ref IS NULL"
+            " AND d.indexing_status = 'INDEXED'"
+            " ORDER BY d.updated_at DESC"
+            " LIMIT ?",
+            (batch_size,),
+        ).fetchall()
+
+        if not rows:
+            return 0
+
+        chunk_ids = [r[0] for r in rows]
+        document_ids = [r[1] for r in rows]
+        texts = [r[2][:2000] for r in rows]  # Truncate very long chunks
+
+        # Generate embeddings
+        embeddings = self._embedding_runtime.embed(texts)
+
+        # Check if we got real embeddings (not zero-vectors)
+        if not embeddings or all(v == 0.0 for v in embeddings[0][:10]):
+            return 0  # Stub mode — skip
+
+        # Store in vector index if available
+        if self._vector_index is not None:
+            self._vector_index.add(chunk_ids, document_ids, embeddings)  # type: ignore[union-attr]
+
+        # Update embedding_ref in chunks table
+        for chunk_id in chunk_ids:
+            self._db.execute(
+                "UPDATE chunks SET embedding_ref = ? WHERE chunk_id = ?",
+                ("lance:" + chunk_id, chunk_id),
+            )
+
+        self._db.commit()
+        return len(chunk_ids)
 
     def index_file(self, path: Path) -> DocumentRecord:
         record = self._parser.create_record(path)
