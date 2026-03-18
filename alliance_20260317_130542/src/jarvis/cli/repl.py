@@ -103,6 +103,11 @@ class JarvisREPL:
         """Display response with citations per Spec Task 1.4/1.5."""
         print(f"\n  {response}")
 
+        if answer is not None and answer.verification_warnings:
+            print("\n  ─── 검증 경고 ───")
+            for warning in answer.verification_warnings[:3]:
+                print(f"  - {warning}")
+
         if answer is not None and not answer.evidence.is_empty:
             self._display_citations(answer)
 

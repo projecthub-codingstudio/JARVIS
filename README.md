@@ -69,7 +69,7 @@ alliance_20260317_130542/
 │   ├── retrieval/              # FTS5 search, Kiwi morphological analysis, hybrid search
 │   ├── runtime/                # LLM backends (MLX primary, Ollama fallback)
 │   └── memory/                 # Conversation history (SQLite), task logs
-├── tests/                      # 325 tests (unit, integration, e2e)
+├── tests/                      # 329 tests (unit, integration, e2e)
 └── docs/                       # Design spec documents
 ```
 
@@ -104,7 +104,7 @@ python -m jarvis
 # Run with a different model
 python -m jarvis --model=exaone3.5:7.8b
 
-# Tests (325 passing in project venv)
+# Tests (329 passing in project venv)
 python -m pytest tests/ -v
 ```
 
@@ -215,7 +215,7 @@ alliance_20260317_130542/
 │   ├── retrieval/              # FTS5 검색, Kiwi 형태소 분석, 하이브리드 검색
 │   ├── runtime/                # LLM 백엔드 (MLX primary, Ollama fallback)
 │   └── memory/                 # 대화 기록 (SQLite), 태스크 로그
-├── tests/                      # 325개 테스트 (unit, integration, e2e)
+├── tests/                      # 329개 테스트 (unit, integration, e2e)
 └── docs/                       # 설계 스펙 문서
 ```
 
@@ -250,7 +250,7 @@ python -m jarvis
 # 다른 모델로 실행
 python -m jarvis --model=exaone3.5:7.8b
 
-# 테스트 (프로젝트 venv 기준 325개 통과)
+# 테스트 (프로젝트 venv 기준 329개 통과)
 python -m pytest tests/ -v
 ```
 
