@@ -230,6 +230,7 @@ class ChunkRecord:
     chunk_hash: str = ""
     lexical_morphs: str = ""
     heading_path: str = ""
+    embedding_ref: str | None = None
 
 
 # --- Runtime Models (Spec Section 3.2) ---
