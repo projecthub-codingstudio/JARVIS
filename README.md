@@ -21,7 +21,7 @@ JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It 
 
 | Component | Technology |
 |-----------|-----------|
-| LLM | Qwen3-30B-A3B (Ollama) / MLX (Apple Silicon native) |
+| LLM | Qwen3-14B (default) / MLX or Ollama fallback |
 | Query Planner | EXAONE-3.5-7.8B (fast intent analysis) |
 | Retrieval | SQLite FTS5 + Kiwi morphological analyzer |
 | Parsers | PyMuPDF, python-docx, openpyxl, python-hwpx, pyhwp |
@@ -69,7 +69,7 @@ alliance_20260317_130542/
 │   ├── retrieval/              # FTS5 search, Kiwi morphological analysis, hybrid search
 │   ├── runtime/                # LLM backends (MLX primary, Ollama fallback)
 │   └── memory/                 # Conversation history (SQLite), task logs
-├── tests/                      # 318 tests (unit, integration, e2e)
+├── tests/                      # 320 tests (unit, integration, e2e)
 └── docs/                       # Design spec documents
 ```
 
@@ -104,7 +104,7 @@ python -m jarvis
 # Run with a different model
 python -m jarvis --model=exaone3.5:7.8b
 
-# Tests (318 passing in project venv)
+# Tests (320 passing in project venv)
 python -m pytest tests/ -v
 ```
 
@@ -165,7 +165,7 @@ JARVIS는 MacBook Pro M1 Max (64GB) 위에서 완전히 로컬로 동작하는 A
 
 | 구성 요소 | 기술 |
 |-----------|------|
-| LLM | Qwen3-30B-A3B (Ollama) / MLX (Apple Silicon 네이티브) |
+| LLM | Qwen3-14B 기본 / MLX 또는 Ollama fallback |
 | 쿼리 플래너 | EXAONE-3.5-7.8B (빠른 의도 분석) |
 | 검색 | SQLite FTS5 + Kiwi 형태소 분석기 |
 | 파서 | PyMuPDF, python-docx, openpyxl, python-hwpx, pyhwp |
@@ -213,7 +213,7 @@ alliance_20260317_130542/
 │   ├── retrieval/              # FTS5 검색, Kiwi 형태소 분석, 하이브리드 검색
 │   ├── runtime/                # LLM 백엔드 (MLX primary, Ollama fallback)
 │   └── memory/                 # 대화 기록 (SQLite), 태스크 로그
-├── tests/                      # 318개 테스트 (unit, integration, e2e)
+├── tests/                      # 320개 테스트 (unit, integration, e2e)
 └── docs/                       # 설계 스펙 문서
 ```
 
@@ -248,7 +248,7 @@ python -m jarvis
 # 다른 모델로 실행
 python -m jarvis --model=exaone3.5:7.8b
 
-# 테스트 (프로젝트 venv 기준 318개 통과)
+# 테스트 (프로젝트 venv 기준 320개 통과)
 python -m pytest tests/ -v
 ```
 
@@ -266,8 +266,8 @@ python -m pytest tests/ -v
 - [x] 토큰 기반 청킹 (500 토큰 / 80 오버랩, heading-aware)
 - [x] 형태소 분석 비동기 배치 처리
 - [x] 벡터 검색 (LanceDB 임베딩)
-- [ ] 음성 인터페이스 (STT/TTS 파일 모드 + PTT 1회 구현, 메뉴바/연속 루프 미완)
-- [ ] macOS 메뉴바 앱 (SwiftUI 셸 + Python JSON 브리지 구현, 승인 패널/live loop 남음)
+- [ ] 음성 인터페이스 (STT/TTS 파일 모드 + PTT 1회 + 메뉴바 live loop 구현, 추가 백그라운드 polish 남음)
+- [ ] macOS 메뉴바 앱 (SwiftUI 셸 + 장기 실행 Python 브리지 + 승인 패널 + live voice loop + health status 구현)
 
 ## 사용 도구
 
