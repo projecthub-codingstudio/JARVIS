@@ -122,8 +122,8 @@ python -m pytest tests/ -v
 - [x] Token-based chunking (500 tokens / 80 overlap, heading-aware)
 - [x] Async batch morphological analysis
 - [x] Vector search (LanceDB embeddings)
-- [ ] Voice interface (STT/TTS file mode + PTT once + menu bar live loop implemented, continuous background mode pending)
-- [ ] macOS menu bar app (SwiftUI shell + long-running Python bridge + approval panel + live voice loop + health status implemented)
+- [x] Voice interface (STT/TTS file mode + PTT once + menu bar live loop implemented; background polish and hardening remain)
+- [x] macOS menu bar app (SwiftUI shell + long-running Python bridge + approval panel + live voice loop + health status implemented; production hardening remains)
 
 ## Built With
 
@@ -270,8 +270,8 @@ python -m pytest tests/ -v
 - [x] 토큰 기반 청킹 (500 토큰 / 80 오버랩, heading-aware)
 - [x] 형태소 분석 비동기 배치 처리
 - [x] 벡터 검색 (LanceDB 임베딩)
-- [ ] 음성 인터페이스 (STT/TTS 파일 모드 + PTT 1회 + 메뉴바 live loop 구현, 추가 백그라운드 polish 남음)
-- [ ] macOS 메뉴바 앱 (SwiftUI 셸 + 장기 실행 Python 브리지 + 승인 패널 + live voice loop + health status 구현)
+- [x] 음성 인터페이스 (STT/TTS 파일 모드 + PTT 1회 + 메뉴바 live loop 구현; 백그라운드 polish와 안정화 작업 일부 남음)
+- [x] macOS 메뉴바 앱 (SwiftUI 셸 + 장기 실행 Python 브리지 + 승인 패널 + live voice loop + health status 구현; 운영 안정화 작업 일부 남음)
 
 ## 사용 도구
 
