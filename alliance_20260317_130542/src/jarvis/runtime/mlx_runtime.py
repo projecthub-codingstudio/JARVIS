@@ -11,6 +11,7 @@ evidence context for the LLM.
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 from jarvis.contracts import (
     AnswerDraft,
@@ -19,6 +20,9 @@ from jarvis.contracts import (
     VerifiedEvidenceSet,
 )
 
+if TYPE_CHECKING:
+    from jarvis.contracts import ConversationTurn
+
 # Approximate token count: 1 Korean char ≈ 1 token, 1 English word ≈ 1 token
 # Conservative estimate: 4 chars per token average (mixed Korean/English)
 _CHARS_PER_TOKEN = 4
@@ -26,6 +30,10 @@ _CHARS_PER_TOKEN = 4
 # Default context budget per Spec: 8K context window, reserve ~2K for system+answer
 _MAX_CONTEXT_TOKENS = 4096
 _MAX_CONTEXT_CHARS = _MAX_CONTEXT_TOKENS * _CHARS_PER_TOKEN
+
+# Conversation history budget: ~800 tokens for 3 turns (Korean-heavy)
+_MAX_HISTORY_TOKENS = 800
+_MAX_HISTORY_CHARS = _MAX_HISTORY_TOKENS * _CHARS_PER_TOKEN
 
 
 def _estimate_tokens(text: str) -> int:
@@ -79,8 +87,41 @@ class MLXRuntime:
 
         return "\n".join(context_parts)
 
-    def generate(self, prompt: str, evidence: VerifiedEvidenceSet) -> AnswerDraft:
-        """Generate a grounded answer from evidence.
+    def _assemble_history(self, recent_turns: list[ConversationTurn] | None) -> str:
+        """Assemble recent conversation turns into a history string.
+
+        Sliding window: includes up to 3 recent turns, capped at
+        _MAX_HISTORY_CHARS to preserve token budget for evidence.
+        """
+        if not recent_turns:
+            return ""
+
+        parts: list[str] = []
+        total_chars = 0
+
+        for turn in recent_turns:
+            user_part = f"사용자: {turn.user_input}"
+            assistant_part = f"JARVIS: {turn.assistant_output or ''}"
+            # Truncate long assistant responses
+            if len(assistant_part) > 200:
+                assistant_part = assistant_part[:200] + "..."
+            entry = f"{user_part}\n{assistant_part}"
+
+            if total_chars + len(entry) > _MAX_HISTORY_CHARS:
+                break
+            parts.append(entry)
+            total_chars += len(entry)
+
+        return "\n".join(parts)
+
+    def generate(
+        self,
+        prompt: str,
+        evidence: VerifiedEvidenceSet,
+        *,
+        recent_turns: list[ConversationTurn] | None = None,
+    ) -> AnswerDraft:
+        """Generate a grounded answer from evidence with conversation history.
 
         If a real backend is connected, delegates to it.
         Otherwise falls back to stub behavior.
@@ -94,6 +135,11 @@ class MLXRuntime:
 
         # Assemble evidence with token budget enforcement
         context = self._assemble_context(evidence)
+
+        # Assemble conversation history (sliding window, 3 turns)
+        history = self._assemble_history(recent_turns)
+        if history:
+            context = f"[이전 대화]\n{history}\n\n[참고 증거]\n{context}"
 
         # Real backend path
         if self._backend is not None:
