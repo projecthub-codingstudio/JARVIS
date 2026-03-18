@@ -6,6 +6,7 @@ the FTS and vector indexes.
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from jarvis.contracts import ChunkRecord, DocumentRecord, EmbeddingRuntimeProtoc
 from jarvis.indexing.chunker import Chunker
 from jarvis.indexing.parsers import DocumentParser
 from jarvis.indexing.tombstone import TombstoneManager
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 
 class IndexPipeline:
@@ -27,6 +29,7 @@ class IndexPipeline:
         tombstone_manager: TombstoneManager,
         embedding_runtime: EmbeddingRuntimeProtocol,
         vector_index: object | None = None,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         self._db = db
         self._parser = parser
@@ -34,6 +37,7 @@ class IndexPipeline:
         self._tombstone = tombstone_manager
         self._embedding_runtime = embedding_runtime
         self._vector_index = vector_index
+        self._metrics = metrics
 
     def _find_document_by_path(self, path: Path) -> DocumentRecord | None:
         row = self._db.execute(
@@ -180,6 +184,7 @@ class IndexPipeline:
         return len(chunk_ids)
 
     def index_file(self, path: Path) -> DocumentRecord:
+        started_at = time.time()
         record = self._parser.create_record(path)
 
         # Check if already indexed with same hash
@@ -208,9 +213,18 @@ class IndexPipeline:
         self._write_document(record)
         self._db.commit()
 
+        if self._metrics is not None:
+            lag_ms = max(0.0, (started_at - path.stat().st_mtime) * 1000)
+            self._metrics.record(
+                MetricName.INDEX_LAG_MS,
+                lag_ms,
+                tags={"path": str(path)},
+            )
+
         return record
 
     def reindex_file(self, path: Path) -> DocumentRecord:
+        started_at = time.time()
         record = self._parser.create_record(path)
 
         existing = self._find_document_by_path(path)
@@ -233,6 +247,14 @@ class IndexPipeline:
         record = replace(record, indexing_status=IndexingStatus.INDEXED)
         self._write_document(record)
         self._db.commit()
+
+        if self._metrics is not None:
+            lag_ms = max(0.0, (started_at - path.stat().st_mtime) * 1000)
+            self._metrics.record(
+                MetricName.INDEX_LAG_MS,
+                lag_ms,
+                tags={"path": str(path)},
+            )
 
         return record
 

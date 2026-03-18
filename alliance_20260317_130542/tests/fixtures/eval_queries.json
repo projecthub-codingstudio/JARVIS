@@ -1,0 +1,354 @@
+{
+  "queries": [
+    {
+      "id": "q001",
+      "text": "TaskFlow 프로젝트에서 사용하는 데이터베이스는 무엇인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc", "sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q002",
+      "text": "스프린트 주기는 어떻게 설정되어 있나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q003",
+      "text": "칸반 보드에서 작업 우선순위 종류는 무엇인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q004",
+      "text": "배포 파이프라인 단계를 설명해주세요",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q005",
+      "text": "API 응답 시간 성능 요구사항은 어떻게 되나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q006",
+      "text": "검색 엔진으로 무엇을 사용하며 한국어를 지원하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc", "sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q007",
+      "text": "파일 첨부 최대 용량은 얼마인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q008",
+      "text": "동시 접속자 수 제한은 몇 명인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q009",
+      "text": "Kafka 소비자 그룹 ID 기본값은 무엇인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "mixed"
+    },
+    {
+      "id": "q010",
+      "text": "IP 주소 익명화는 어떤 방식으로 처리하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "mixed"
+    },
+    {
+      "id": "q011",
+      "text": "로그 변환 시 타임스탬프 형식은 무엇으로 통일하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "mixed"
+    },
+    {
+      "id": "q012",
+      "text": "데이터 웨어하우스 적재 시 실패하면 몇 회 재시도하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q013",
+      "text": "소비 지연 경고 기준은 몇 분인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q014",
+      "text": "파이프라인 적재 처리량 최소 기준은 초당 몇 건인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q015",
+      "text": "TaskFlow의 아키텍처 설계 원칙은 무엇인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q016",
+      "text": "ArgoCD는 어떤 용도로 사용되나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q017",
+      "text": "배치 소비 기본 크기와 최대 대기 시간은?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "mixed"
+    },
+    {
+      "id": "q018",
+      "text": "가용성 목표 SLA는 얼마인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q019",
+      "text": "데이터 보존 기간은 몇 년인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q020",
+      "text": "번다운 차트는 어떤 기능에 포함되나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_korean_doc"],
+      "category": "factual"
+    },
+    {
+      "id": "q021",
+      "text": "What does the anonymize_ip function do?",
+      "language": "en",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "code"
+    },
+    {
+      "id": "q022",
+      "text": "How does the TaskScheduler determine execution order?",
+      "language": "en",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q023",
+      "text": "What is the maximum number of concurrent tasks in the scheduler?",
+      "language": "en",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q024",
+      "text": "How does the TypeScript client handle rate limiting (HTTP 429)?",
+      "language": "en",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q025",
+      "text": "What API version does the TaskFlowClient use?",
+      "language": "en",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q026",
+      "text": "cancel_task 메서드는 어떻게 동작하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q027",
+      "text": "Priority 열거형의 값들을 알려주세요",
+      "language": "ko",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q028",
+      "text": "ScheduledTask 데이터 클래스의 필드를 설명해주세요",
+      "language": "ko",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q029",
+      "text": "작업 실패 시 재시도 로직은 어떻게 구현되어 있나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q030",
+      "text": "TaskFlowClient의 retry 전략과 backoff 방식은?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q031",
+      "text": "listTasks 메서드에서 pagination은 어떻게 처리하나요?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q032",
+      "text": "Task 인터페이스의 status 필드에 허용되는 값은?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q033",
+      "text": "consume_batch 함수의 파라미터와 동작 방식",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "code"
+    },
+    {
+      "id": "q034",
+      "text": "transform_log_entry에서 level 필드 정규화 규칙은?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "code"
+    },
+    {
+      "id": "q035",
+      "text": "load_to_warehouse 함수의 반환값은 무엇인가요?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "code"
+    },
+    {
+      "id": "q036",
+      "text": "Redis 캐시 TTL 설정값은 얼마인가요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q037",
+      "text": "데이터베이스 커넥션 풀 크기는 어떻게 설정되어 있나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q038",
+      "text": "Datadog APM 샘플링 비율은?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q039",
+      "text": "앱 서버의 워커 수와 포트 번호는?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q040",
+      "text": "Sentry traces_sample_rate 설정값은 얼마인가요?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q041",
+      "text": "How do I install the tfctl CLI tool?",
+      "language": "en",
+      "expected_doc_ids": ["sample_readme"],
+      "category": "factual"
+    },
+    {
+      "id": "q042",
+      "text": "How do I export tasks to CSV using tfctl?",
+      "language": "en",
+      "expected_doc_ids": ["sample_readme"],
+      "category": "factual"
+    },
+    {
+      "id": "q043",
+      "text": "What environment variables does tfctl need?",
+      "language": "en",
+      "expected_doc_ids": ["sample_readme"],
+      "category": "factual"
+    },
+    {
+      "id": "q044",
+      "text": "Where does tfctl store its configuration file?",
+      "language": "en",
+      "expected_doc_ids": ["sample_readme"],
+      "category": "factual"
+    },
+    {
+      "id": "q045",
+      "text": "What Python version is required for tfctl?",
+      "language": "en",
+      "expected_doc_ids": ["sample_readme"],
+      "category": "factual"
+    },
+    {
+      "id": "q046",
+      "text": "getSprintVelocity API는 어떤 데이터를 반환하나요?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    },
+    {
+      "id": "q047",
+      "text": "스케줄러에서 add_task의 delay 파라미터 역할은?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_python"],
+      "category": "code"
+    },
+    {
+      "id": "q048",
+      "text": "exactly-once 처리를 어떻게 보장하나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_mixed_doc"],
+      "category": "mixed"
+    },
+    {
+      "id": "q049",
+      "text": "SSL 데이터베이스 연결 설정은 어떻게 되어 있나요?",
+      "language": "ko",
+      "expected_doc_ids": ["sample_config"],
+      "category": "factual"
+    },
+    {
+      "id": "q050",
+      "text": "updateTaskStatus에서 PATCH 요청 경로와 body 구조는?",
+      "language": "mixed",
+      "expected_doc_ids": ["sample_typescript"],
+      "category": "code"
+    }
+  ]
+}

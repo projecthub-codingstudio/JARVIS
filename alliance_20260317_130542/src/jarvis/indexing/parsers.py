@@ -528,6 +528,14 @@ def _parse_sql(path: Path) -> str:
     if header_parts:
         output_parts.append("\n".join(header_parts))
 
+    if table_descs or ext_prop_map:
+        description_parts: list[str] = []
+        for table_name, desc in sorted(table_descs.items()):
+            description_parts.append(f"{table_name}: {desc}")
+        for column_name, desc in sorted(ext_prop_map.items()):
+            description_parts.append(f"{column_name}: {desc}")
+        output_parts.append(f"[Descriptions: {'; '.join(description_parts)}]")
+
     # 2. Column definitions (structured, easy for LLM to parse)
     if column_sections:
         output_parts.extend(column_sections)

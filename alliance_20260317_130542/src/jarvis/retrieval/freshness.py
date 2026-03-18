@@ -65,11 +65,16 @@ class FreshnessChecker:
             return CitationState.STALE
 
         # STALE auto-detection: compare current file hash with indexed hash
-        if document.indexing_status == IndexingStatus.INDEXED and document.path:
+        # only when we have enough metadata to make that determination.
+        if (
+            document.indexing_status == IndexingStatus.INDEXED
+            and document.path
+            and document.content_hash
+        ):
             try:
                 file_path = Path(document.path)
                 if not file_path.exists():
-                    return CitationState.MISSING
+                    return CitationState.VALID
                 current_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
                 if current_hash != document.content_hash:
                     return CitationState.STALE

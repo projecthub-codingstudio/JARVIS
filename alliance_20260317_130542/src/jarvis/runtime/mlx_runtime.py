@@ -19,6 +19,7 @@ from jarvis.contracts import (
     LLMGeneratorProtocol,
     VerifiedEvidenceSet,
 )
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 if TYPE_CHECKING:
     from jarvis.contracts import ConversationTurn
@@ -55,10 +56,12 @@ class MLXRuntime:
         backend: LLMBackendProtocol | None = None,
         model_id: str = "default-14b-q4",
         max_context_chars: int = _MAX_CONTEXT_CHARS,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         self._backend = backend
         self._model_id = model_id
         self._max_context_chars = max_context_chars
+        self._metrics = metrics
 
     def _assemble_context(self, evidence: VerifiedEvidenceSet) -> str:
         """Assemble evidence into context string, respecting token budget.
@@ -146,6 +149,12 @@ class MLXRuntime:
             t0 = time.perf_counter()
             response_text = self._backend.generate(prompt, context, "read_only")
             elapsed_ms = (time.perf_counter() - t0) * 1000
+            if self._metrics is not None:
+                self._metrics.record(
+                    MetricName.TTFT_MS,
+                    elapsed_ms,
+                    tags={"stage": "generation"},
+                )
 
             return AnswerDraft(
                 content=response_text,

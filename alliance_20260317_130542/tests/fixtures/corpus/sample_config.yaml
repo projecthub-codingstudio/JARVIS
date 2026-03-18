@@ -1,0 +1,39 @@
+# TaskFlow 배포 설정
+# 환경: production
+
+app:
+  name: taskflow
+  version: 2.1.0
+  port: 8080
+  workers: 4
+  log_level: info
+
+database:
+  host: db.taskflow.internal
+  port: 5432
+  name: taskflow_prod
+  pool_size: 20
+  max_overflow: 10
+  ssl_mode: require
+
+redis:
+  host: cache.taskflow.internal
+  port: 6379
+  db: 0
+  ttl_seconds: 3600
+
+search:
+  engine: meilisearch
+  host: search.taskflow.internal
+  port: 7700
+  index_name: tasks
+  korean_tokenizer: enabled
+
+monitoring:
+  datadog:
+    enabled: true
+    apm_sample_rate: 0.1
+  sentry:
+    enabled: true
+    traces_sample_rate: 0.05
+    environment: production

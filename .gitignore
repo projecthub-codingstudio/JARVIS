@@ -17,6 +17,8 @@ env/
 # IDE
 .idea/
 .vscode/
+.claude/
+alliance_20260317_130542/.claude/
 *.swp
 *.swo
 *~
