@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -31,6 +32,7 @@ from jarvis.contracts import (
     VerifiedEvidenceSet,
 )
 from jarvis.retrieval.freshness import FreshnessChecker
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 
 # Patterns for extracting specific identifiers from queries
@@ -45,15 +47,22 @@ _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
 class EvidenceBuilder:
     """Builds VerifiedEvidenceSet from hybrid search results."""
 
-    def __init__(self, *, db: sqlite3.Connection | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        db: sqlite3.Connection | None = None,
+        metrics: MetricsCollector | None = None,
+    ) -> None:
         self._db = db
         self._freshness = FreshnessChecker()
+        self._metrics = metrics
 
     def build(
         self,
         results: Sequence[HybridSearchResult],
         fragments: Sequence[TypedQueryFragment],
     ) -> VerifiedEvidenceSet:
+        started_at = time.perf_counter()
         if not results:
             return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
 
@@ -135,9 +144,35 @@ class EvidenceBuilder:
         # Re-sort by boosted score (boosts may reorder results)
         items.sort(key=lambda x: x.relevance_score, reverse=True)
 
-        return VerifiedEvidenceSet(
+        evidence = VerifiedEvidenceSet(
             items=tuple(items), query_fragments=tuple(fragments)
         )
+        if self._metrics is not None:
+            total = len(evidence.items)
+            missing = sum(1 for item in evidence.items if item.citation.state == CitationState.MISSING)
+            stale = sum(1 for item in evidence.items if item.citation.state == CitationState.STALE)
+            self._metrics.record(
+                MetricName.RETRIEVAL_TOP5_HIT,
+                1.0 if total > 0 else 0.0,
+                unit="ratio",
+                tags={"top_k": str(min(5, total))},
+            )
+            self._metrics.record(
+                MetricName.CITATION_MISSING_RATE,
+                (missing / total) if total else 0.0,
+                unit="ratio",
+            )
+            self._metrics.record(
+                MetricName.CITATION_STALE_RATE,
+                (stale / total) if total else 0.0,
+                unit="ratio",
+            )
+            self._metrics.record(
+                MetricName.TRUST_RECOVERY_TIME_MS,
+                (time.perf_counter() - started_at) * 1000,
+                tags={"items": str(total)},
+            )
+        return evidence
 
     def _stub_build(
         self,

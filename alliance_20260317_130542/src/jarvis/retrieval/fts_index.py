@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from typing import Sequence
 
 from jarvis.contracts import SearchHit, TypedQueryFragment
+from jarvis.observability.metrics import MetricName, MetricsCollector
 from jarvis.retrieval.tokenizer_kiwi import KiwiTokenizer
 
 logger = logging.getLogger(__name__)
@@ -33,8 +35,14 @@ class FTSIndex:
     per Spec Task 0.4.
     """
 
-    def __init__(self, *, db: sqlite3.Connection | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        db: sqlite3.Connection | None = None,
+        metrics: MetricsCollector | None = None,
+    ) -> None:
         self._db = db
+        self._metrics = metrics
 
     def search(
         self, fragments: Sequence[TypedQueryFragment], top_k: int = 20
@@ -75,6 +83,7 @@ class FTSIndex:
         )
         logger.debug("FTS query: %s", fts_query)
 
+        started_at = time.perf_counter()
         try:
             rows = self._db.execute(
                 "SELECT c.chunk_id, c.document_id, c.text, c.byte_start, c.byte_end,"
@@ -86,7 +95,9 @@ class FTSIndex:
                 " LIMIT ?",
                 (fts_query, top_k),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if self._metrics is not None and "locked" in str(exc).lower():
+                self._metrics.increment(MetricName.SQLITE_LOCK_COUNT)
             return []
 
         hits: list[SearchHit] = []
@@ -99,6 +110,14 @@ class FTSIndex:
                 byte_range=(row[3], row[4]),
                 line_range=(row[5], row[6]),
             ))
+
+        if self._metrics is not None:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                elapsed_ms,
+                tags={"stage": "fts_search", "result_count": str(len(hits))},
+            )
         return hits
 
     def _stub_search(self) -> list[SearchHit]:

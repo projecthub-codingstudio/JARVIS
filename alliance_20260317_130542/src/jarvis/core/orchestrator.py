@@ -11,6 +11,7 @@ Per Spec Section 2.1: the call chain is:
 from __future__ import annotations
 
 import re
+import time
 
 from jarvis.contracts import (
     AnswerDraft,
@@ -30,6 +31,8 @@ from jarvis.contracts import (
     VectorRetrieverProtocol,
     VerifiedEvidenceSet,
 )
+from jarvis.core.error_monitor import ErrorMonitor
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 
 class Orchestrator:
@@ -53,6 +56,8 @@ class Orchestrator:
         conversation_store: ConversationStoreProtocol,
         task_log_store: TaskLogStoreProtocol,
         planner: object | None = None,
+        metrics: MetricsCollector | None = None,
+        error_monitor: ErrorMonitor | None = None,
     ) -> None:
         self._governor = governor
         self._query_decomposer = query_decomposer
@@ -65,8 +70,11 @@ class Orchestrator:
         self._conversation_store = conversation_store
         self._task_log_store = task_log_store
         self._planner = planner
+        self._metrics = metrics
+        self._error_monitor = error_monitor
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
+        started_at = time.perf_counter()
         turn = ConversationTurn(user_input=user_input)
 
         # 1. Governor pre-check
@@ -101,13 +109,49 @@ class Orchestrator:
             self._task_log_store.log_entry(TaskLogEntry(
                 turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
             ))
+            if self._metrics is not None:
+                self._metrics.record(
+                    MetricName.QUERY_LATENCY_MS,
+                    (time.perf_counter() - started_at) * 1000,
+                    tags={"has_evidence": "false"},
+                )
             return turn
 
-        # 6. Generate answer with conversation history (sliding window, 3 turns)
+        # 6. Safe mode: search-only response, no generation
+        if self._error_monitor is not None and (
+            self._error_monitor.safe_mode_active() or self._error_monitor.generation_blocked
+        ):
+            turn.assistant_output = self._build_safe_mode_response(
+                evidence,
+                degraded_only=not self._error_monitor.safe_mode_active(),
+            )
+            turn.has_evidence = True
+            self._last_answer = AnswerDraft(
+                content=turn.assistant_output,
+                evidence=evidence,
+                model_id="safe_mode" if self._error_monitor.safe_mode_active() else "degraded",
+            )
+            self._conversation_store.save_turn(turn)
+            self._task_log_store.log_entry(TaskLogEntry(
+                turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
+                metadata={"mode": "safe_mode"},
+            ))
+            if self._metrics is not None:
+                self._metrics.record(
+                    MetricName.QUERY_LATENCY_MS,
+                    (time.perf_counter() - started_at) * 1000,
+                    tags={
+                        "has_evidence": "true",
+                        "mode": "safe_mode" if self._error_monitor.safe_mode_active() else "degraded",
+                    },
+                )
+            return turn
+
+        # 7. Generate answer with conversation history (sliding window, 3 turns)
         recent_turns = self._conversation_store.get_recent_turns(limit=3)
         answer = self._generate_answer(user_input, evidence, recent_turns)
 
-        # 7. Persist
+        # 8. Persist
         turn.assistant_output = answer.content
         turn.has_evidence = True
         self._last_answer = answer
@@ -115,6 +159,12 @@ class Orchestrator:
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
+        if self._metrics is not None:
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                (time.perf_counter() - started_at) * 1000,
+                tags={"has_evidence": "true"},
+            )
 
         return turn
 
@@ -218,3 +268,26 @@ class Orchestrator:
         recent_turns: list[ConversationTurn] | None = None,
     ) -> AnswerDraft:
         return self._llm_generator.generate(prompt, evidence, recent_turns=recent_turns)
+
+    def _build_safe_mode_response(
+        self,
+        evidence: VerifiedEvidenceSet,
+        *,
+        degraded_only: bool = False,
+    ) -> str:
+        """Return a search-only response while safe mode or degraded mode is active."""
+        if degraded_only:
+            lines = [
+                "현재 시스템이 degraded 상태입니다. 생성 기능을 일시 제한하고 검색 결과만 제공합니다.",
+            ]
+        else:
+            lines = [
+                "안전 모드입니다. 생성 기능을 일시 비활성화하고 검색 결과만 제공합니다.",
+            ]
+        for item in evidence.items[:3]:
+            source = item.source_path or item.document_id
+            snippet = item.text.strip().replace("\n", " ")
+            if len(snippet) > 140:
+                snippet = snippet[:140] + "..."
+            lines.append(f"{item.citation.label} {source}: {snippet}")
+        return "\n".join(lines)

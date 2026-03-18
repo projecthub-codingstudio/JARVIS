@@ -11,347 +11,104 @@ Backend selection per Spec Section 1.1:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
-from jarvis.app.bootstrap import bootstrap
+from jarvis.app.runtime_context import build_runtime_context, shutdown_runtime_context
 from jarvis.cli.repl import JarvisREPL
-from jarvis.contracts import RuntimeDecision
-from jarvis.core.governor import Governor, GovernorStub
-from jarvis.core.orchestrator import Orchestrator
-from jarvis.core.tool_registry import ToolRegistry
-from jarvis.memory.conversation_store import ConversationStore
-from jarvis.memory.task_log import TaskLogStore
-from jarvis.retrieval.evidence_builder import EvidenceBuilder
-from jarvis.retrieval.fts_index import FTSIndex
-from jarvis.retrieval.hybrid_search import HybridSearch
-from jarvis.retrieval.query_decomposer import QueryDecomposer
-from jarvis.retrieval.vector_index import VectorIndex
-from jarvis.runtime.mlx_runtime import MLXRuntime
+from jarvis.cli.voice_session import VoiceSession
+from jarvis.observability.logging import configure_logging
+from jarvis.runtime.audio_recorder import AudioRecorder
+from jarvis.runtime.stt_runtime import WhisperCppSTT
+from jarvis.runtime.tts_runtime import LocalTTSRuntime
 
 logger = logging.getLogger(__name__)
 
-# Default knowledge base path
-_DEFAULT_KB_PATH = Path("/Users/codingstudio/__PROJECTHUB__/JARVIS/knowledge_base")
-
-def _is_indexable(path: Path) -> bool:
-    """Check if a file can be indexed (registered extension or text auto-detect)."""
-    from jarvis.indexing.parsers import is_indexable
-    return is_indexable(path)
-
-
-def _has_indexed_data(db: object) -> bool:
-    """Check if the database has any indexed documents."""
-    try:
-        row = db.execute("SELECT COUNT(*) FROM chunks").fetchone()  # type: ignore[union-attr]
-        return row[0] > 0  # type: ignore[index]
-    except Exception:
-        return False
-
-
-def _create_pipeline(db: object, vector_index: object | None = None) -> object:
-    """Create the indexing pipeline instance."""
-    from jarvis.indexing.chunker import Chunker
-    from jarvis.indexing.index_pipeline import IndexPipeline
-    from jarvis.indexing.parsers import DocumentParser
-    from jarvis.indexing.tombstone import TombstoneManager
-    from jarvis.runtime.embedding_runtime import EmbeddingRuntime
-
-    return IndexPipeline(
-        db=db,  # type: ignore[arg-type]
-        parser=DocumentParser(),
-        chunker=Chunker(),
-        tombstone_manager=TombstoneManager(db=db),  # type: ignore[arg-type]
-        embedding_runtime=EmbeddingRuntime(),
-        vector_index=vector_index,
-    )
-
-
-def _run_indexing(db: object, kb_path: Path) -> tuple[int, object]:
-    """Index files in knowledge_base directory. Returns (chunk_count, pipeline).
-
-    Per Spec Task 1.1: metadata first (synchronous), morphemes later
-    (background batch via deferred queue).
-    """
-    pipeline = _create_pipeline(db)
-
-    # Clean up stale documents (files moved/deleted since last run)
-    stale_rows = db.execute(  # type: ignore[union-attr]
-        "SELECT document_id, path FROM documents WHERE indexing_status = 'INDEXED'"
-    ).fetchall()
-    stale_count = 0
-    for doc_id, doc_path in stale_rows:
-        if not Path(doc_path).exists():
-            db.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))  # type: ignore[union-attr]
-            db.execute(  # type: ignore[union-attr]
-                "UPDATE documents SET indexing_status = 'TOMBSTONED' WHERE document_id = ?",
-                (doc_id,),
-            )
-            stale_count += 1
-    if stale_count:
-        db.commit()  # type: ignore[union-attr]
-        print(f"   Cleaned up {stale_count} stale documents")
-
-    files = [f for f in kb_path.rglob("*")
-             if f.is_file() and _is_indexable(f)]
-
-    for f in files:
-        try:
-            pipeline.index_file(f)  # type: ignore[union-attr]
-        except Exception as e:
-            print(f"   ⚠ Index failed: {f.name} ({e})")
-            logger.warning("Index failed for %s: %s", f.name, e)
-
-    total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]  # type: ignore[union-attr]
-
-    # Start background morpheme backfill (Spec Task 1.1: deferred queue)
-    import threading
-
-    def _backfill_morphemes() -> None:
-        """Background batch morpheme analysis."""
-        from jarvis.app.bootstrap import init_database
-        from jarvis.app.config import JarvisConfig
-        bg_db = init_database(JarvisConfig())
-        bg_pipeline = _create_pipeline(bg_db)
-        total_updated = 0
-        while True:
-            updated = bg_pipeline.backfill_morphemes(batch_size=50)  # type: ignore[union-attr]
-            total_updated += updated
-            if updated == 0:
-                break
-        if total_updated > 0:
-            print(f"   [morphemes] {total_updated} chunks 형태소 분석 완료")
-        bg_db.close()  # type: ignore[union-attr]
-
-    thread = threading.Thread(target=_backfill_morphemes, daemon=True)
-    thread.start()
-
-    def _backfill_embeddings() -> None:
-        """Background batch embedding generation."""
-        from jarvis.app.bootstrap import init_database
-        from jarvis.app.config import JarvisConfig
-        from jarvis.retrieval.vector_index import VectorIndex as VI
-        bg_db = init_database(JarvisConfig())
-        # Import the shared embedding_runtime from outer scope would be ideal,
-        # but the function runs in a daemon thread. Create a new EmbeddingRuntime
-        # that will share the same model once loaded.
-        from jarvis.runtime.embedding_runtime import EmbeddingRuntime as EmbRT2
-        bg_emb_rt = EmbRT2()
-        bg_vi = VI(embedding_runtime=bg_emb_rt)
-        bg_pipeline = _create_pipeline(bg_db, vector_index=bg_vi)
-        total_updated = 0
-        while True:
-            updated = bg_pipeline.backfill_embeddings(batch_size=32)  # type: ignore[union-attr]
-            total_updated += updated
-            if updated == 0:
-                break
-        if total_updated > 0:
-            print(f"   [embeddings] {total_updated} chunks 임베딩 생성 완료")
-        bg_emb_rt.unload_model()
-        bg_db.close()  # type: ignore[union-attr]
-
-    embed_thread = threading.Thread(target=_backfill_embeddings, daemon=True)
-    embed_thread.start()
-
-    return total, pipeline
-
-
-def _start_file_watcher(db: object, kb_path: Path) -> object:
-    """Start FileWatcher for real-time indexing per Spec Task 1.2.
-
-    Watches knowledge_base/ for file changes (create/modify/delete)
-    and feeds them into the IndexPipeline.
-
-    Uses a dedicated SQLite connection for the watcher thread
-    since SQLite connections cannot cross thread boundaries.
-    """
-    import sqlite3
-    import threading
-
-    from jarvis.app.config import JarvisConfig
-    from jarvis.app.bootstrap import init_database
-    from jarvis.indexing.file_watcher import FileWatcher
-
-    # Create a dedicated DB connection for the watcher thread
-    config = JarvisConfig()
-    watcher_db: sqlite3.Connection | None = None
-    watcher_pipeline: object = None
-    db_lock = threading.Lock()
-
-    def _ensure_thread_db() -> None:
-        nonlocal watcher_db, watcher_pipeline
-        if watcher_db is None:
-            watcher_db = init_database(config)
-            watcher_pipeline = _create_pipeline(watcher_db)
-
-    def on_change(path: Path, event_type: str, dest_path: Path | None = None) -> None:
-        # Skip temp files
-        if path.name.startswith("~$") or path.name.startswith("."):
-            return
-
-        with db_lock:
-            _ensure_thread_db()
-            try:
-                if event_type == "dir_deleted":
-                    count = watcher_pipeline.remove_directory(path)  # type: ignore[union-attr]
-                    if count:
-                        print(f"\n   [indexer] dir removed: {path.name}/ ({count} files)")
-
-                elif event_type == "dir_moved" and dest_path is not None:
-                    count = watcher_pipeline.move_directory(path, dest_path)  # type: ignore[union-attr]
-                    if count:
-                        print(f"\n   [indexer] dir moved: {path.name}/ → {dest_path.name}/ ({count} files)")
-
-                elif event_type == "moved" and dest_path is not None:
-                    watcher_pipeline.move_file(path, dest_path)  # type: ignore[union-attr]
-                    print(f"\n   [indexer] moved: {path.name} → {dest_path.name}")
-
-                elif event_type == "deleted":
-                    # Deleted files can't be probed — remove by path directly
-                    watcher_pipeline.remove_file(path)  # type: ignore[union-attr]
-                    print(f"\n   [indexer] removed: {path.name}")
-
-                elif event_type in ("created", "modified"):
-                    if not _is_indexable(path):
-                        return
-                    watcher_pipeline.reindex_file(path)  # type: ignore[union-attr]
-                    print(f"\n   [indexer] indexed: {path.name}")
-
-            except Exception as e:
-                print(f"\n   ⚠ [indexer] {event_type} failed: {path.name} ({e})")
-                logger.warning("Watch event failed for %s: %s", path.name, e)
-
-    watcher = FileWatcher(watched_folders=[kb_path], on_change=on_change)
-    watcher.start()
-    return watcher
-
-
-def _create_llm_backend(decision: RuntimeDecision) -> MLXRuntime:
-    """Create LLM runtime with MLX primary, Ollama fallback.
-
-    Per Spec Section 1.1:
-      - Default inference backend: MLX
-      - Compatibility backend: llama.cpp
-    """
-    # --- Try MLX primary ---
-    if decision.backend == "mlx":
-        try:
-            from jarvis.runtime.mlx_backend import MLXBackend
-            backend = MLXBackend()
-            backend.load(decision)
-            print(f"   Backend: MLX ({backend.model_id})")
-            return MLXRuntime(backend=backend, model_id=decision.model_id)
-        except Exception as e:
-            logger.warning("MLX backend failed: %s — falling back to Ollama", e)
-
-    # --- Fallback to Ollama (llama.cpp) ---
-    try:
-        from jarvis.runtime.llamacpp_backend import LlamaCppBackend
-        backend = LlamaCppBackend()
-        fallback_decision = RuntimeDecision(
-            tier=decision.tier,
-            backend="llamacpp",
-            model_id=decision.model_id,
-            context_window=decision.context_window,
-            reasoning_enabled=decision.reasoning_enabled,
-        )
-        backend.load(fallback_decision)
-        print(f"   Backend: Ollama ({backend.model_id})")
-        return MLXRuntime(backend=backend, model_id=decision.model_id)
-    except Exception as e:
-        logger.warning("Ollama backend failed: %s — falling back to stub", e)
-
-    # --- Stub fallback ---
-    print("   Backend: stub (no LLM available)")
-    return MLXRuntime(model_id="stub")
-
 
 def main() -> None:
-    logging.basicConfig(
+    configure_logging(
         level=logging.ERROR,
-        format="%(levelname)s %(name)s: %(message)s",
+        json_logs=os.getenv("JARVIS_LOG_FORMAT", "").lower() == "json",
     )
-
-    result = bootstrap()
 
     # Model selection — default: qwen3:14b (14B-class per tech spec)
     model_id = "qwen3:14b"
+    voice_file: Path | None = None
+    voice_output: Path | None = None
+    voice_ptt = False
     if len(sys.argv) > 1 and sys.argv[1].startswith("--model="):
         model_id = sys.argv[1].split("=", 1)[1]
+    for arg in sys.argv[1:]:
+        if arg.startswith("--voice-file="):
+            voice_file = Path(arg.split("=", 1)[1]).expanduser()
+        elif arg.startswith("--voice-output="):
+            voice_output = Path(arg.split("=", 1)[1]).expanduser()
+        elif arg == "--voice-ptt":
+            voice_ptt = True
 
     print(f"\n🤖 JARVIS v0.1.0")
     print(f"   LLM: {model_id} (MLX primary → Ollama fallback)")
-
-    # Index knowledge base if available
-    watcher = None
-    if _DEFAULT_KB_PATH.exists():
-        chunk_count, pipeline = _run_indexing(result.db, _DEFAULT_KB_PATH)
-        print(f"   Knowledge base: {_DEFAULT_KB_PATH.name}/ ({chunk_count} chunks)")
-        # Start real-time file watcher (Spec Task 1.2)
-        watcher = _start_file_watcher(result.db, _DEFAULT_KB_PATH)
-        print("   File watcher: active (실시간 인덱싱)")
-    else:
-        print(f"   Knowledge base: not found ({_DEFAULT_KB_PATH})")
-
-    # Retrieval DB
-    has_data = _has_indexed_data(result.db)
-    retrieval_db = result.db if has_data else None
-    if not has_data:
-        print("   Retrieval: stub mode (인덱싱된 데이터 없음)")
-
-    # Governor: real system state sampling per Spec Task 0.2
-    governor = Governor()
-    gov_state = governor.sample()
+    context = build_runtime_context(
+        model_id=model_id,
+        reporter=print,
+        start_watcher_enabled=True,
+    )
+    gov_state = context.governor.sample()
     print(f"   System: mem={gov_state.memory_pressure_pct:.0f}%, "
           f"swap={gov_state.swap_used_mb}MB, "
           f"thermal={gov_state.thermal_state}, "
           f"battery={gov_state.battery_pct}%")
-
-    decision = governor.select_runtime(requested_tier="balanced")
-    # Override model_id if user specified or governor returned empty
-    if model_id != decision.model_id or not decision.model_id:
-        decision = RuntimeDecision(
-            tier=decision.tier,
-            backend=decision.backend,
-            model_id=model_id,
-            context_window=decision.context_window,
-            reasoning_enabled=decision.reasoning_enabled,
-        )
-
-    llm_generator = _create_llm_backend(decision)
-
-    # Planner: AI-based intent classification per Spec Section 2.1
-    # Uses fast model (exaone) for quick query analysis
-    from jarvis.core.planner import Planner
-    planner = Planner(model_id="exaone3.5:7.8b")
-
-    # Vector index for semantic search (Spec Section 5, 9)
-    from jarvis.runtime.embedding_runtime import EmbeddingRuntime as EmbRT
-    embedding_runtime = EmbRT()
-    vector_index = VectorIndex(embedding_runtime=embedding_runtime)
-    vector_available = vector_index._check_available()
+    if context.knowledge_base_path is not None:
+        print(f"   Knowledge base: {context.knowledge_base_path.name}/ ({context.chunk_count} chunks)")
+        if context.watcher is not None:
+            print("   File watcher: active (실시간 인덱싱)")
+    else:
+        print("   Retrieval: stub mode (인덱싱된 데이터 없음)")
+    vector_available = context.vector_index._check_available()
     print(f"   Vector search: {'active' if vector_available else 'disabled (FTS only)'}")
 
-    orchestrator = Orchestrator(
-        governor=governor,
-        query_decomposer=QueryDecomposer(),
-        fts_retriever=FTSIndex(db=retrieval_db),
-        vector_retriever=vector_index,
-        hybrid_fusion=HybridSearch(),
-        evidence_builder=EvidenceBuilder(db=retrieval_db),
-        llm_generator=llm_generator,
-        tool_registry=ToolRegistry(),
-        conversation_store=ConversationStore(db=result.db),
-        task_log_store=TaskLogStore(db=result.db),
-        planner=planner,
-    )
-
-    repl = JarvisREPL(orchestrator)
     try:
+        if voice_file is not None or voice_ptt:
+            stt_runtime = WhisperCppSTT(
+                model_path=(
+                    Path(os.getenv("JARVIS_STT_MODEL", "")).expanduser()
+                    if os.getenv("JARVIS_STT_MODEL")
+                    else None
+                ),
+                model_router=context.model_router,
+            )
+            tts_runtime = LocalTTSRuntime(
+                voice=os.getenv("JARVIS_TTS_VOICE", "Sora"),
+                model_router=context.model_router,
+            )
+            recorder = AudioRecorder(duration_seconds=int(os.getenv("JARVIS_PTT_SECONDS", "8")))
+            session = VoiceSession(
+                orchestrator=context.orchestrator,
+                stt_runtime=stt_runtime,
+                tts_runtime=tts_runtime,
+                recorder=recorder,
+            )
+            if voice_ptt:
+                print("\n🎙 push-to-talk once: recording...")
+                turn = session.record_and_handle_once()
+            elif voice_output is not None and voice_file is not None:
+                turn, generated_audio = session.handle_audio_file_with_tts(
+                    voice_file,
+                    output_path=voice_output,
+                )
+                print(f"\n🔊 tts_output: {generated_audio}")
+            else:
+                assert voice_file is not None
+                turn = session.handle_audio_file(voice_file)
+            print(f"\n🎙 transcript: {turn.user_input}")
+            print(f"  {turn.assistant_output}")
+            return
+
+        repl = JarvisREPL(context.orchestrator)
         repl.start()
     finally:
-        if watcher is not None:
-            watcher.stop()  # type: ignore[union-attr]
+        shutdown_runtime_context(context)
 
 
 if __name__ == "__main__":

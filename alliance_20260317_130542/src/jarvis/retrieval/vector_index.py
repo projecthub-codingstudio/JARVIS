@@ -9,10 +9,12 @@ Falls back to empty results if lancedb is not installed.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Sequence
 
 from jarvis.contracts import TypedQueryFragment, VectorHit, VectorRetrieverProtocol
+from jarvis.observability.metrics import MetricName, MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,12 @@ class VectorIndex:
         db_path: Path | None = None,
         embedding_runtime: object | None = None,
         table_name: str = _DEFAULT_TABLE,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         self._db_path = db_path or _DEFAULT_DB_PATH
         self._embedding_runtime = embedding_runtime
         self._table_name = table_name
+        self._metrics = metrics
         self._db: object | None = None
         self._available: bool | None = None
 
@@ -146,6 +150,8 @@ class VectorIndex:
         if not query_text:
             return []
 
+        started_at = time.perf_counter()
+
         # Embed query
         try:
             query_vectors = self._embedding_runtime.embed([query_text])  # type: ignore[union-attr]
@@ -178,4 +184,11 @@ class VectorIndex:
                 embedding_distance=distance,
             ))
 
+        if self._metrics is not None:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                elapsed_ms,
+                tags={"stage": "vector_search", "result_count": str(len(hits))},
+            )
         return hits
