@@ -12,8 +12,8 @@
 
 ## Validation Result
 
-- Full suite: `328 passed, 7 skipped`
-- Skip count is expected for optional parser dependency scenarios in this environment
+- Full suite: `335 passed`
+- Validation baseline uses the project `.venv` environment
 
 ## Remaining Before Tag / Archive
 

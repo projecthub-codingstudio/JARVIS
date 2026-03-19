@@ -36,5 +36,5 @@
 
 ## Validation Snapshot
 
-- `pytest -q alliance_20260317_130542/tests`
-- Result at Beta 1 cut: `328 passed, 7 skipped`
+- `alliance_20260317_130542/.venv/bin/python -m pytest -q alliance_20260317_130542/tests`
+- Result at Beta 1 cut: `335 passed`

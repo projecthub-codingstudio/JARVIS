@@ -20,7 +20,8 @@ Local-first workspace AI agent for Apple Silicon.
 
 ## Validation
 
-- Full test suite: `328 passed, 7 skipped`
+- Full test suite: `335 passed`
+- Recommended command: `alliance_20260317_130542/.venv/bin/python -m pytest -q alliance_20260317_130542/tests`
 - Optional parser dependency tests now skip when the local environment does not have the library installed
 
 ## Docs
