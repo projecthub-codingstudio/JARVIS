@@ -6,16 +6,25 @@ Default inference backend. Sequential model loading enforced.
 
 from __future__ import annotations
 
+import functools
+import json
 import logging
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
 
 logger = logging.getLogger(__name__)
+_MLX_PROBE_CACHE = Path("/tmp/jarvis_mlx_probe_status.json")
+_MLX_PROBE_TTL_SECONDS = 60 * 60
 
 # Model ID mapping: short alias -> HuggingFace repo
 _MODEL_ALIASES: dict[str, str] = {
+    "qwen3:14b": "mlx-community/Qwen3-14B-4bit",
     "qwen3-14b": "mlx-community/Qwen3-14B-4bit",
+    "exaone3.5:7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
     "exaone-deep-7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
 }
 
@@ -23,6 +32,61 @@ _MODEL_ALIASES: dict[str, str] = {
 def _resolve_model_id(model_id: str) -> str:
     """Resolve short alias to full HuggingFace repo path."""
     return _MODEL_ALIASES.get(model_id, model_id)
+
+
+@functools.lru_cache(maxsize=1)
+def mlx_import_probe() -> tuple[bool, str]:
+    """Check whether mlx_lm can be imported safely in a subprocess."""
+    cached = _read_probe_cache()
+    if cached is not None:
+        return cached
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import mlx_lm"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode == 0:
+        _write_probe_cache(True, "")
+        return True, ""
+    stderr = (result.stderr or result.stdout).strip()
+    detail = stderr[:240]
+    _write_probe_cache(False, detail)
+    return False, detail
+
+
+def _read_probe_cache() -> tuple[bool, str] | None:
+    try:
+        if not _MLX_PROBE_CACHE.exists():
+            return None
+        payload = json.loads(_MLX_PROBE_CACHE.read_text(encoding="utf-8"))
+        timestamp = float(payload.get("timestamp", 0))
+        if time.time() - timestamp > _MLX_PROBE_TTL_SECONDS:
+            return None
+        ok = bool(payload.get("ok", False))
+        if ok:
+            return None
+        return ok, str(payload.get("detail", ""))
+    except Exception:
+        return None
+
+
+def _write_probe_cache(ok: bool, detail: str) -> None:
+    if ok:
+        return
+    try:
+        _MLX_PROBE_CACHE.write_text(
+            json.dumps({
+                "ok": ok,
+                "detail": detail,
+                "timestamp": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 class MLXBackend:
@@ -110,6 +174,7 @@ class MLXBackend:
             raise RuntimeError("No model loaded. Call load() first.")
 
         from mlx_lm import generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
 
         system_message = (
             "당신은 JARVIS입니다. 사용자의 로컬 워크스페이스 AI 어시스턴트입니다. "
@@ -131,14 +196,20 @@ class MLXBackend:
             messages, add_generation_prompt=True
         )
 
+        sampler = make_sampler(
+            0.7,
+            0.9,
+            0.0,
+            1,
+        )
+
         t0 = time.perf_counter()
         response = mlx_generate(
             self._model,
             self._tokenizer,
             prompt=formatted_prompt,
             max_tokens=512,
-            temp=0.7,
-            top_p=0.9,
+            sampler=sampler,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000
 

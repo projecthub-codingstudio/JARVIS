@@ -36,6 +36,7 @@ def main() -> None:
     model_id = "qwen3:14b"
     voice_file: Path | None = None
     voice_output: Path | None = None
+    voice_device: str | None = os.getenv("JARVIS_PTT_DEVICE")
     voice_ptt = False
     if len(sys.argv) > 1 and sys.argv[1].startswith("--model="):
         model_id = sys.argv[1].split("=", 1)[1]
@@ -44,6 +45,8 @@ def main() -> None:
             voice_file = Path(arg.split("=", 1)[1]).expanduser()
         elif arg.startswith("--voice-output="):
             voice_output = Path(arg.split("=", 1)[1]).expanduser()
+        elif arg.startswith("--voice-device="):
+            voice_device = arg.split("=", 1)[1]
         elif arg == "--voice-ptt":
             voice_ptt = True
 
@@ -82,7 +85,10 @@ def main() -> None:
                 voice=os.getenv("JARVIS_TTS_VOICE", "Sora"),
                 model_router=context.model_router,
             )
-            recorder = AudioRecorder(duration_seconds=int(os.getenv("JARVIS_PTT_SECONDS", "8")))
+            recorder = AudioRecorder(
+                input_device=voice_device,
+                duration_seconds=int(os.getenv("JARVIS_PTT_SECONDS", "8")),
+            )
             session = VoiceSession(
                 orchestrator=context.orchestrator,
                 stt_runtime=stt_runtime,
@@ -91,6 +97,8 @@ def main() -> None:
             )
             if voice_ptt:
                 print("\n🎙 push-to-talk once: recording...")
+                if voice_device:
+                    print(f"   Input device: {voice_device}")
                 turn = session.record_and_handle_once()
             elif voice_output is not None and voice_file is not None:
                 turn, generated_audio = session.handle_audio_file_with_tts(

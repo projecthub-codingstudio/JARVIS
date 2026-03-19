@@ -58,12 +58,14 @@ class MLXRuntime:
         model_id: str = "default-14b-q4",
         max_context_chars: int = _MAX_CONTEXT_CHARS,
         metrics: MetricsCollector | None = None,
+        status_detail: str = "",
     ) -> None:
         self._backend = backend
         self._model_id = model_id
         self._max_context_chars = max_context_chars
         self._metrics = metrics
         self._citation_verifier = CitationVerifier()
+        self._status_detail = status_detail
 
     def _assemble_context(self, evidence: VerifiedEvidenceSet) -> str:
         """Assemble evidence into context string, respecting token budget.
@@ -91,6 +93,20 @@ class MLXRuntime:
             total_chars += len(part)
 
         return "\n".join(context_parts)
+
+    @property
+    def model_id(self) -> str:
+        """Expose the active backend model id for observability."""
+        if self._backend is not None and hasattr(self._backend, "model_id"):
+            return str(getattr(self._backend, "model_id"))
+        return self._model_id
+
+    @property
+    def status_detail(self) -> str:
+        """Return the backend/runtime detail for observability."""
+        if self._backend is not None and hasattr(self._backend, "status_detail"):
+            return str(getattr(self._backend, "status_detail"))
+        return self._status_detail
 
     def _assemble_history(self, recent_turns: list[ConversationTurn] | None) -> str:
         """Assemble recent conversation turns into a history string.

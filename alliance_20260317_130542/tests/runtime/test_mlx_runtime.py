@@ -29,6 +29,11 @@ def _evidence_set() -> VerifiedEvidenceSet:
 
 
 class TestMLXRuntime:
+    def test_exposes_backend_model_id_for_health_checks(self) -> None:
+        runtime = MLXRuntime(backend=_Backend(), model_id="stub")
+
+        assert runtime.model_id == "stub-backend"
+
     def test_generate_records_verification_warnings(self) -> None:
         runtime = MLXRuntime(backend=_Backend())
 
