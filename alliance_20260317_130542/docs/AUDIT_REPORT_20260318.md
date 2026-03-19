@@ -11,6 +11,8 @@
 이 보고서는 `TASK-E93DF600.md`, `TASK-9A8DC5D5.md`, 그리고 구현 이후 추가된
 `docs/superpowers/specs/`, `docs/superpowers/plans/` 문서를 기준으로 다시 대조했다.
 
+현재 기준선은 `JARVIS 0.1.0-beta1`이며, 본 보고서는 `Beta 1 기능 완료 + 후속 UI/voice 개선 분리` 상태를 반영한다.
+
 - 아키텍처 핵심 요구(하이브리드 검색, 승인형 내보내기, Governor, 최신성, 메뉴바 브리지)는 대부분 구현됐다.
 - 부분 구현으로 남는 축은 `ModelRouter의 Governor 결합 심화`, `정교한 claim-level 인용 검증`, `관측성 심화`, `운영 하드닝`이다.
 - 명세와 구현의 차이는 주로 `타입/이름 계약`, `Reranker/MeCab-ko의 명시적 유보`, `90% coverage 기준 미도달`에 남아 있다.
@@ -82,6 +84,7 @@
 | Runtime: 임베딩 엔진 | ✅ | `runtime/embedding_runtime.py` | BGE-M3 임베딩 구현 |
 | Runtime: Reranker | ❌ | — | 명시적 유보 |
 | Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
+| Observability: Health | ✅ | `observability/health.py` | 9개 체크 (core 4 + runtime 5: model/embedding/vector_db/watcher/governor) |
 | Observability: Tracing | 🔧 | `observability/tracing.py` | 경량 in-memory tracer 구현, 외부 export/전면 연동은 미완 |
 | Tools: ReadFile | ✅ | `tools/read_file.py` | 허용된 루트 내 텍스트 파일 읽기 구현 |
 | Tools: DraftExport | ✅ | `tools/draft_export.py` | 승인 게이트 연동 후 실제 export 수행 |
@@ -99,7 +102,7 @@
 | 7 | LLM 답변 생성 | ✅ | 한국어 시스템 프롬프트 |
 | 8 | 인용 검증 | 🔧 | 보수적 문장 수준 근거 정렬 경고 구현, 정교한 claim-level 검증은 미완 |
 | 9 | 답변 + 인용 렌더링 | ✅ | 파일명, 유형, 경고, 인용문 |
-| 10 | 메트릭 + task_log 기록 | 🔧 | task_log 기록 및 주요 latency 메트릭 연동, 전체 이벤트 전면 계측은 미완 |
+| 10 | 메트릭 + task_log 기록 | ✅ | task_log 기록 + 11개 메트릭 전체 emit 확인 |
 
 ### Section 9: 모델 전략
 
@@ -268,9 +271,11 @@
 
 | 항목 | 명세 위치 | 현재 상태 |
 |------|-----------|-----------|
-| retrieval_top5_hit, citation_stale_rate 등 5개 메트릭 | Sec 12 | 🔧 계약 정렬 + 일부 emit 구현 |
-| 구조화된 JSON 로깅 | Sec 12 | 🔧 기본 포맷터 추가 |
-| Health check 확장 | Sec 12 | 🔧 database/metrics/watched_folders/export_dir 점검 |
+| 11개 메트릭 전체 emit | Sec 12 | ✅ 전체 emit 경로 확인 (query_latency, ttft, retrieval_top5_hit, citation_missing/stale_rate, trust_recovery, index_lag, swap, model_load_failure, sqlite_lock, draft_export_approval) |
+| 구조화된 JSON 로깅 | Sec 12 | ✅ JsonLogFormatter 구현 |
+| Health check 확장 | Sec 12 | ✅ core(db/metrics/folders/export) + runtime(model/embedding/vector_db/watcher/governor) 9개 체크 |
+| 선택적 의존성 graceful degradation | Sec 11 | ✅ pymupdf/openpyxl/python-docx/python-pptx/hwpx/hwp5txt 미설치 시 로깅 후 건너뜀 |
+| 마이크 권한 사전 점검 | Sec 10 | ✅ check_microphone_access() TCC pre-flight |
 | Tool 실행 (read_file, search_files, draft_export) | Sec 8.2, 10 | ✅ |
 | 50-query 벤치마크 하네스 | Sec 16 | ✅ `perf/benchmark.py`, `tests/perf/test_benchmark.py` |
 
@@ -289,13 +294,23 @@
 
 ```
 Phase 0 ██████████████████████ 100%  (핵심 하네스 포함)
-Phase 1 ██████████████████████ 100%  (Phase 1 핵심 운영 항목 구현)
-Phase 2 ████████████████░░░░░ 80%  (STT/TTS 파일 모드 + 메뉴바 셸/브리지 + 승인 패널 + live voice loop + health status 구현)
+Phase 1 ██████████████████████ 100%  (핵심 운영 항목 + 관측성/안전 완성)
+Phase 2 █████████████████░░░░ 85%   (STT/TTS + 메뉴바 + voice + health 9점검 + 마이크 권한 + 의존성 fallback)
 ```
 
 ---
 
-## 6. 오늘 (2026-03-18) 세션에서 수정된 항목
+## 6. 2026-03-19 오전 세션에서 수정된 항목
+
+| 수정 항목 | 파일 | 내용 |
+|-----------|------|------|
+| 선택적 의존성 fallback | `parsers.py` | pymupdf/openpyxl/python-docx/python-pptx/hwpx ImportError 가드 + hwp5txt 사전 체크 |
+| Health check 확장 | `health.py` | model/embedding/vector_db/file_watcher/governor 5개 runtime 체크 추가, core/runtime 분리 |
+| 마이크 권한 사전 점검 | `audio_recorder.py` | check_microphone_access() TCC pre-flight (macOS afrecord probe) |
+| Voice session polish | `voice_session.py` | 마이크 권한 체크 연동, VAD Phase 2 deferral 문서화 |
+| 테스트 보강 | `test_observability.py`, `test_audio_recorder.py` | health runtime 테스트 3개 + mic check 테스트 3개 추가 (334 passed) |
+
+## 7. 2026-03-18 세션에서 수정된 항목
 
 | 수정 항목 | 파일 | 내용 |
 |-----------|------|------|

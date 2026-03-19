@@ -277,11 +277,17 @@ def _export_draft(
 
 
 def _health_payload(*, context: object) -> dict[str, object]:
-    status = check_health({
+    health_deps = {
         "db": context.bootstrap_result.db,
         "metrics": context.bootstrap_result.metrics,
         "config": context.bootstrap_result.config,
-    })
+        "llm_generator": context.orchestrator._llm_generator,
+        "embedding_runtime": context.vector_index._embedding_runtime,
+        "vector_index": context.vector_index,
+        "file_watcher": context.watcher,
+        "governor": context.governor,
+    }
+    status = check_health(health_deps)
     checks = dict(status.checks)
     details = dict(status.details)
     checks["knowledge_base"] = context.knowledge_base_path is not None
@@ -292,7 +298,11 @@ def _health_payload(*, context: object) -> dict[str, object]:
     checks["vector_search"] = vector_available
     details["vector_search"] = "active" if vector_available else "FTS-only mode"
 
-    failed_checks = [name for name, ok in checks.items() if not ok]
+    failed_checks = list(status.failed_checks)
+    if not checks["knowledge_base"]:
+        failed_checks.append("knowledge_base")
+    if not checks["vector_search"]:
+        failed_checks.append("vector_search")
     return {
         "healthy": status.healthy,
         "message": status.message,

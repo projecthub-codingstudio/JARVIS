@@ -47,7 +47,7 @@ def main() -> None:
         elif arg == "--voice-ptt":
             voice_ptt = True
 
-    print(f"\n🤖 JARVIS v0.1.0")
+    print("\n🤖 JARVIS v0.1.0-beta1")
     print(f"   LLM: {model_id} (MLX primary → Ollama fallback)")
     context = build_runtime_context(
         model_id=model_id,
