@@ -1,13 +1,57 @@
-"""Local audio recording helpers for push-to-talk voice mode."""
+"""Local audio recording helpers for push-to-talk voice mode.
+
+VAD (Voice Activity Detection) is deferred to Phase 2.
+Current approach: fixed-duration recording via afrecord/rec.
+Phase 2 will integrate Silero VAD for silence-aware recording.
+"""
 
 from __future__ import annotations
 
+import logging
+import platform
 import shutil
 import subprocess
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_RECORD_SECONDS = 8
 _DEFAULT_SAMPLE_RATE = 16000
+
+
+def check_microphone_access() -> bool:
+    """Pre-flight check for microphone access on macOS.
+
+    Uses a short afrecord probe to verify TCC microphone permission.
+    Returns True if recording is likely to succeed, False otherwise.
+    On non-macOS systems, always returns True (no TCC).
+    """
+    import platform
+
+    if platform.system() != "Darwin":
+        return True
+
+    afrecord = shutil.which("afrecord")
+    if afrecord is None:
+        # No afrecord — can't pre-check, assume OK and let record_once handle it
+        return True
+
+    try:
+        result = subprocess.run(
+            [afrecord, "-f", "WAVE", "-d", "0.1", "/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.lower()
+            if "permission" in stderr or "denied" in stderr or "tcc" in stderr:
+                logger.warning("Microphone access denied — check System Settings > Privacy > Microphone")
+                return False
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        return True
 
 
 class AudioRecorder:
@@ -25,7 +69,10 @@ class AudioRecorder:
         self._sample_rate_hz = sample_rate_hz
 
     def record_once(self, output_path: Path) -> Path:
-        """Record a single utterance to a WAV file."""
+        """Record a single utterance to a WAV file.
+
+        Raises RuntimeError if no recorder binary is found or recording fails.
+        """
         output = output_path.expanduser().resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
 

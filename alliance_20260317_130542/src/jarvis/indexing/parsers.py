@@ -236,8 +236,13 @@ def _parse_pdf(path: Path) -> str:
 
     Limits to first 500KB of text to avoid excessive chunking
     on very large PDFs (e.g. 16MB C# reference = 2.8M chars).
+    Returns empty string if pymupdf is not installed (graceful degradation).
     """
-    import pymupdf
+    try:
+        import pymupdf
+    except ImportError:
+        logger.warning("pymupdf not installed — skipping PDF: %s", path.name)
+        return ""
 
     _MAX_TEXT_CHARS = 500_000  # ~250K tokens, more than enough for RAG
 
@@ -256,8 +261,15 @@ def _parse_pdf(path: Path) -> str:
 
 
 def _parse_docx(path: Path) -> str:
-    """Extract text from DOCX using python-docx."""
-    from docx import Document
+    """Extract text from DOCX using python-docx.
+
+    Returns empty string if python-docx is not installed (graceful degradation).
+    """
+    try:
+        from docx import Document
+    except ImportError:
+        logger.warning("python-docx not installed — skipping DOCX: %s", path.name)
+        return ""
 
     doc = Document(str(path))
     parts: list[str] = []
@@ -282,8 +294,13 @@ def _parse_pptx(path: Path) -> str:
 
     Extracts slide titles, body text, table cells, and notes.
     Each slide is separated by a slide header for chunker context.
+    Returns empty string if python-pptx is not installed (graceful degradation).
     """
-    from pptx import Presentation
+    try:
+        from pptx import Presentation
+    except ImportError:
+        logger.warning("python-pptx not installed — skipping PPTX: %s", path.name)
+        return ""
 
     prs = Presentation(str(path))
     parts: list[str] = []
@@ -322,8 +339,13 @@ def _parse_xlsx(path: Path) -> str:
     Each row becomes a separate paragraph (\\n\\n separated)
     so the Chunker can split at row boundaries.
     Header row is prepended to each data row for context.
+    Returns empty string if openpyxl is not installed (graceful degradation).
     """
-    from openpyxl import load_workbook
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        logger.warning("openpyxl not installed — skipping XLSX: %s", path.name)
+        return ""
 
     wb = load_workbook(str(path), read_only=True, data_only=True)
     parts: list[str] = []
@@ -565,8 +587,14 @@ def _parse_hwp(path: Path) -> str:
     """Extract text from legacy binary HWP using pyhwp (hwp5txt).
 
     Tier 3 experimental — formatting loss is expected.
+    Returns empty string if hwp5txt is not available (graceful degradation).
     """
+    import shutil
     import subprocess
+
+    if shutil.which("hwp5txt") is None:
+        logger.warning("hwp5txt not installed — skipping HWP: %s", path.name)
+        return ""
 
     result = subprocess.run(
         ["hwp5txt", str(path)],
@@ -639,6 +667,9 @@ class DocumentParser:
             parser_fn = _PARSER_DISPATCH[doc_type]
             try:
                 return parser_fn(p)  # type: ignore[operator]
+            except ImportError:
+                # Dependency not installed — already logged inside parser
+                return ""
             except Exception as e:
                 logger.warning("Parser failed for %s (%s): %s", p, doc_type, e)
                 raise

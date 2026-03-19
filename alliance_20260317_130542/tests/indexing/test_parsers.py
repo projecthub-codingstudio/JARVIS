@@ -110,7 +110,7 @@ class TestParse:
 class TestParsePdf:
     def test_parse_pdf_extracts_text(self, tmp_path: Path) -> None:
         """Create a real PDF with PyMuPDF and verify text extraction."""
-        import pymupdf
+        pymupdf = pytest.importorskip("pymupdf")
 
         pdf_path = tmp_path / "test.pdf"
         doc = pymupdf.open()
@@ -124,7 +124,7 @@ class TestParsePdf:
 
     def test_parse_pdf_korean(self, tmp_path: Path) -> None:
         """PDF with Korean text."""
-        import pymupdf
+        pymupdf = pytest.importorskip("pymupdf")
 
         pdf_path = tmp_path / "korean.pdf"
         doc = pymupdf.open()
@@ -138,7 +138,7 @@ class TestParsePdf:
 
     def test_parse_pdf_multipage(self, tmp_path: Path) -> None:
         """Multi-page PDF extracts all pages."""
-        import pymupdf
+        pymupdf = pytest.importorskip("pymupdf")
 
         pdf_path = tmp_path / "multi.pdf"
         doc = pymupdf.open()
@@ -159,7 +159,7 @@ class TestParsePdf:
 class TestParseDocx:
     def test_parse_docx_extracts_paragraphs(self, tmp_path: Path) -> None:
         """Create a real DOCX and verify paragraph extraction."""
-        from docx import Document
+        Document = pytest.importorskip("docx").Document
 
         docx_path = tmp_path / "test.docx"
         doc = Document()
@@ -173,7 +173,7 @@ class TestParseDocx:
 
     def test_parse_docx_korean(self, tmp_path: Path) -> None:
         """DOCX with Korean text."""
-        from docx import Document
+        Document = pytest.importorskip("docx").Document
 
         docx_path = tmp_path / "korean.docx"
         doc = Document()
@@ -187,7 +187,7 @@ class TestParseDocx:
 
     def test_parse_docx_with_table(self, tmp_path: Path) -> None:
         """DOCX table cells are extracted."""
-        from docx import Document
+        Document = pytest.importorskip("docx").Document
 
         docx_path = tmp_path / "table.docx"
         doc = Document()
@@ -211,7 +211,7 @@ class TestParseDocx:
 class TestParseXlsx:
     def test_parse_xlsx_extracts_cells(self, tmp_path: Path) -> None:
         """Create a real XLSX and verify cell extraction."""
-        from openpyxl import Workbook
+        Workbook = pytest.importorskip("openpyxl").Workbook
 
         xlsx_path = tmp_path / "test.xlsx"
         wb = Workbook()
@@ -231,7 +231,7 @@ class TestParseXlsx:
 
     def test_parse_xlsx_korean(self, tmp_path: Path) -> None:
         """XLSX with Korean text."""
-        from openpyxl import Workbook
+        Workbook = pytest.importorskip("openpyxl").Workbook
 
         xlsx_path = tmp_path / "korean.xlsx"
         wb = Workbook()
@@ -247,7 +247,7 @@ class TestParseXlsx:
 
     def test_parse_xlsx_multiple_sheets(self, tmp_path: Path) -> None:
         """Multiple sheets are all extracted with sheet names."""
-        from openpyxl import Workbook
+        Workbook = pytest.importorskip("openpyxl").Workbook
 
         xlsx_path = tmp_path / "multi.xlsx"
         wb = Workbook()
@@ -400,7 +400,7 @@ class TestCreateRecord:
 
     def test_record_for_pdf(self, tmp_path: Path) -> None:
         """create_record works for binary files too."""
-        import pymupdf
+        pymupdf = pytest.importorskip("pymupdf")
 
         pdf_path = tmp_path / "test.pdf"
         doc = pymupdf.open()
