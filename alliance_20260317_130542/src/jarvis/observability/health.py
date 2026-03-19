@@ -124,7 +124,7 @@ def check_health(deps: dict[str, object]) -> HealthStatus:
             details["model"] = f"OK ({model_id})"
         else:
             checks["model"] = False
-            details["model"] = "stub — no LLM loaded"
+            details["model"] = getattr(llm, "status_detail", "stub — no LLM loaded")
     else:
         checks["model"] = False
         details["model"] = "not configured"

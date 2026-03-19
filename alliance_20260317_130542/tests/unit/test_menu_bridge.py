@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.cli.menu_bridge import _export_draft, build_menu_response
+from jarvis.cli.menu_bridge import MenuBarTranscriptionResponse, _export_draft, build_menu_response
 from jarvis.contracts import (
     AnswerDraft,
     CitationRecord,
@@ -125,3 +125,7 @@ class TestMenuBridge:
         assert result.success is True
         assert result.approved is True
         assert destination.read_text(encoding="utf-8") == "초안 본문"
+
+    def test_transcription_payload_serializes_text(self) -> None:
+        payload = MenuBarTranscriptionResponse(transcript="회의 일정 정리해 줘")
+        assert payload.transcript == "회의 일정 정리해 줘"

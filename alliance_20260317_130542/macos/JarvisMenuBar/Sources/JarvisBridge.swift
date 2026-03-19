@@ -1,11 +1,43 @@
 import Foundation
 
+private func bridgeLog(_ message: String) {
+    fputs("[JarvisBridge] \(message)\n", stderr)
+}
+
 struct BridgeConfiguration {
     let allianceRoot: URL
     let pythonExecutable: String
 
     var pythonPath: String {
         allianceRoot.appendingPathComponent("src").path
+    }
+
+    var defaultSTTBinary: String? {
+        let fileManager = FileManager.default
+        let candidates = [
+            allianceRoot.appendingPathComponent(".venv/bin/whisper-cli").path,
+            allianceRoot.appendingPathComponent(".venv/bin/main").path,
+            "/opt/homebrew/bin/whisper-cli",
+            "/opt/homebrew/bin/main",
+            "/usr/local/bin/whisper-cli",
+            "/usr/local/bin/main",
+            "/usr/bin/whisper-cli",
+            "/usr/bin/main",
+        ]
+        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
+    }
+
+    var defaultSTTModel: String? {
+        let fileManager = FileManager.default
+        let candidates = [
+            allianceRoot.appendingPathComponent("models/ggml-small.bin").path,
+            allianceRoot.appendingPathComponent("models/ggml-base.bin").path,
+            allianceRoot.appendingPathComponent("models/ggml-medium.bin").path,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-small.bin").path,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-base.bin").path,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-medium.bin").path,
+        ]
+        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
     }
 
     static func `default`() -> BridgeConfiguration {
@@ -86,10 +118,26 @@ actor JarvisBridge {
         try await send(query, command: "ask")
     }
 
-    func recordOnce() async throws -> MenuResponse {
-        let envelope = try await send(["command": "record-once"])
+    func recordOnce(device: String? = nil) async throws -> MenuResponse {
+        var payload: [String: Any] = ["command": "record-once"]
+        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["device"] = device
+        }
+        let envelope = try await send(payload)
         guard let response = envelope.queryResult else {
             throw BridgeError.decodeFailed("missing query_result")
+        }
+        return response
+    }
+
+    func transcribeOnce(device: String? = nil) async throws -> TranscriptionResponse {
+        var payload: [String: Any] = ["command": "transcribe-once"]
+        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["device"] = device
+        }
+        let envelope = try await send(payload)
+        guard let response = envelope.transcriptionResult else {
+            throw BridgeError.decodeFailed("missing transcription_result")
         }
         return response
     }
@@ -135,6 +183,21 @@ actor JarvisBridge {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONPATH"] = configuration.pythonPath
+        if environment["HF_HUB_DISABLE_PROGRESS_BARS"] == nil {
+            environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        }
+        if environment["TRANSFORMERS_VERBOSITY"] == nil {
+            environment["TRANSFORMERS_VERBOSITY"] = "error"
+        }
+        if environment["TOKENIZERS_PARALLELISM"] == nil {
+            environment["TOKENIZERS_PARALLELISM"] = "false"
+        }
+        if environment["JARVIS_STT_BINARY"] == nil, let sttBinary = configuration.defaultSTTBinary {
+            environment["JARVIS_STT_BINARY"] = sttBinary
+        }
+        if environment["JARVIS_STT_MODEL"] == nil, let sttModel = configuration.defaultSTTModel {
+            environment["JARVIS_STT_MODEL"] = sttModel
+        }
         process.environment = environment
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -149,23 +212,70 @@ actor JarvisBridge {
             }
             process.arguments?.append("--\(key)=\(String(describing: value))")
         }
+        bridgeLog("launch command=\(payload["command"] as? String ?? "unknown") cwd=\(configuration.allianceRoot.path)")
+        bridgeLog("python=\(pythonURL.path)")
         try process.run()
         process.waitUntilExit()
 
         let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdoutText = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderrText = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stderrText.isEmpty {
+            bridgeLog("stderr=\(stderrText)")
+        }
         if process.terminationStatus != 0 {
-            let stderrText = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            bridgeLog("terminationStatus=\(process.terminationStatus)")
             throw BridgeError.processFailed(stderrText.isEmpty ? "bridge process terminated" : stderrText)
         }
         guard !output.isEmpty else {
+            bridgeLog("empty stdout from bridge process")
             throw BridgeError.emptyResponse
         }
-        let envelope = try JSONDecoder().decode(CommandEnvelope.self, from: output)
+        let envelope: CommandEnvelope
+        do {
+            envelope = try decodeEnvelope(from: output)
+        } catch {
+            bridgeLog("stdout=\(stdoutText)")
+            bridgeLog("decode error=\(error.localizedDescription)")
+            throw error
+        }
         if envelope.kind == "error" {
+            bridgeLog("envelope error=\(envelope.error ?? "unknown bridge error")")
             throw BridgeError.processFailed(envelope.error ?? "unknown bridge error")
         }
+        if let health = envelope.healthResult, !health.failedChecks.isEmpty {
+            bridgeLog("health failed_checks=\(health.failedChecks.joined(separator: ","))")
+            if let modelDetail = health.details["model"] {
+                bridgeLog("health model detail=\(modelDetail)")
+            }
+            if let vectorDetail = health.details["vector_db"] {
+                bridgeLog("health vector_db detail=\(vectorDetail)")
+            }
+        }
         return envelope
+    }
+
+    private func decodeEnvelope(from output: Data) throws -> CommandEnvelope {
+        let decoder = JSONDecoder()
+        if let envelope = try? decoder.decode(CommandEnvelope.self, from: output) {
+            return envelope
+        }
+
+        let outputText = String(decoding: output, as: UTF8.self)
+        let lines = outputText
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if let candidate = lines.last,
+           let candidateData = candidate.data(using: .utf8),
+           let envelope = try? decoder.decode(CommandEnvelope.self, from: candidateData) {
+            return envelope
+        }
+
+        throw BridgeError.decodeFailed(outputText)
     }
 
     private func send(_ query: String, command: String) async throws -> MenuResponse {

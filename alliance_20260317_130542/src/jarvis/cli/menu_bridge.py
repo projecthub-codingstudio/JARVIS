@@ -93,10 +93,16 @@ class MenuBarExportResponse:
 
 
 @dataclass(frozen=True)
+class MenuBarTranscriptionResponse:
+    transcript: str
+
+
+@dataclass(frozen=True)
 class MenuBarCommandEnvelope:
     kind: str
     query_result: MenuBarResponse | None = None
     export_result: MenuBarExportResponse | None = None
+    transcription_result: MenuBarTranscriptionResponse | None = None
     health_result: dict[str, object] | None = None
     error: str = ""
 
@@ -145,8 +151,9 @@ def build_menu_response(
 def _build_context(*, model_id: str):
     return build_runtime_context(
         model_id=model_id,
-        start_watcher_enabled=False,
-        allow_mlx=False,
+        start_watcher_enabled=True,
+        start_background_backfill=False,
+        allow_mlx=True,
         data_dir=Path.cwd() / ".jarvis-menubar",
     )
 
@@ -173,7 +180,7 @@ def _run_query(*, query: str, model_id: str) -> MenuBarResponse:
         shutdown_runtime_context(context)
 
 
-def _record_once(*, model_id: str) -> MenuBarResponse:
+def _record_once(*, model_id: str, device: str | None = None) -> MenuBarResponse:
     context = _build_context(model_id=model_id)
     try:
         stt_runtime = WhisperCppSTT(
@@ -189,6 +196,7 @@ def _record_once(*, model_id: str) -> MenuBarResponse:
             model_router=context.model_router,
         )
         recorder = AudioRecorder(
+            input_device=device,
             duration_seconds=int(__import__("os").getenv("JARVIS_PTT_SECONDS", "8"))
         )
         session = VoiceSession(
@@ -203,7 +211,32 @@ def _record_once(*, model_id: str) -> MenuBarResponse:
         shutdown_runtime_context(context)
 
 
-def _record_once_in_context(*, context: object) -> MenuBarResponse:
+def _transcribe_once(*, model_id: str, device: str | None = None) -> MenuBarTranscriptionResponse:
+    context = _build_context(model_id=model_id)
+    try:
+        stt_runtime = WhisperCppSTT(
+            model_path=(
+                Path(model_path).expanduser()
+                if (model_path := __import__("os").getenv("JARVIS_STT_MODEL"))
+                else None
+            ),
+            model_router=context.model_router,
+        )
+        recorder = AudioRecorder(
+            input_device=device,
+            duration_seconds=int(__import__("os").getenv("JARVIS_PTT_SECONDS", "8"))
+        )
+        session = VoiceSession(
+            orchestrator=context.orchestrator,
+            stt_runtime=stt_runtime,
+            recorder=recorder,
+        )
+        return MenuBarTranscriptionResponse(transcript=session.record_and_transcribe_once())
+    finally:
+        shutdown_runtime_context(context)
+
+
+def _record_once_in_context(*, context: object, device: str | None = None) -> MenuBarResponse:
     stt_runtime = WhisperCppSTT(
         model_path=(
             Path(model_path).expanduser()
@@ -217,6 +250,7 @@ def _record_once_in_context(*, context: object) -> MenuBarResponse:
         model_router=context.model_router,
     )
     recorder = AudioRecorder(
+        input_device=device,
         duration_seconds=int(__import__("os").getenv("JARVIS_PTT_SECONDS", "8"))
     )
     session = VoiceSession(
@@ -227,6 +261,27 @@ def _record_once_in_context(*, context: object) -> MenuBarResponse:
     )
     turn = session.record_and_handle_once()
     return _response_from_context(context=context, turn=turn)
+
+
+def _transcribe_once_in_context(*, context: object, device: str | None = None) -> MenuBarTranscriptionResponse:
+    stt_runtime = WhisperCppSTT(
+        model_path=(
+            Path(model_path).expanduser()
+            if (model_path := __import__("os").getenv("JARVIS_STT_MODEL"))
+            else None
+        ),
+        model_router=context.model_router,
+    )
+    recorder = AudioRecorder(
+        input_device=device,
+        duration_seconds=int(__import__("os").getenv("JARVIS_PTT_SECONDS", "8"))
+    )
+    session = VoiceSession(
+        orchestrator=context.orchestrator,
+        stt_runtime=stt_runtime,
+        recorder=recorder,
+    )
+    return MenuBarTranscriptionResponse(transcript=session.record_and_transcribe_once())
 
 
 def _export_draft(
@@ -328,7 +383,18 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
     if command == "record-once":
         return MenuBarCommandEnvelope(
             kind="query_result",
-            query_result=_record_once(model_id=str(payload.get("model", "qwen3:14b"))),
+            query_result=_record_once(
+                model_id=str(payload.get("model", "qwen3:14b")),
+                device=str(payload["device"]) if payload.get("device") else None,
+            ),
+        )
+    if command == "transcribe-once":
+        return MenuBarCommandEnvelope(
+            kind="transcription_result",
+            transcription_result=_transcribe_once(
+                model_id=str(payload.get("model", "qwen3:14b")),
+                device=str(payload["device"]) if payload.get("device") else None,
+            ),
         )
     if command == "export-draft":
         return MenuBarCommandEnvelope(
@@ -376,7 +442,18 @@ def _run_server(model_id: str) -> int:
                 elif command == "record-once":
                     envelope = MenuBarCommandEnvelope(
                         kind="query_result",
-                        query_result=_record_once_in_context(context=context),
+                        query_result=_record_once_in_context(
+                            context=context,
+                            device=str(payload["device"]) if payload.get("device") else None,
+                        ),
+                    )
+                elif command == "transcribe-once":
+                    envelope = MenuBarCommandEnvelope(
+                        kind="transcription_result",
+                        transcription_result=_transcribe_once_in_context(
+                            context=context,
+                            device=str(payload["device"]) if payload.get("device") else None,
+                        ),
                     )
                 elif command == "export-draft":
                     envelope = MenuBarCommandEnvelope(
@@ -419,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
 
     record_parser = subparsers.add_parser("record-once", help="Record one microphone query")
     record_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    record_parser.add_argument("--device", help="Optional microphone input device name")
+    transcribe_parser = subparsers.add_parser("transcribe-once", help="Record one microphone query and return transcript only")
+    transcribe_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    transcribe_parser.add_argument("--device", help="Optional microphone input device name")
 
     export_parser = subparsers.add_parser("export-draft", help="Export the current draft")
     export_parser.add_argument("--content", required=True, help="Draft content to export")
@@ -437,30 +518,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "server":
         return _run_server(args.model)
 
-    if args.command == "ask":
-        envelope = _execute_command(
-            "ask",
-            {"query": args.query, "model": args.model},
-        )
-    elif args.command == "record-once":
-        envelope = _execute_command(
-            "record-once",
-            {"model": args.model},
-        )
-    elif args.command == "health":
-        envelope = _execute_command(
-            "health",
-            {"model": args.model},
-        )
-    else:
-        envelope = _execute_command(
-            "export-draft",
-            {
-                "content": args.content,
-                "destination": args.destination,
-                "approved": bool(args.approved),
-            },
-        )
+    try:
+        if args.command == "ask":
+            envelope = _execute_command(
+                "ask",
+                {"query": args.query, "model": args.model},
+            )
+        elif args.command == "record-once":
+            envelope = _execute_command(
+                "record-once",
+                {"model": args.model, "device": args.device},
+            )
+        elif args.command == "transcribe-once":
+            envelope = _execute_command(
+                "transcribe-once",
+                {"model": args.model, "device": args.device},
+            )
+        elif args.command == "health":
+            envelope = _execute_command(
+                "health",
+                {"model": args.model},
+            )
+        else:
+            envelope = _execute_command(
+                "export-draft",
+                {
+                    "content": args.content,
+                    "destination": args.destination,
+                    "approved": bool(args.approved),
+                },
+            )
+    except Exception as exc:
+        envelope = MenuBarCommandEnvelope(kind="error", error=str(exc))
 
     print(json.dumps(asdict(envelope), ensure_ascii=False))
     return 0

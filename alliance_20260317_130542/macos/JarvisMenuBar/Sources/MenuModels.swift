@@ -68,6 +68,10 @@ struct ExportResponse: Codable {
     }
 }
 
+struct TranscriptionResponse: Codable {
+    let transcript: String
+}
+
 struct HealthResponse: Codable {
     let healthy: Bool
     let message: String
@@ -96,6 +100,7 @@ struct CommandEnvelope: Codable {
     let kind: String
     let queryResult: MenuResponse?
     let exportResult: ExportResponse?
+    let transcriptionResult: TranscriptionResponse?
     let healthResult: HealthResponse?
     let error: String?
 
@@ -103,6 +108,7 @@ struct CommandEnvelope: Codable {
         case kind
         case queryResult = "query_result"
         case exportResult = "export_result"
+        case transcriptionResult = "transcription_result"
         case healthResult = "health_result"
         case error
     }

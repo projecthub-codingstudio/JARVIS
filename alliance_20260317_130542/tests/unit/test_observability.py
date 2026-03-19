@@ -100,6 +100,7 @@ class TestHealthCheck:
 
         class BrokenLLM:
             model_id = "stub"
+            status_detail = "MLX preflight failed: device unavailable"
 
         status = check_health({
             "db": sqlite3.connect(":memory:"),
@@ -112,6 +113,7 @@ class TestHealthCheck:
         assert status.checks["model"] is False
         assert "model" in status.message
         assert status.failed_checks == ["model"]
+        assert status.details["model"] == "MLX preflight failed: device unavailable"
 
 
 class TestJsonLogFormatter:

@@ -9,15 +9,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import subprocess
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
 
 logger = logging.getLogger(__name__)
 
 _OLLAMA_BASE = "http://localhost:11434"
+_COMMON_BINARY_DIRS = (
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/usr/bin"),
+)
 
 # Model ID mapping: short alias -> Ollama model tag
 _MODEL_ALIASES: dict[str, str] = {
@@ -47,6 +56,7 @@ class LlamaCppBackend:
         self._model_id: str = ""
         self._context_window: int = 8192
         self._loaded: bool = False
+        self._status_detail: str = "not loaded"
 
     @property
     def is_loaded(self) -> bool:
@@ -55,6 +65,10 @@ class LlamaCppBackend:
     @property
     def model_id(self) -> str:
         return self._model_id
+
+    @property
+    def status_detail(self) -> str:
+        return self._status_detail
 
     def load(self, decision: RuntimeDecision) -> None:
         """Load (warm up) the model in Ollama.
@@ -68,16 +82,21 @@ class LlamaCppBackend:
             logger.info("Model %s already loaded in Ollama.", model_tag)
             return
 
-        # Verify Ollama is running and model exists
+        server_ready, detail = self._ensure_server_ready()
+        if not server_ready:
+            self._status_detail = detail
+            raise RuntimeError(detail)
         if not self._check_model_available(model_tag):
-            raise RuntimeError(
-                f"Model '{model_tag}' not available in Ollama. "
+            self._status_detail = (
+                f"Ollama server is reachable, but model '{model_tag}' is not available. "
                 f"Run: ollama pull {model_tag}"
             )
+            raise RuntimeError(self._status_detail)
 
         self._model_id = model_tag
         self._context_window = decision.context_window
         self._loaded = True
+        self._status_detail = f"OK ({model_tag})"
         logger.info("Ollama backend ready with model: %s", model_tag)
 
     def unload(self) -> None:
@@ -185,6 +204,60 @@ class LlamaCppBackend:
                 return model_tag in models
         except Exception:
             return False
+
+    def _ensure_server_ready(self) -> tuple[bool, str]:
+        if self._server_reachable():
+            return True, "Ollama server reachable"
+
+        binary = self._resolve_binary()
+        if binary is None:
+            return False, "Ollama binary not found. Install Ollama or set PATH correctly."
+
+        try:
+            process = subprocess.Popen(
+                [binary, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                env=os.environ.copy(),
+            )
+        except Exception as exc:
+            return False, f"Ollama server failed to start: {exc}"
+
+        for _ in range(20):
+            time.sleep(0.25)
+            if self._server_reachable():
+                return True, "Ollama server started"
+            if process.poll() is not None:
+                return False, "Ollama server process exited during startup"
+
+        return False, "Ollama server did not become ready on localhost:11434"
+
+    def _server_reachable(self) -> bool:
+        try:
+            req = urllib.request.Request(f"{self._base_url}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=2):
+                return True
+        except Exception:
+            return False
+
+    def _resolve_binary(self) -> str | None:
+        env_binary = os.getenv("OLLAMA_BINARY")
+        if env_binary:
+            env_path = Path(env_binary).expanduser()
+            if env_path.exists():
+                return str(env_path.resolve())
+
+        resolved = shutil.which("ollama")
+        if resolved is not None:
+            return resolved
+
+        for directory in _COMMON_BINARY_DIRS:
+            candidate = directory / "ollama"
+            if candidate.exists():
+                return str(candidate)
+        return None
 
 
 # Runtime-checkable verification

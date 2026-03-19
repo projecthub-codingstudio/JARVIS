@@ -65,6 +65,11 @@ class VoiceSession:
 
         Performs a one-time microphone permission check on first call.
         """
+        transcript = self.record_and_transcribe_once()
+        return self._orchestrator.handle_turn(transcript)
+
+    def record_and_transcribe_once(self) -> str:
+        """Record one utterance and return only the transcript."""
         if self._recorder is None:
             raise RuntimeError("Audio recorder not configured")
         if not self._mic_checked:
@@ -77,4 +82,7 @@ class VoiceSession:
         with tempfile.TemporaryDirectory(prefix="jarvis-voice-") as tmpdir:
             audio_path = Path(tmpdir) / "ptt.wav"
             self._recorder.record_once(audio_path)
-            return self.handle_audio_file(audio_path)
+            transcript = self._stt_runtime.transcribe(audio_path).strip()
+            if not transcript:
+                raise RuntimeError("Empty transcript")
+            return transcript
