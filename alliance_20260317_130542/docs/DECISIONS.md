@@ -15,6 +15,9 @@
 - `MeCab-ko` is not the default path.
 - `cross-encoder reranker` is deferred until retrieval quality requires it.
 - Broad automation, accessibility-driven UI control, and unrestricted shell execution remain out of scope.
+- VAD (Silero VAD, silence-aware recording) deferred to Phase 2.
+- Streaming LLM response deferred to Phase 2.
+- Apple SFSpeechRecognizer and Siri Shortcuts evaluation deferred to Phase 2.
 
 ## Runtime Safety
 
