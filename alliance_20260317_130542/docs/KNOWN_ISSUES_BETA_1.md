@@ -8,7 +8,8 @@
 - Voice mode supports push-to-talk with native AVCaptureDevice recording and live voice loop.
 - ~~Microphone device selection is not yet exposed.~~ **Resolved**: Device selection implemented with Unicode NFC/NFD normalization for Korean device names.
 - Avatar voice, animated mic state, and richer audio feedback are not implemented.
-- Live voice loop operates as sequential polling (~15-18s per cycle), not real-time streaming conversation. VAD (silence-aware recording) and streaming LLM response are deferred to Phase 2.
+- Live voice loop uses Two-Stage VAD (energy-based) for automatic recording stop. Silero VAD (ML-based) is deferred to Phase 2.
+- Voice Processing (noise suppression + AGC) disabled on aggregate/multi-channel devices due to AUHAL format errors.
 - LLM responses with `<think>` tags (Qwen3) are now stripped before display.
 - Long responses (>500 chars) are truncated in menu bar with "...more" button; full content saved to temp file.
 

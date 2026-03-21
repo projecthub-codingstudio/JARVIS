@@ -299,7 +299,9 @@ Phase 2 ███████████████████░░ 90%   (S
 ```
 
 ### 2026-03-21 Phase 2 진행 항목
-- 네이티브 마이크 녹음 (AVCaptureDevice, ffmpeg 제거)
+- 네이티브 마이크 녹음: AVCaptureSession → AVAudioEngine (포맷 자동 변환)
+- Two-Stage VAD: 적응형 노이즈 플로어 + IDLE→LISTENING→TENTATIVE→CONFIRMED 상태 머신
+- CoreAudio 장치 열거 (AVCaptureDevice 제거 — aggregate device 블록 방지)
 - audio-input entitlement + TCC 권한 처리
 - 마이크 장치 선택 + Unicode NFC/NFD 정규화
 - `<think>` 태그 필터링
@@ -308,7 +310,9 @@ Phase 2 ███████████████████░░ 90%   (S
 - 긴 응답 임시 파일 저장 + ...more 버튼
 - 인라인 export 패널 (창 사라짐 방지)
 - transcribe-file 브리지 커맨드
+- Ollama streaming (stream:true + 청크 파싱)
 - Quit JARVIS 버튼 (⌘Q)
+- Xcode 프로젝트 (JarvisMenuBar.xcodeproj) 추가
 
 ---
 
