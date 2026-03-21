@@ -167,7 +167,7 @@ class LlamaCppBackend:
             "model": self._model_id,
             "system": system_message,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "think": False,
             "options": {
                 "num_ctx": self._context_window,
@@ -185,14 +185,24 @@ class LlamaCppBackend:
         )
 
         t0 = time.perf_counter()
+        chunks: list[str] = []
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
-                result = json.loads(resp.read().decode())
+                for raw_line in resp:
+                    line = raw_line.decode().strip()
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    token = chunk.get("response", "")
+                    if token:
+                        chunks.append(token)
+                    if chunk.get("done", False):
+                        break
         except urllib.error.URLError as e:
             raise RuntimeError(f"Ollama API error: {e}") from e
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        response_text = result.get("response", "")
+        response_text = "".join(chunks)
 
         logger.info(
             "Generated %d chars in %.0fms (model=%s, intent=%s)",
