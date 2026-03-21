@@ -6,6 +6,8 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
+import time
 import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,6 +22,7 @@ from jarvis.contracts import (
     EvidenceItem,
     VerifiedEvidenceSet,
 )
+from jarvis.retrieval.evidence_builder import MIN_RELEVANCE_SCORE
 from jarvis.runtime.audio_recorder import AudioRecorder
 from jarvis.observability.health import check_health
 from jarvis.observability.logging import configure_logging
@@ -28,6 +31,8 @@ from jarvis.runtime.tts_runtime import LocalTTSRuntime
 from jarvis.tools.draft_export import DraftExportTool
 
 _MAX_QUOTE_CHARS = 160
+_MAX_DISPLAY_CHARS = 500
+_RESPONSE_DIR = Path(tempfile.gettempdir()) / "jarvis_responses"
 
 
 def _detect_source_type(path: str) -> str:
@@ -82,6 +87,7 @@ class MenuBarResponse:
     has_evidence: bool
     citations: list[MenuBarCitation] = field(default_factory=list)
     status: MenuBarStatus | None = None
+    full_response_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,7 +126,8 @@ def build_menu_response(
     """Serialize a completed turn into a menu bar-friendly payload."""
     citations: list[MenuBarCitation] = []
     if answer is not None:
-        for item in answer.evidence.items[:5]:
+        relevant_items = [i for i in answer.evidence.items if i.relevance_score >= MIN_RELEVANCE_SCORE]
+        for item in relevant_items[:5]:
             source_path = item.source_path or item.document_id
             citations.append(MenuBarCitation(
                 label=item.citation.label,
@@ -132,9 +139,22 @@ def build_menu_response(
             ))
 
     mode = _response_mode(turn, answer)
+
+    full_text = turn.assistant_output
+    full_response_path = ""
+    display_text = full_text
+
+    if len(full_text) > _MAX_DISPLAY_CHARS:
+        _RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        response_file = _RESPONSE_DIR / f"response_{ts}.txt"
+        response_file.write_text(full_text, encoding="utf-8")
+        full_response_path = str(response_file)
+        display_text = full_text[:_MAX_DISPLAY_CHARS] + " ...more"
+
     return MenuBarResponse(
         query=turn.user_input,
-        response=turn.assistant_output,
+        response=display_text,
         has_evidence=turn.has_evidence,
         citations=citations,
         status=MenuBarStatus(
@@ -145,6 +165,7 @@ def build_menu_response(
             write_blocked=write_blocked,
             rebuild_index_required=rebuild_index_required,
         ),
+        full_response_path=full_response_path,
     )
 
 
@@ -234,6 +255,25 @@ def _transcribe_once(*, model_id: str, device: str | None = None) -> MenuBarTran
         return MenuBarTranscriptionResponse(transcript=session.record_and_transcribe_once())
     finally:
         shutdown_runtime_context(context)
+
+
+def _transcribe_file(*, audio_path: str) -> MenuBarTranscriptionResponse:
+    """Transcribe a pre-recorded audio file via whisper-cli (no microphone access needed)."""
+    path = Path(audio_path).expanduser().resolve()
+    if not path.exists():
+        raise RuntimeError(f"오디오 파일을 찾을 수 없습니다: {path}")
+
+    stt_runtime = WhisperCppSTT(
+        model_path=(
+            Path(model_path).expanduser()
+            if (model_path := __import__("os").getenv("JARVIS_STT_MODEL"))
+            else None
+        ),
+    )
+    transcript = stt_runtime.transcribe(path).strip()
+    if not transcript:
+        raise RuntimeError("음성이 감지되지 않았습니다. 마이크에 대고 다시 말씀해 주세요.")
+    return MenuBarTranscriptionResponse(transcript=transcript)
 
 
 def _record_once_in_context(*, context: object, device: str | None = None) -> MenuBarResponse:
@@ -396,6 +436,13 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
                 device=str(payload["device"]) if payload.get("device") else None,
             ),
         )
+    if command == "transcribe-file":
+        return MenuBarCommandEnvelope(
+            kind="transcription_result",
+            transcription_result=_transcribe_file(
+                audio_path=str(payload["audio"]),
+            ),
+        )
     if command == "export-draft":
         return MenuBarCommandEnvelope(
             kind="export_result",
@@ -485,7 +532,7 @@ def _run_server(model_id: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run a one-shot JSON query suitable for the SwiftUI menu bar shell."""
-    configure_logging(level=logging.ERROR, json_logs=False)
+    configure_logging(level=logging.WARNING, json_logs=False)
 
     parser = argparse.ArgumentParser(description="JARVIS menu bar bridge")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -500,6 +547,9 @@ def main(argv: list[str] | None = None) -> int:
     transcribe_parser = subparsers.add_parser("transcribe-once", help="Record one microphone query and return transcript only")
     transcribe_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
     transcribe_parser.add_argument("--device", help="Optional microphone input device name")
+
+    transcribe_file_parser = subparsers.add_parser("transcribe-file", help="Transcribe a pre-recorded audio file")
+    transcribe_file_parser.add_argument("--audio", required=True, help="Path to WAV audio file")
 
     export_parser = subparsers.add_parser("export-draft", help="Export the current draft")
     export_parser.add_argument("--content", required=True, help="Draft content to export")
@@ -533,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
             envelope = _execute_command(
                 "transcribe-once",
                 {"model": args.model, "device": args.device},
+            )
+        elif args.command == "transcribe-file":
+            envelope = _execute_command(
+                "transcribe-file",
+                {"audio": args.audio},
             )
         elif args.command == "health":
             envelope = _execute_command(

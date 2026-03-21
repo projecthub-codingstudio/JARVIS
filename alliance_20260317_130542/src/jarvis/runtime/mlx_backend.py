@@ -196,6 +196,15 @@ class MLXBackend:
             messages, add_generation_prompt=True
         )
 
+        # Dynamic max_tokens: use remaining context window after prompt
+        prompt_tokens = len(formatted_prompt) if isinstance(formatted_prompt, list) else len(self._tokenizer.encode(formatted_prompt))
+        _RESERVE = 256
+        max_tokens = max(256, self._context_window - prompt_tokens - _RESERVE)
+        logger.debug(
+            "Dynamic token budget: context=%d, prompt=%d, reserve=%d, max_tokens=%d",
+            self._context_window, prompt_tokens, _RESERVE, max_tokens,
+        )
+
         sampler = make_sampler(
             0.7,
             0.9,
@@ -208,7 +217,7 @@ class MLXBackend:
             self._model,
             self._tokenizer,
             prompt=formatted_prompt,
-            max_tokens=512,
+            max_tokens=max_tokens,
             sampler=sampler,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000

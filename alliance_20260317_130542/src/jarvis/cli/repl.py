@@ -14,6 +14,7 @@ from pathlib import Path
 
 from jarvis.contracts import AnswerDraft, EvidenceItem
 from jarvis.core.orchestrator import Orchestrator
+from jarvis.retrieval.evidence_builder import MIN_RELEVANCE_SCORE
 
 # Max quote length for display
 _MAX_QUOTE_CHARS = 120
@@ -129,6 +130,8 @@ class JarvisREPL:
         # or if the evidence text content is reflected in the answer
         best_per_file: dict[str, EvidenceItem] = {}
         for item in answer.evidence.items:
+            if item.relevance_score < MIN_RELEVANCE_SCORE:
+                continue
             # Check if this citation's label is referenced in the answer
             label_referenced = item.citation.label in answer_text
 
@@ -146,10 +149,11 @@ class JarvisREPL:
                 best_per_file[filename] = item
 
         # If no citations matched by content, show top 1 by score as fallback
-        if not best_per_file:
+        if not best_per_file and answer.evidence.items:
             top_item = max(answer.evidence.items, key=lambda x: x.relevance_score)
-            source = top_item.source_path or top_item.document_id
-            best_per_file[_shorten_path(source)] = top_item
+            if top_item.relevance_score >= MIN_RELEVANCE_SCORE:
+                source = top_item.source_path or top_item.document_id
+                best_per_file[_shorten_path(source)] = top_item
 
         top_items = sorted(best_per_file.values(), key=lambda x: x.relevance_score, reverse=True)[:3]
 

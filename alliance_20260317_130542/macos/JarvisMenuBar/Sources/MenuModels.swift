@@ -44,6 +44,7 @@ struct MenuResponse: Codable {
     let hasEvidence: Bool
     let citations: [MenuCitation]
     let status: MenuStatus?
+    let fullResponsePath: String?
 
     private enum CodingKeys: String, CodingKey {
         case query
@@ -51,6 +52,7 @@ struct MenuResponse: Codable {
         case hasEvidence = "has_evidence"
         case citations
         case status
+        case fullResponsePath = "full_response_path"
     }
 }
 

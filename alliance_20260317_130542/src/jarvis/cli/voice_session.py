@@ -82,6 +82,14 @@ class VoiceSession:
         with tempfile.TemporaryDirectory(prefix="jarvis-voice-") as tmpdir:
             audio_path = Path(tmpdir) / "ptt.wav"
             self._recorder.record_once(audio_path)
+            # Preserve recording for inspection
+            debug_copy = Path("/tmp/jarvis_last_recording.wav")
+            try:
+                import shutil
+                shutil.copy2(audio_path, debug_copy)
+                logger.warning("Recording saved: %s", debug_copy)
+            except OSError:
+                pass
             transcript = self._stt_runtime.transcribe(audio_path).strip()
             if not transcript:
                 raise RuntimeError("Empty transcript")

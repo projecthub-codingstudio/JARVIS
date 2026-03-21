@@ -1,4 +1,5 @@
 import AppKit
+import AudioToolbox
 import AVFoundation
 import SwiftUI
 
@@ -157,6 +158,267 @@ final class AudioBypassMonitor {
     }
 }
 
+/// Records microphone audio to a WAV file using AVCaptureDevice natively.
+///
+/// The session stays running between recordings to keep the microphone
+/// hardware warm.  `record()` only toggles the file-writing flag,
+/// so recording starts instantly without device initialization delay.
+final class NativeAudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let session = AVCaptureSession()
+    private let dataOutput = AVCaptureAudioDataOutput()
+    private let queue = DispatchQueue(label: "jarvis.audio.recorder")
+
+    private var audioFile: AudioFileID?
+    private var outputURL: URL?
+    private var packetOffset: Int64 = 0
+    private var isWriting = false  // toggled by record/stop — controls file writing
+    private var recordingContinuation: CheckedContinuation<URL, Error>?
+    private var stopTimer: DispatchWorkItem?
+    private var currentDeviceID: String?
+    private var sessionReady = false
+
+    var isSessionRunning: Bool { session.isRunning }
+
+    /// Activate the microphone session so the hardware is warm.
+    /// Call once on app launch or when the input device changes.
+    func activate(deviceID: String?) throws {
+        let needsReconfigure = !sessionReady || currentDeviceID != deviceID
+        guard needsReconfigure else { return }
+
+        try configureSession(deviceID: deviceID)
+        currentDeviceID = deviceID
+
+        print("[JARVIS-MIC] About to call session.startRunning()...")
+        fflush(stdout)
+        if !session.isRunning {
+            session.startRunning()
+        }
+        print("[JARVIS-MIC] session.startRunning() completed, isRunning=\(session.isRunning)")
+        fflush(stdout)
+        sessionReady = true
+    }
+
+    /// Record audio for `duration` seconds and write to a WAV file.
+    /// The session must be activated first via `activate()`.
+    /// Recording starts instantly because the mic is already warm.
+    func record(deviceID: String?, duration: Double) async throws -> URL {
+        // Ensure session is active with correct device
+        try activate(deviceID: deviceID)
+
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".jarvis", isDirectory: true)
+            .appendingPathComponent("recordings", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("ptt.wav")
+        outputURL = url
+
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                self.recordingContinuation = continuation
+                self.packetOffset = 0
+                self.createWAVFile(url: url)
+                self.isWriting = true  // captureOutput will now write to file
+            }
+
+            let timer = DispatchWorkItem { [weak self] in
+                self?.finishRecording()
+            }
+            stopTimer = timer
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: timer)
+        }
+    }
+
+    func cancel() {
+        stopTimer?.cancel()
+        finishRecording()
+    }
+
+    /// Stop the session entirely (call on app termination).
+    func deactivate() {
+        queue.sync {
+            isWriting = false
+            if session.isRunning {
+                session.stopRunning()
+            }
+            if let file = audioFile {
+                AudioFileClose(file)
+                audioFile = nil
+            }
+        }
+        sessionReady = false
+    }
+
+    private func finishRecording() {
+        queue.async { [self] in
+            self.isWriting = false  // stop writing, session keeps running
+            if let file = self.audioFile {
+                AudioFileClose(file)
+                self.audioFile = nil
+            }
+            if let url = self.outputURL, let cont = self.recordingContinuation {
+                self.recordingContinuation = nil
+                cont.resume(returning: url)
+            }
+        }
+    }
+
+    private func configureSession(deviceID: String?) throws {
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+
+        session.inputs.forEach { session.removeInput($0) }
+        session.outputs.forEach { session.removeOutput($0) }
+
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+
+        let device: AVCaptureDevice?
+        if let deviceID, !deviceID.isEmpty {
+            device = devices.first(where: { $0.uniqueID == deviceID })
+        } else {
+            device = AVCaptureDevice.default(for: .audio)
+        }
+
+        guard let device else {
+            throw NSError(domain: "JarvisMenuBar", code: 10, userInfo: [
+                NSLocalizedDescriptionKey: "마이크 장치를 찾을 수 없습니다."
+            ])
+        }
+
+        let input = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(input) else {
+            throw NSError(domain: "JarvisMenuBar", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "마이크 입력을 추가할 수 없습니다."
+            ])
+        }
+        session.addInput(input)
+
+        dataOutput.setSampleBufferDelegate(self, queue: queue)
+        guard session.canAddOutput(dataOutput) else {
+            throw NSError(domain: "JarvisMenuBar", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "오디오 출력을 추가할 수 없습니다."
+            ])
+        }
+        session.addOutput(dataOutput)
+    }
+
+    private func createWAVFile(url: URL) {
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: 16000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        AudioFileCreateWithURL(
+            url as CFURL,
+            kAudioFileWAVEType,
+            &asbd,
+            .eraseFile,
+            &audioFile
+        )
+    }
+
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        // Only write to file when isWriting is true.
+        // Session stays running between recordings (mic stays warm).
+        guard isWriting, let file = audioFile else { return }
+
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        let length = CMBlockBufferGetDataLength(blockBuffer)
+        var data = Data(count: length)
+        data.withUnsafeMutableBytes { rawBuf in
+            if let baseAddress = rawBuf.baseAddress {
+                CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: baseAddress)
+            }
+        }
+
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        let sourceASBD = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
+        guard let srcFormat = sourceASBD else { return }
+
+        let pcmData = resampleToTarget(data: data, sourceFormat: srcFormat)
+
+        let numPackets = UInt32(pcmData.count / 2)
+        pcmData.withUnsafeBytes { rawBuf in
+            guard let ptr = rawBuf.baseAddress else { return }
+            var ioNumPackets = numPackets
+            AudioFileWritePackets(
+                file,
+                false,
+                UInt32(pcmData.count),
+                nil,
+                packetOffset,
+                &ioNumPackets,
+                ptr
+            )
+            packetOffset += Int64(ioNumPackets)
+        }
+    }
+
+    private func resampleToTarget(data: Data, sourceFormat: AudioStreamBasicDescription) -> Data {
+        let srcChannels = Int(sourceFormat.mChannelsPerFrame)
+        let srcSampleRate = sourceFormat.mSampleRate
+        let targetRate: Double = 16000
+
+        let isFloat = (sourceFormat.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let bytesPerSample = Int(sourceFormat.mBitsPerChannel / 8)
+
+        let totalSourceSamples = data.count / (bytesPerSample * srcChannels)
+        var monoSamples = [Float64](repeating: 0, count: totalSourceSamples)
+
+        data.withUnsafeBytes { rawBuf in
+            for i in 0..<totalSourceSamples {
+                var sum: Float64 = 0
+                for ch in 0..<srcChannels {
+                    let offset = (i * srcChannels + ch) * bytesPerSample
+                    if isFloat && bytesPerSample == 4 {
+                        let val: Float32 = rawBuf.load(fromByteOffset: offset, as: Float32.self)
+                        sum += Float64(val)
+                    } else if bytesPerSample == 2 {
+                        let val: Int16 = rawBuf.load(fromByteOffset: offset, as: Int16.self)
+                        sum += Float64(val) / 32768.0
+                    }
+                }
+                monoSamples[i] = sum / Float64(srcChannels)
+            }
+        }
+
+        let ratio = targetRate / srcSampleRate
+        let targetSamples = Int(Double(totalSourceSamples) * ratio)
+        var result = Data(count: targetSamples * 2)
+
+        result.withUnsafeMutableBytes { outBuf in
+            let outPtr = outBuf.bindMemory(to: Int16.self)
+            for i in 0..<targetSamples {
+                let srcIdx = Double(i) / ratio
+                let idx = Int(srcIdx)
+                let frac = srcIdx - Double(idx)
+                let s0 = monoSamples[min(idx, totalSourceSamples - 1)]
+                let s1 = monoSamples[min(idx + 1, totalSourceSamples - 1)]
+                let interpolated = s0 + (s1 - s0) * frac
+                let clamped = max(-1.0, min(1.0, interpolated))
+                outPtr[i] = Int16(clamped * 32767.0)
+            }
+        }
+
+        return result
+    }
+}
+
 @MainActor
 final class JarvisMenuBarViewModel: ObservableObject {
     private static let selectedInputDeviceDefaultsKey = "selectedInputDeviceID"
@@ -196,12 +458,17 @@ final class JarvisMenuBarViewModel: ObservableObject {
             if bypassEnabled {
                 restartBypass()
             }
+            // Re-activate mic session with new device
+            Task { @MainActor in
+                await activateMicrophone()
+            }
         }
     }
     @Published var inputDeviceStatusMessage = "시스템 기본 입력 장치를 사용합니다."
 
     private let bridge: JarvisBridge
     private let bypassMonitor = AudioBypassMonitor()
+    let nativeRecorder: NativeAudioRecorder
     private var voiceLoopTask: Task<Void, Never>?
     private let successLoopDelay: Duration = .seconds(1.2)
     private let errorLoopDelay: Duration = .seconds(4)
@@ -209,13 +476,36 @@ final class JarvisMenuBarViewModel: ObservableObject {
     private let pttDurationSeconds: Double
     private var phaseTransitionTask: Task<Void, Never>?
 
-    init(bridge: JarvisBridge = JarvisBridge()) {
+    @Published var microphoneReady = false
+
+    init(bridge: JarvisBridge = JarvisBridge(), recorder: NativeAudioRecorder = NativeAudioRecorder()) {
         self.bridge = bridge
+        self.nativeRecorder = recorder
         self.pttDurationSeconds = Double(ProcessInfo.processInfo.environment["JARVIS_PTT_SECONDS"] ?? "8") ?? 8
         self.selectedInputDeviceID = UserDefaults.standard.string(forKey: Self.selectedInputDeviceDefaultsKey) ?? ""
+
         refreshAudioInputDevices()
-        Task {
-            await refreshHealth()
+        // Mic activation happens in AppDelegate.applicationDidFinishLaunching
+        Task { await refreshHealth() }
+    }
+
+    func activateMicrophone() async {
+        NSLog("[JARVIS] Requesting microphone access...")
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        NSLog("[JARVIS] Microphone access granted: %d", granted ? 1 : 0)
+        guard granted else {
+            inputDeviceStatusMessage = "마이크 권한이 거부되었습니다. 시스템 설정에서 허용해 주세요."
+            return
+        }
+        let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        appLog("Activating mic session for device: \(deviceID ?? "system default")")
+        do {
+            try nativeRecorder.activate(deviceID: deviceID)
+            microphoneReady = true
+            appLog("Microphone session active, isRunning=\(nativeRecorder.isSessionRunning)")
+        } catch {
+            appLog("Microphone activation failed: \(error.localizedDescription)")
+            inputDeviceStatusMessage = "마이크 활성화 실패: \(error.localizedDescription)"
         }
     }
 
@@ -255,11 +545,23 @@ final class JarvisMenuBarViewModel: ObservableObject {
         beginRecordingPhase()
         Task {
             do {
-                let transcript = try await bridge.transcribeOnce(device: selectedInputDeviceBridgeValue)
+                // Step 1: Native recording via AVCaptureDevice (no ffmpeg)
+                let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+                let audioURL = try await nativeRecorder.record(
+                    deviceID: deviceID,
+                    duration: pttDurationSeconds
+                )
+                appLog("Native recording saved: \(audioURL.path)")
+
                 cancelPhaseTransition()
+                transitionToAnswering()
+
+                // Step 2: Transcribe via Python whisper-cli
+                let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
                 lastTranscript = transcript.transcript
                 query = transcript.transcript
-                transitionToAnswering()
+
+                // Step 3: Ask via Python LLM
                 let payload = try await bridge.ask(transcript.transcript)
                 voiceLoopPhase = .answering
                 response = payload
@@ -458,11 +760,17 @@ final class JarvisMenuBarViewModel: ObservableObject {
         beginRecordingPhase()
 
         do {
-            let transcript = try await bridge.transcribeOnce(device: selectedInputDeviceBridgeValue)
+            let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            let audioURL = try await nativeRecorder.record(
+                deviceID: deviceID,
+                duration: pttDurationSeconds
+            )
             if Task.isCancelled {
                 return nil
             }
             cancelPhaseTransition()
+
+            let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
             lastTranscript = transcript.transcript
             query = transcript.transcript
             transitionToAnswering()
@@ -518,8 +826,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
         errorMessage = nil
         Task {
             do {
+                let fullContent: String
+                if let path = response.fullResponsePath, !path.isEmpty,
+                   let fileContent = try? String(contentsOfFile: path, encoding: .utf8) {
+                    fullContent = fileContent
+                } else {
+                    fullContent = response.response
+                }
                 let result = try await bridge.exportDraft(
-                    content: response.response,
+                    content: fullContent,
                     destination: destination.path,
                     approved: true
                 )
@@ -600,11 +915,14 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     var selectedInputDeviceBridgeValue: String? {
-        guard !selectedInputDeviceID.isEmpty else { return nil }
-        if selectedInputDeviceID == defaultInputDeviceID {
-            return nil
+        // Always pass the device name explicitly to ffmpeg for reliable
+        // device resolution.  Returning nil would use ffmpeg ":default"
+        // which may not map to the macOS system default correctly.
+        if !selectedInputDeviceID.isEmpty {
+            return selectedInputDeviceName
         }
-        return selectedInputDeviceName
+        // No explicit selection — use system default device name
+        return AVCaptureDevice.default(for: .audio)?.localizedName
     }
 
     var phaseStatusText: String {
@@ -1056,6 +1374,14 @@ struct JarvisMenuContentView: View {
                                         Button("Export Draft") {
                                             viewModel.requestExport()
                                         }
+                                        if let path = response.fullResponsePath, !path.isEmpty {
+                                            Button("...more") {
+                                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                                            }
+                                            .buttonStyle(.borderless)
+                                            .foregroundStyle(.blue)
+                                            .font(.caption)
+                                        }
                                         if let status = response.status, status.generationBlocked || status.safeMode {
                                             Text("검색 전용 상태")
                                                 .font(.caption)
@@ -1194,6 +1520,18 @@ struct JarvisMenuContentView: View {
                         }
                     }
                 }
+
+                Divider()
+
+                HStack {
+                    Spacer()
+                    Button("Quit JARVIS  ⌘Q") {
+                        NSApplication.shared.terminate(nil)
+                    }
+                    .keyboardShortcut("q", modifiers: .command)
+                    .controlSize(.small)
+                    .foregroundStyle(.secondary)
+                }
             }
             .padding(16)
         }
@@ -1208,59 +1546,115 @@ struct JarvisMenuContentView: View {
                 endPoint: .bottomTrailing
             )
         )
-        .sheet(isPresented: $viewModel.showApprovalPanel) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Export Approval")
-                    .font(.title3.weight(.bold))
-                Text("기술문서 기준 승인형 쓰기 정책을 따릅니다. 파일 쓰기는 명시 승인 후에만 진행됩니다.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                TextField("Filename", text: $viewModel.exportFilename)
-                    .textFieldStyle(.roundedBorder)
-                Picker("Format", selection: $viewModel.exportFormat) {
-                    ForEach(ExportFormat.allCases) { format in
-                        Text(format.rawValue.uppercased()).tag(format)
+        .overlay {
+            if viewModel.showApprovalPanel {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture { viewModel.declineExport() }
+                    .overlay {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Export Approval")
+                                .font(.title3.weight(.bold))
+                            Text("기술문서 기준 승인형 쓰기 정책을 따릅니다. 파일 쓰기는 명시 승인 후에만 진행됩니다.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            TextField("Filename", text: $viewModel.exportFilename)
+                                .textFieldStyle(.roundedBorder)
+                            Picker("Format", selection: $viewModel.exportFormat) {
+                                ForEach(ExportFormat.allCases) { format in
+                                    Text(format.rawValue.uppercased()).tag(format)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            Picker("Location", selection: $viewModel.exportLocation) {
+                                ForEach(ExportLocation.allCases) { location in
+                                    Text(location.title).tag(location)
+                                }
+                            }
+                            Text(viewModel.exportDestination().path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            if viewModel.exportWillOverwrite {
+                                Text("Existing file will be overwritten.")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            if let msg = viewModel.exportMessage {
+                                Text(msg)
+                                    .font(.caption)
+                                    .foregroundStyle(msg.hasPrefix("Exported") ? .green : .secondary)
+                            }
+                            HStack {
+                                Button("Cancel") {
+                                    viewModel.declineExport()
+                                }
+                                Button("Approve Export") {
+                                    viewModel.approveExport()
+                                }
+                                .keyboardShortcut(.defaultAction)
+                            }
+                        }
+                        .padding(20)
+                        .frame(width: 380)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .shadow(radius: 8)
                     }
-                }
-                .pickerStyle(.segmented)
-                Picker("Location", selection: $viewModel.exportLocation) {
-                    ForEach(ExportLocation.allCases) { location in
-                        Text(location.title).tag(location)
-                    }
-                }
-                Text(viewModel.exportDestination().path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                if viewModel.exportWillOverwrite {
-                    Text("Existing file will be overwritten.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                HStack {
-                    Button("Cancel") {
-                        viewModel.declineExport()
-                    }
-                    Button("Approve Export") {
-                        viewModel.approveExport()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                }
             }
-            .padding(20)
-            .frame(width: 420)
         }
     }
 }
 
-@main
 struct JarvisMenuBarApp: App {
-    @StateObject private var viewModel = JarvisMenuBarViewModel()
+    @StateObject private var viewModel: JarvisMenuBarViewModel
+
+    init() {
+        let recorder = JarvisMenuBarApp.sharedRecorder
+        _viewModel = StateObject(wrappedValue: JarvisMenuBarViewModel(recorder: recorder))
+    }
+
+    /// Shared recorder — activated in custom main() before SwiftUI starts.
+    nonisolated(unsafe) static var sharedRecorder = NativeAudioRecorder()
 
     var body: some Scene {
         MenuBarExtra("JARVIS", systemImage: "sparkles.rectangle.stack") {
             JarvisMenuContentView(viewModel: viewModel)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+// Custom entry point: activate mic BEFORE SwiftUI app lifecycle.
+@main
+enum AppEntry {
+    static func debugLog(_ msg: String) {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".jarvis").appendingPathComponent("mic_debug.log")
+        try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: path) {
+            handle.seekToEndOfFile()
+            handle.write(Data("\(msg)\n".utf8))
+            handle.closeFile()
+        } else {
+            try? "\(msg)\n".write(to: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    static func main() {
+        debugLog("main() started at \(Date())")
+
+        let recorder = NativeAudioRecorder()
+        debugLog("recorder created, calling activate...")
+
+        do {
+            try recorder.activate(deviceID: nil)
+            print("[JARVIS-MIC] Mic activated, isRunning=\(recorder.isSessionRunning)")
+            fflush(stdout)
+        } catch {
+            print("[JARVIS-MIC] Mic activation failed: \(error)")
+            fflush(stdout)
+        }
+        JarvisMenuBarApp.sharedRecorder = recorder
+        JarvisMenuBarApp.main()
     }
 }

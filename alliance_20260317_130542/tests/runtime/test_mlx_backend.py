@@ -50,6 +50,10 @@ class TestMLXBackendGenerate:
                 calls["messages"] = messages
                 return "formatted"
 
+            def encode(self, text):
+                # Simulate ~100 tokens for the formatted prompt
+                return list(range(100))
+
         fake_mlx_lm = types.ModuleType("mlx_lm")
         fake_sample_utils = types.ModuleType("mlx_lm.sample_utils")
 
@@ -81,10 +85,11 @@ class TestMLXBackendGenerate:
 
         assert result == "generated response"
         assert calls["sampler_args"] == (0.7, 0.9, 0.0, 1)
+        # Dynamic: context_window(8192) - prompt_tokens(100) - reserve(256) = 7836
         assert calls["generate_args"] == {
             "model": backend._model,
             "tokenizer": backend._tokenizer,
             "prompt": "formatted",
-            "max_tokens": 512,
+            "max_tokens": 7836,
             "sampler": "sampler",
         }
