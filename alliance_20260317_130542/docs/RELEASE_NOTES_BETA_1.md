@@ -27,9 +27,13 @@
 
 ## Post-Beta Updates (2026-03-21)
 
-- Native microphone recording via Swift AVCaptureDevice (replaces ffmpeg subprocess)
+- Native microphone recording via Swift AVAudioEngine (replaces ffmpeg subprocess + AVCaptureSession)
+- Two-Stage VAD: adaptive noise floor, IDLE→LISTENING→TENTATIVE→CONFIRMED state machine
+- CoreAudio device enumeration (replaces AVCaptureDevice — prevents aggregate device hang)
 - Microphone device selection with Unicode NFC/NFD normalization
 - Audio-input entitlement for TCC microphone access
+- Ollama streaming (stream:true + newline-delimited JSON chunk parsing)
+- Xcode project (JarvisMenuBar.xcodeproj) with entitlements and scheme
 - `<think>` tag stripping from Qwen3 LLM output
 - Dynamic max_tokens calculation (replaces fixed 512)
 - Citation relevance threshold (MIN_RELEVANCE_SCORE = 0.15)
@@ -40,7 +44,7 @@
 
 ## Deferred to Phase 2
 
-- VAD (silence-aware recording) and streaming LLM response
+- Silero VAD (ML-based, upgrade from energy-based) and streaming LLM response display
 - Avatar voice and persona layer
 - Microphone input animation and richer voice UI
 - Apple SFSpeechRecognizer / Siri Shortcuts evaluation
