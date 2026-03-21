@@ -25,12 +25,25 @@
 - Parser runtime now degrades gracefully when optional libraries are missing
 - Parser tests now skip cleanly when optional local dependencies are unavailable
 
-## Deferred to Post-Beta
+## Post-Beta Updates (2026-03-21)
 
-- Microphone device selection
+- Native microphone recording via Swift AVCaptureDevice (replaces ffmpeg subprocess)
+- Microphone device selection with Unicode NFC/NFD normalization
+- Audio-input entitlement for TCC microphone access
+- `<think>` tag stripping from Qwen3 LLM output
+- Dynamic max_tokens calculation (replaces fixed 512)
+- Citation relevance threshold (MIN_RELEVANCE_SCORE = 0.15)
+- Long response truncation with "...more" and temp file storage
+- Inline export approval panel (prevents window dismiss)
+- Quit button with ⌘Q shortcut
+- `transcribe-file` bridge command for native recording → whisper-cli pipeline
+
+## Deferred to Phase 2
+
+- VAD (silence-aware recording) and streaming LLM response
 - Avatar voice and persona layer
 - Microphone input animation and richer voice UI
-- Live voice UX polish and continuous interaction flow
+- Apple SFSpeechRecognizer / Siri Shortcuts evaluation
 - Reranker integration and deeper retrieval quality tuning
 - Governor / ModelRouter coupling hardening
 
@@ -38,3 +51,4 @@
 
 - `alliance_20260317_130542/.venv/bin/python -m pytest -q alliance_20260317_130542/tests`
 - Result at Beta 1 cut: `335 passed`
+- Result at 2026-03-21 update: `357 passed, 7 skipped`

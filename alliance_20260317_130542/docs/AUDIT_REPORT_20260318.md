@@ -295,8 +295,20 @@
 ```
 Phase 0 ██████████████████████ 100%  (핵심 하네스 포함)
 Phase 1 ██████████████████████ 100%  (핵심 운영 항목 + 관측성/안전 완성)
-Phase 2 █████████████████░░░░ 85%   (STT/TTS + 메뉴바 + voice + health 9점검 + 마이크 권한 + 의존성 fallback)
+Phase 2 ███████████████████░░ 90%   (STT/TTS + 메뉴바 + voice + health + 네이티브 녹음 + 장치 선택 + think 필터 + 동적 토큰 + 출처 임계값)
 ```
+
+### 2026-03-21 Phase 2 진행 항목
+- 네이티브 마이크 녹음 (AVCaptureDevice, ffmpeg 제거)
+- audio-input entitlement + TCC 권한 처리
+- 마이크 장치 선택 + Unicode NFC/NFD 정규화
+- `<think>` 태그 필터링
+- 동적 max_tokens 계산 (context_window - prompt_tokens - reserve)
+- 출처 표시 relevance 임계값 (MIN_RELEVANCE_SCORE = 0.15)
+- 긴 응답 임시 파일 저장 + ...more 버튼
+- 인라인 export 패널 (창 사라짐 방지)
+- transcribe-file 브리지 커맨드
+- Quit JARVIS 버튼 (⌘Q)
 
 ---
 
