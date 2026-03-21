@@ -153,6 +153,16 @@ class LlamaCppBackend:
         if context.strip():
             system_message += f"\n\n참고 증거:\n{context}"
 
+        # Estimate prompt tokens: Korean ~1 char/token, English ~4 chars/token
+        # Use conservative 1.5 chars/token for mixed content
+        estimated_prompt_tokens = int(len(system_message + prompt) / 1.5)
+        _RESERVE = 256
+        num_predict = max(256, self._context_window - estimated_prompt_tokens - _RESERVE)
+        logger.debug(
+            "Dynamic token budget: context=%d, est_prompt=%d, num_predict=%d",
+            self._context_window, estimated_prompt_tokens, num_predict,
+        )
+
         payload = json.dumps({
             "model": self._model_id,
             "system": system_message,
@@ -163,7 +173,7 @@ class LlamaCppBackend:
                 "num_ctx": self._context_window,
                 "temperature": 0.7,
                 "top_p": 0.9,
-                "num_predict": 512,
+                "num_predict": num_predict,
             },
         }).encode()
 

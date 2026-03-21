@@ -42,6 +42,7 @@ _CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class name
 # Boost values
 _FILENAME_MATCH_BOOST = 0.10   # document path contains queried filename
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
+MIN_RELEVANCE_SCORE = 0.15     # exclude low-relevance noise (greetings, etc.)
 
 
 class EvidenceBuilder:

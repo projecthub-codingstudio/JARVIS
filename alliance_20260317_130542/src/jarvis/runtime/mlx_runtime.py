@@ -10,6 +10,7 @@ evidence context for the LLM.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,14 @@ from jarvis.retrieval.citation_verifier import CitationVerifier
 
 if TYPE_CHECKING:
     from jarvis.contracts import ConversationTurn
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> blocks from LLM output."""
+    return _THINK_RE.sub("", text).strip()
+
 
 # Approximate token count: 1 Korean char ≈ 1 token, 1 English word ≈ 1 token
 # Conservative estimate: 4 chars per token average (mixed Korean/English)
@@ -165,7 +174,8 @@ class MLXRuntime:
         # Real backend path
         if self._backend is not None:
             t0 = time.perf_counter()
-            response_text = self._backend.generate(prompt, context, "read_only")
+            raw_text = self._backend.generate(prompt, context, "read_only")
+            response_text = strip_think_tags(raw_text)
             elapsed_ms = (time.perf_counter() - t0) * 1000
             if self._metrics is not None:
                 self._metrics.record(

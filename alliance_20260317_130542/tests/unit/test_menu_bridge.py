@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.cli.menu_bridge import MenuBarTranscriptionResponse, _export_draft, build_menu_response
+from jarvis.cli.menu_bridge import (
+    MenuBarTranscriptionResponse,
+    _MAX_DISPLAY_CHARS,
+    _export_draft,
+    build_menu_response,
+)
 from jarvis.contracts import (
     AnswerDraft,
     CitationRecord,
@@ -129,3 +134,45 @@ class TestMenuBridge:
     def test_transcription_payload_serializes_text(self) -> None:
         payload = MenuBarTranscriptionResponse(transcript="회의 일정 정리해 줘")
         assert payload.transcript == "회의 일정 정리해 줘"
+
+    def test_short_response_has_no_full_path(self) -> None:
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="짧은 질문",
+                assistant_output="짧은 답변",
+                has_evidence=False,
+            ),
+            answer=None,
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+        )
+        assert payload.full_response_path == ""
+        assert payload.response == "짧은 답변"
+
+    def test_long_response_truncated_with_temp_file(self) -> None:
+        long_text = "가" * (_MAX_DISPLAY_CHARS + 200)
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="긴 질문",
+                assistant_output=long_text,
+                has_evidence=False,
+            ),
+            answer=None,
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+        )
+        assert payload.response.endswith(" ...more")
+        assert len(payload.response) == _MAX_DISPLAY_CHARS + len(" ...more")
+        assert payload.full_response_path != ""
+
+        # Verify temp file contains full response
+        full_content = Path(payload.full_response_path).read_text(encoding="utf-8")
+        assert full_content == long_text
+        # Cleanup
+        Path(payload.full_response_path).unlink(missing_ok=True)

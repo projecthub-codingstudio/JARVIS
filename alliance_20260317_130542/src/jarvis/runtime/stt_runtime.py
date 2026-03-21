@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 
 from jarvis.runtime.model_router import ModelRouter
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BINARY_CANDIDATES = ("whisper-cli", "main")
 _DEFAULT_MEMORY_GB = 2.0
@@ -26,6 +31,23 @@ _COMMON_MODEL_DIRS = (
     Path.home() / ".jarvis" / "models",
 )
 _DEFAULT_LANGUAGE = "ko"
+
+# --- Hallucination detection ---
+# Patterns that indicate whisper.cpp hallucination (repetitive or boilerplate).
+_HALLUCINATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Repeated bracketed tokens: [뭐지?] [뭐지?] ...
+    re.compile(r"^(\[.+?\]\s*){3,}$"),
+    # Same short phrase repeated 3+ times
+    re.compile(r"^(.{2,20}?)\1{2,}"),
+    # Common Korean hallucination phrases on silence
+    re.compile(r"이 영상은.*영상에서", re.DOTALL),
+    re.compile(r"(구독|좋아요|알림).*(구독|좋아요|알림)", re.DOTALL),
+    re.compile(r"시청해\s*주셔서\s*감사합니다"),
+    re.compile(r"MBC\s*뉴스"),
+)
+
+# Minimum RMS energy threshold for 16-bit PCM audio.
+_MIN_RMS_ENERGY = 200.0
 
 
 class WhisperCppSTT:
@@ -64,6 +86,11 @@ class WhisperCppSTT:
         if transcript_path.exists():
             return transcript_path.read_text(encoding="utf-8").strip()
 
+        # Pre-check: skip transcription if audio is silence.
+        if not _has_speech_energy(path):
+            logger.info("Audio energy below threshold — skipping transcription")
+            raise RuntimeError("음성이 감지되지 않았습니다. 마이크에 대고 다시 말씀해 주세요.")
+
         binary = self._resolve_binary()
         if binary is None:
             raise RuntimeError(
@@ -98,6 +125,12 @@ class WhisperCppSTT:
         text = result.stdout.strip()
         if not text:
             raise RuntimeError("whisper.cpp returned empty transcript")
+
+        # Post-check: detect hallucinated output.
+        if _is_hallucination(text):
+            logger.warning("Hallucination detected, discarding: %s", text[:80])
+            raise RuntimeError("음성이 감지되지 않았습니다. 마이크에 대고 다시 말씀해 주세요.")
+
         return text
 
     def _build_command(self, *, binary: str, model_path: Path, audio_path: Path) -> list[str]:
@@ -110,6 +143,12 @@ class WhisperCppSTT:
             "-l",
             self._language,
             "-nt",
+            # Anti-hallucination flags
+            "--suppress-nst",
+            "--no-speech-thold",
+            "0.3",
+            "--entropy-thold",
+            "2.2",
         ]
 
     def _resolve_binary(self) -> str | None:
@@ -144,3 +183,59 @@ class WhisperCppSTT:
                 if candidate.exists():
                     return candidate.resolve()
         return None
+
+
+def _has_speech_energy(audio_path: Path, threshold: float = _MIN_RMS_ENERGY) -> bool:
+    """Check if a PCM WAV file has enough energy to contain speech.
+
+    Reads the WAV header to detect bit-depth (16 or 32-bit PCM) and
+    normalises the RMS to a 16-bit scale so the threshold is consistent
+    regardless of recorder backend.
+    """
+    try:
+        with open(audio_path, "rb") as f:
+            header = f.read(44)
+            if len(header) < 44 or header[:4] != b"RIFF":
+                return True  # Not a standard WAV — skip check, let whisper decide.
+            # WAV header byte 34-35: bits per sample (little-endian uint16).
+            bits_per_sample = struct.unpack_from("<H", header, 34)[0]
+            raw = f.read()
+        if bits_per_sample == 32:
+            sample_size = 4
+            fmt = "i"  # signed 32-bit int
+            scale = 1.0 / (1 << 16)  # normalise to 16-bit range
+        elif bits_per_sample == 16:
+            sample_size = 2
+            fmt = "h"  # signed 16-bit int
+            scale = 1.0
+        else:
+            return True  # Unusual bit depth — skip check.
+        n_samples = len(raw) // sample_size
+        if n_samples == 0:
+            return False
+        samples = struct.unpack(f"<{n_samples}{fmt}", raw[: n_samples * sample_size])
+        rms = (sum(s * s for s in samples) / n_samples) ** 0.5 * scale
+        logger.debug(
+            "Audio RMS energy: %.1f (threshold: %.1f, bits=%d)",
+            rms, threshold, bits_per_sample,
+        )
+        return rms >= threshold
+    except Exception:
+        return True  # On error, let whisper proceed.
+
+
+def _is_hallucination(text: str) -> bool:
+    """Return True if the transcript looks like a whisper hallucination."""
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    for pattern in _HALLUCINATION_PATTERNS:
+        if pattern.search(cleaned):
+            return True
+    # Check for excessive repetition of any short segment.
+    words = cleaned.split()
+    if len(words) >= 4:
+        unique_ratio = len(set(words)) / len(words)
+        if unique_ratio < 0.25:
+            return True
+    return False

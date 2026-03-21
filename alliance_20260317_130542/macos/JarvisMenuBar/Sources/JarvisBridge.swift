@@ -142,6 +142,17 @@ actor JarvisBridge {
         return response
     }
 
+    func transcribeFile(audioPath: String) async throws -> TranscriptionResponse {
+        let envelope = try await send([
+            "command": "transcribe-file",
+            "audio": audioPath,
+        ])
+        guard let response = envelope.transcriptionResult else {
+            throw BridgeError.decodeFailed("missing transcription_result")
+        }
+        return response
+    }
+
     func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse {
         let envelope = try await send([
             "command": "export-draft",
@@ -198,6 +209,8 @@ actor JarvisBridge {
         if environment["JARVIS_STT_MODEL"] == nil, let sttModel = configuration.defaultSTTModel {
             environment["JARVIS_STT_MODEL"] = sttModel
         }
+        bridgeLog("STT binary=\(environment["JARVIS_STT_BINARY"] ?? "nil") model=\(environment["JARVIS_STT_MODEL"] ?? "nil")")
+        bridgeLog("args=\(process.arguments ?? [])")
         process.environment = environment
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
