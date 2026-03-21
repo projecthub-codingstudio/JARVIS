@@ -3,20 +3,87 @@ import AudioToolbox
 import AVFoundation
 import SwiftUI
 
-private func appLog(_ message: String) {
+func appLog(_ message: String) {
     fputs("[JarvisMenuBar] \(message)\n", stderr)
+}
+
+enum MenuBarIconFactory {
+    static let image: NSImage = {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        NSColor.black.setFill()
+        let badgeRect = NSRect(x: 2.5, y: 2.5, width: 13, height: 13)
+        NSBezierPath(roundedRect: badgeRect, xRadius: 3.5, yRadius: 3.5).fill()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+
+        let glyphRect = NSRect(x: 0, y: 2.4, width: size.width, height: size.height)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: .black),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        NSString(string: "J").draw(in: glyphRect, withAttributes: attributes)
+
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
+    }()
+}
+
+@MainActor
+final class StatusBarController: NSObject, NSPopoverDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let popover = NSPopover()
+    private let viewModel = JarvisMenuBarViewModel()
+
+    override init() {
+        super.init()
+
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        popover.contentSize = NSSize(width: 420, height: 720)
+        popover.contentViewController = NSHostingController(
+            rootView: JarvisMenuContentView(viewModel: viewModel)
+        )
+
+        if let button = statusItem.button {
+            button.image = MenuBarIconFactory.image
+            button.imagePosition = .imageLeading
+            button.title = "JARVIS"
+            button.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+            button.toolTip = "JARVIS"
+        }
+    }
+
+    @objc
+    private func togglePopover(_ sender: AnyObject?) {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+            return
+        }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
 }
 
 enum VoiceLoopPhase: String {
     case idle = "idle"
     case recording = "recording"
+    case pauseDetected = "pause_detected"
     case transcribing = "transcribing"
     case answering = "answering"
     case cooldown = "cooldown"
     case stopped = "stopped"
     case error = "error"
 }
-
 enum ExportFormat: String, CaseIterable, Identifiable {
     case txt = "txt"
     case md = "md"
@@ -163,262 +230,6 @@ final class AudioBypassMonitor {
 /// The session stays running between recordings to keep the microphone
 /// hardware warm.  `record()` only toggles the file-writing flag,
 /// so recording starts instantly without device initialization delay.
-final class NativeAudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-    private let session = AVCaptureSession()
-    private let dataOutput = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "jarvis.audio.recorder")
-
-    private var audioFile: AudioFileID?
-    private var outputURL: URL?
-    private var packetOffset: Int64 = 0
-    private var isWriting = false  // toggled by record/stop — controls file writing
-    private var recordingContinuation: CheckedContinuation<URL, Error>?
-    private var stopTimer: DispatchWorkItem?
-    private var currentDeviceID: String?
-    private var sessionReady = false
-
-    var isSessionRunning: Bool { session.isRunning }
-
-    /// Activate the microphone session so the hardware is warm.
-    /// Call once on app launch or when the input device changes.
-    func activate(deviceID: String?) throws {
-        let needsReconfigure = !sessionReady || currentDeviceID != deviceID
-        guard needsReconfigure else { return }
-
-        try configureSession(deviceID: deviceID)
-        currentDeviceID = deviceID
-
-        print("[JARVIS-MIC] About to call session.startRunning()...")
-        fflush(stdout)
-        if !session.isRunning {
-            session.startRunning()
-        }
-        print("[JARVIS-MIC] session.startRunning() completed, isRunning=\(session.isRunning)")
-        fflush(stdout)
-        sessionReady = true
-    }
-
-    /// Record audio for `duration` seconds and write to a WAV file.
-    /// The session must be activated first via `activate()`.
-    /// Recording starts instantly because the mic is already warm.
-    func record(deviceID: String?, duration: Double) async throws -> URL {
-        // Ensure session is active with correct device
-        try activate(deviceID: deviceID)
-
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jarvis", isDirectory: true)
-            .appendingPathComponent("recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("ptt.wav")
-        outputURL = url
-
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { [self] in
-                self.recordingContinuation = continuation
-                self.packetOffset = 0
-                self.createWAVFile(url: url)
-                self.isWriting = true  // captureOutput will now write to file
-            }
-
-            let timer = DispatchWorkItem { [weak self] in
-                self?.finishRecording()
-            }
-            stopTimer = timer
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: timer)
-        }
-    }
-
-    func cancel() {
-        stopTimer?.cancel()
-        finishRecording()
-    }
-
-    /// Stop the session entirely (call on app termination).
-    func deactivate() {
-        queue.sync {
-            isWriting = false
-            if session.isRunning {
-                session.stopRunning()
-            }
-            if let file = audioFile {
-                AudioFileClose(file)
-                audioFile = nil
-            }
-        }
-        sessionReady = false
-    }
-
-    private func finishRecording() {
-        queue.async { [self] in
-            self.isWriting = false  // stop writing, session keeps running
-            if let file = self.audioFile {
-                AudioFileClose(file)
-                self.audioFile = nil
-            }
-            if let url = self.outputURL, let cont = self.recordingContinuation {
-                self.recordingContinuation = nil
-                cont.resume(returning: url)
-            }
-        }
-    }
-
-    private func configureSession(deviceID: String?) throws {
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-
-        session.inputs.forEach { session.removeInput($0) }
-        session.outputs.forEach { session.removeOutput($0) }
-
-        let devices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices
-
-        let device: AVCaptureDevice?
-        if let deviceID, !deviceID.isEmpty {
-            device = devices.first(where: { $0.uniqueID == deviceID })
-        } else {
-            device = AVCaptureDevice.default(for: .audio)
-        }
-
-        guard let device else {
-            throw NSError(domain: "JarvisMenuBar", code: 10, userInfo: [
-                NSLocalizedDescriptionKey: "마이크 장치를 찾을 수 없습니다."
-            ])
-        }
-
-        let input = try AVCaptureDeviceInput(device: device)
-        guard session.canAddInput(input) else {
-            throw NSError(domain: "JarvisMenuBar", code: 11, userInfo: [
-                NSLocalizedDescriptionKey: "마이크 입력을 추가할 수 없습니다."
-            ])
-        }
-        session.addInput(input)
-
-        dataOutput.setSampleBufferDelegate(self, queue: queue)
-        guard session.canAddOutput(dataOutput) else {
-            throw NSError(domain: "JarvisMenuBar", code: 12, userInfo: [
-                NSLocalizedDescriptionKey: "오디오 출력을 추가할 수 없습니다."
-            ])
-        }
-        session.addOutput(dataOutput)
-    }
-
-    private func createWAVFile(url: URL) {
-        var asbd = AudioStreamBasicDescription(
-            mSampleRate: 16000,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 2,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 2,
-            mChannelsPerFrame: 1,
-            mBitsPerChannel: 16,
-            mReserved: 0
-        )
-        AudioFileCreateWithURL(
-            url as CFURL,
-            kAudioFileWAVEType,
-            &asbd,
-            .eraseFile,
-            &audioFile
-        )
-    }
-
-    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
-
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        // Only write to file when isWriting is true.
-        // Session stays running between recordings (mic stays warm).
-        guard isWriting, let file = audioFile else { return }
-
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        let length = CMBlockBufferGetDataLength(blockBuffer)
-        var data = Data(count: length)
-        data.withUnsafeMutableBytes { rawBuf in
-            if let baseAddress = rawBuf.baseAddress {
-                CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: baseAddress)
-            }
-        }
-
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
-        let sourceASBD = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
-        guard let srcFormat = sourceASBD else { return }
-
-        let pcmData = resampleToTarget(data: data, sourceFormat: srcFormat)
-
-        let numPackets = UInt32(pcmData.count / 2)
-        pcmData.withUnsafeBytes { rawBuf in
-            guard let ptr = rawBuf.baseAddress else { return }
-            var ioNumPackets = numPackets
-            AudioFileWritePackets(
-                file,
-                false,
-                UInt32(pcmData.count),
-                nil,
-                packetOffset,
-                &ioNumPackets,
-                ptr
-            )
-            packetOffset += Int64(ioNumPackets)
-        }
-    }
-
-    private func resampleToTarget(data: Data, sourceFormat: AudioStreamBasicDescription) -> Data {
-        let srcChannels = Int(sourceFormat.mChannelsPerFrame)
-        let srcSampleRate = sourceFormat.mSampleRate
-        let targetRate: Double = 16000
-
-        let isFloat = (sourceFormat.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-        let bytesPerSample = Int(sourceFormat.mBitsPerChannel / 8)
-
-        let totalSourceSamples = data.count / (bytesPerSample * srcChannels)
-        var monoSamples = [Float64](repeating: 0, count: totalSourceSamples)
-
-        data.withUnsafeBytes { rawBuf in
-            for i in 0..<totalSourceSamples {
-                var sum: Float64 = 0
-                for ch in 0..<srcChannels {
-                    let offset = (i * srcChannels + ch) * bytesPerSample
-                    if isFloat && bytesPerSample == 4 {
-                        let val: Float32 = rawBuf.load(fromByteOffset: offset, as: Float32.self)
-                        sum += Float64(val)
-                    } else if bytesPerSample == 2 {
-                        let val: Int16 = rawBuf.load(fromByteOffset: offset, as: Int16.self)
-                        sum += Float64(val) / 32768.0
-                    }
-                }
-                monoSamples[i] = sum / Float64(srcChannels)
-            }
-        }
-
-        let ratio = targetRate / srcSampleRate
-        let targetSamples = Int(Double(totalSourceSamples) * ratio)
-        var result = Data(count: targetSamples * 2)
-
-        result.withUnsafeMutableBytes { outBuf in
-            let outPtr = outBuf.bindMemory(to: Int16.self)
-            for i in 0..<targetSamples {
-                let srcIdx = Double(i) / ratio
-                let idx = Int(srcIdx)
-                let frac = srcIdx - Double(idx)
-                let s0 = monoSamples[min(idx, totalSourceSamples - 1)]
-                let s1 = monoSamples[min(idx + 1, totalSourceSamples - 1)]
-                let interpolated = s0 + (s1 - s0) * frac
-                let clamped = max(-1.0, min(1.0, interpolated))
-                outPtr[i] = Int16(clamped * 32767.0)
-            }
-        }
-
-        return result
-    }
-}
-
 @MainActor
 final class JarvisMenuBarViewModel: ObservableObject {
     private static let selectedInputDeviceDefaultsKey = "selectedInputDeviceID"
@@ -458,17 +269,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
             if bypassEnabled {
                 restartBypass()
             }
-            // Re-activate mic session with new device
-            Task { @MainActor in
-                await activateMicrophone()
-            }
+            // Mic will re-activate with new device on next recording
+            nativeRecorder.deactivate()
         }
     }
     @Published var inputDeviceStatusMessage = "시스템 기본 입력 장치를 사용합니다."
 
     private let bridge: JarvisBridge
     private let bypassMonitor = AudioBypassMonitor()
-    let nativeRecorder: NativeAudioRecorder
+    let nativeRecorder = NativeAudioRecorder()
     private var voiceLoopTask: Task<Void, Never>?
     private let successLoopDelay: Duration = .seconds(1.2)
     private let errorLoopDelay: Duration = .seconds(4)
@@ -478,21 +287,29 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     @Published var microphoneReady = false
 
-    init(bridge: JarvisBridge = JarvisBridge(), recorder: NativeAudioRecorder = NativeAudioRecorder()) {
+    init(bridge: JarvisBridge = JarvisBridge()) {
         self.bridge = bridge
-        self.nativeRecorder = recorder
         self.pttDurationSeconds = Double(ProcessInfo.processInfo.environment["JARVIS_PTT_SECONDS"] ?? "8") ?? 8
         self.selectedInputDeviceID = UserDefaults.standard.string(forKey: Self.selectedInputDeviceDefaultsKey) ?? ""
-
+        // CoreAudio-based device scan is safe to call synchronously (no blocking)
         refreshAudioInputDevices()
-        // Mic activation happens in AppDelegate.applicationDidFinishLaunching
         Task { await refreshHealth() }
+
+        // Pre-warm the audio engine so the first recording doesn't have
+        // a cold-start delay. Runs on background to avoid blocking UI.
+        Task.detached { [nativeRecorder, selectedInputDeviceID] in
+            let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            do {
+                try nativeRecorder.activate(deviceID: deviceID)
+                appLog("Audio engine pre-warmed")
+            } catch {
+                appLog("Pre-warm failed (will retry on first recording): \(error)")
+            }
+        }
     }
 
     func activateMicrophone() async {
-        NSLog("[JARVIS] Requesting microphone access...")
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
-        NSLog("[JARVIS] Microphone access granted: %d", granted ? 1 : 0)
         guard granted else {
             inputDeviceStatusMessage = "마이크 권한이 거부되었습니다. 시스템 설정에서 허용해 주세요."
             return
@@ -551,19 +368,19 @@ final class JarvisMenuBarViewModel: ObservableObject {
                     deviceID: deviceID,
                     duration: pttDurationSeconds
                 )
-                appLog("Native recording saved: \(audioURL.path)")
+                appLog("Recording done: \(audioURL.path)")
 
                 cancelPhaseTransition()
-                transitionToAnswering()
+                voiceLoopPhase = .transcribing
 
                 // Step 2: Transcribe via Python whisper-cli
                 let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
                 lastTranscript = transcript.transcript
                 query = transcript.transcript
 
-                // Step 3: Ask via Python LLM
-                let payload = try await bridge.ask(transcript.transcript)
+                // Step 3: Search + Answer via Python LLM
                 voiceLoopPhase = .answering
+                let payload = try await bridge.ask(transcript.transcript)
                 response = payload
                 exportMessage = nil
             } catch {
@@ -609,28 +426,90 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     func refreshAudioInputDevices() {
-        let previousSelection = selectedInputDeviceID
-        let defaultDeviceID = AVCaptureDevice.default(for: .audio)?.uniqueID ?? ""
-        defaultInputDeviceID = defaultDeviceID
-        let devices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices
-            .map { AudioInputDevice(id: $0.uniqueID, name: $0.localizedName) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        // Use CoreAudio APIs exclusively — AVCaptureDevice APIs can hang on
+        // aggregate devices (Revelator통합 6ch) and lock the entire audio system.
+
+        var defaultDeviceUID: String = ""
+        var devices: [AudioInputDevice] = []
+
+        // 1) Get default input device UID
+        var defAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var defDevID: AudioDeviceID = 0
+        var defSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &defAddress, 0, nil, &defSize, &defDevID) == noErr {
+            defaultDeviceUID = Self.getDeviceUID(defDevID) ?? ""
+        }
+
+        // 2) Enumerate all audio devices with input channels
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var propSize: UInt32 = 0
+        AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &devicesAddress, 0, nil, &propSize)
+        let count = Int(propSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &devicesAddress, 0, nil, &propSize, &deviceIDs)
+
+        for devID in deviceIDs {
+            // Check if device has input channels
+            var inputAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreamConfiguration,
+                mScope: kAudioObjectPropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var bufSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(devID, &inputAddress, 0, nil, &bufSize) == noErr, bufSize > 0 else { continue }
+            let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(bufSize))
+            defer { bufferList.deallocate() }
+            guard AudioObjectGetPropertyData(devID, &inputAddress, 0, nil, &bufSize, bufferList) == noErr else { continue }
+            let inputChannels = UnsafeMutableAudioBufferListPointer(bufferList).reduce(0) { $0 + Int($1.mNumberChannels) }
+            guard inputChannels > 0 else { continue }
+
+            // Get device name and UID
+            guard let uid = Self.getDeviceUID(devID) else { continue }
+            var nameAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var name: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(devID, &nameAddress, 0, nil, &nameSize, &name) == noErr,
+                  let deviceName = name?.takeRetainedValue() as String? else { continue }
+
+            devices.append(AudioInputDevice(id: uid, name: deviceName))
+        }
+
+        devices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        defaultInputDeviceID = defaultDeviceUID
         availableInputDevices = devices
 
         if selectedInputDeviceID.isEmpty {
             inputDeviceStatusMessage = "시스템 기본 입력 장치를 사용합니다."
-            return
-        }
-        if !devices.contains(where: { $0.id == selectedInputDeviceID }) {
+        } else if !devices.contains(where: { $0.id == selectedInputDeviceID }) {
             selectedInputDeviceID = ""
-            inputDeviceStatusMessage = previousSelection.isEmpty
-                ? "시스템 기본 입력 장치를 사용합니다."
-                : "선택한 마이크를 찾을 수 없어 시스템 기본 입력으로 전환했습니다."
+            inputDeviceStatusMessage = "선택한 마이크를 찾을 수 없어 시스템 기본 입력으로 전환했습니다."
         }
+    }
+
+    private static func getDeviceUID(_ deviceID: AudioDeviceID) -> String? {
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, &uid) == noErr,
+              let uidStr = uid?.takeRetainedValue() as String? else { return nil }
+        return uidStr
     }
 
     func toggleBypass() {
@@ -769,16 +648,17 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 return nil
             }
             cancelPhaseTransition()
+            voiceLoopPhase = .transcribing
 
             let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
             lastTranscript = transcript.transcript
             query = transcript.transcript
-            transitionToAnswering()
+
+            voiceLoopPhase = .answering
             let payload = try await bridge.ask(transcript.transcript)
             if Task.isCancelled {
                 return nil
             }
-            voiceLoopPhase = .answering
             response = payload
             exportMessage = nil
             errorMessage = nil
@@ -895,6 +775,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
             "voice loop idle"
         case .recording:
             "recording"
+        case .pauseDetected:
+            "말이 끊겼습니다. 이어서 말하면 계속 녹음합니다..."
         case .transcribing:
             "transcribing"
         case .answering:
@@ -915,14 +797,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     var selectedInputDeviceBridgeValue: String? {
-        // Always pass the device name explicitly to ffmpeg for reliable
-        // device resolution.  Returning nil would use ffmpeg ":default"
-        // which may not map to the macOS system default correctly.
         if !selectedInputDeviceID.isEmpty {
             return selectedInputDeviceName
         }
-        // No explicit selection — use system default device name
-        return AVCaptureDevice.default(for: .audio)?.localizedName
+        // No explicit selection — return nil (use system default)
+        return nil
     }
 
     var phaseStatusText: String {
@@ -931,6 +810,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
             return "대기 중"
         case .recording:
             return "녹음 중 \(recordingElapsedLabel) / \(maxRecordingLabel)"
+        case .pauseDetected:
+            return "⏸ 말이 끊김 — 이어서 말하면 계속 녹음합니다"
         case .transcribing:
             return "녹음이 끝났습니다. 음성을 텍스트로 변환하는 중입니다."
         case .answering:
@@ -948,19 +829,35 @@ final class JarvisMenuBarViewModel: ObservableObject {
         cancelPhaseTransition()
         voiceLoopPhase = .recording
         recordingElapsedSeconds = 0
+
+        // Wire VAD state changes to UI phases
+        nativeRecorder.onVadStateChanged = { [weak self] vadState in
+            guard let self else { return }
+            switch vadState {
+            case .listening:
+                self.voiceLoopPhase = .recording
+                self.errorMessage = nil
+            case .tentativeEnd:
+                self.voiceLoopPhase = .pauseDetected
+            case .confirmedEnd:
+                self.voiceLoopPhase = .transcribing
+            case .idle:
+                break
+            }
+        }
+
+        // Wire guidance messages
+        nativeRecorder.onGuidanceMessage = { [weak self] message in
+            self?.errorMessage = message
+        }
+
+        // Elapsed time counter
         phaseTransitionTask = Task { [weak self] in
             guard let self else { return }
             let start = Date()
             while !Task.isCancelled {
-                let elapsed = Date().timeIntervalSince(start)
-                recordingElapsedSeconds = min(elapsed, pttDurationSeconds)
-                if elapsed >= pttDurationSeconds {
-                    break
-                }
+                recordingElapsedSeconds = Date().timeIntervalSince(start)
                 try? await Task.sleep(for: .milliseconds(150))
-            }
-            if !Task.isCancelled && isLoading {
-                voiceLoopPhase = .transcribing
             }
         }
     }
@@ -1107,6 +1004,8 @@ struct VoicePhaseIndicator: View {
             return .gray
         case .recording:
             return .red
+        case .pauseDetected:
+            return .yellow
         case .transcribing:
             return .orange
         case .answering:
@@ -1124,6 +1023,8 @@ struct VoicePhaseIndicator: View {
             return "Ready"
         case .recording:
             return "Listening"
+        case .pauseDetected:
+            return "일시 정지"
         case .transcribing:
             return "Transcribing"
         case .answering:
@@ -1204,6 +1105,8 @@ struct JarvisMenuContentView: View {
             return .gray
         case .recording:
             return .red
+        case .pauseDetected:
+            return .yellow
         case .transcribing:
             return .orange
         case .answering:
@@ -1605,56 +1508,19 @@ struct JarvisMenuContentView: View {
     }
 }
 
+
+@main
 struct JarvisMenuBarApp: App {
     @StateObject private var viewModel: JarvisMenuBarViewModel
 
     init() {
-        let recorder = JarvisMenuBarApp.sharedRecorder
-        _viewModel = StateObject(wrappedValue: JarvisMenuBarViewModel(recorder: recorder))
+        _viewModel = StateObject(wrappedValue: JarvisMenuBarViewModel())
     }
 
-    /// Shared recorder — activated in custom main() before SwiftUI starts.
-    nonisolated(unsafe) static var sharedRecorder = NativeAudioRecorder()
-
     var body: some Scene {
-        MenuBarExtra("JARVIS", systemImage: "sparkles.rectangle.stack") {
+        return MenuBarExtra("JARVIS", systemImage: "sparkles.rectangle.stack") {
             JarvisMenuContentView(viewModel: viewModel)
         }
         .menuBarExtraStyle(.window)
-    }
-}
-
-// Custom entry point: activate mic BEFORE SwiftUI app lifecycle.
-@main
-enum AppEntry {
-    static func debugLog(_ msg: String) {
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jarvis").appendingPathComponent("mic_debug.log")
-        try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let handle = try? FileHandle(forWritingTo: path) {
-            handle.seekToEndOfFile()
-            handle.write(Data("\(msg)\n".utf8))
-            handle.closeFile()
-        } else {
-            try? "\(msg)\n".write(to: path, atomically: true, encoding: .utf8)
-        }
-    }
-
-    static func main() {
-        debugLog("main() started at \(Date())")
-
-        let recorder = NativeAudioRecorder()
-        debugLog("recorder created, calling activate...")
-
-        do {
-            try recorder.activate(deviceID: nil)
-            print("[JARVIS-MIC] Mic activated, isRunning=\(recorder.isSessionRunning)")
-            fflush(stdout)
-        } catch {
-            print("[JARVIS-MIC] Mic activation failed: \(error)")
-            fflush(stdout)
-        }
-        JarvisMenuBarApp.sharedRecorder = recorder
-        JarvisMenuBarApp.main()
     }
 }
