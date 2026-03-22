@@ -128,8 +128,19 @@ class MLXBackend:
         logger.info("Loading MLX model: %s", repo_id)
         t0 = time.perf_counter()
 
-        from mlx_lm import load as mlx_load
-        self._model, self._tokenizer = mlx_load(repo_id)
+        # Suppress stdout noise from HuggingFace trust_remote_code prompts
+        # and model type warnings that corrupt JSON bridge output.
+        import os as _os
+        import sys as _sys
+        _os.environ.setdefault("HF_TRUST_REMOTE_CODE", "1")
+        saved_stdout = _sys.stdout
+        _sys.stdout = open(_os.devnull, "w")
+        try:
+            from mlx_lm import load as mlx_load
+            self._model, self._tokenizer = mlx_load(repo_id)
+        finally:
+            _sys.stdout.close()
+            _sys.stdout = saved_stdout
 
         elapsed = time.perf_counter() - t0
         self._model_id = repo_id
