@@ -484,7 +484,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
     }
 
-    /// Strip markdown and source references for natural TTS reading.
+    /// Strip markdown and meta-commentary for natural TTS reading.
+    /// Only keeps the core answer — cuts off when meta-commentary starts.
     static func stripForTTS(_ text: String) -> String {
         var result = text
 
@@ -495,27 +496,41 @@ final class JarvisMenuBarViewModel: ObservableObject {
         result = result.replacingOccurrences(of: "## ", with: "")
         result = result.replacingOccurrences(of: "# ", with: "")
 
-        // Strip citation labels [1], [2]
+        // Strip citation labels [1], [2] and file references
         result = result.replacingOccurrences(
             of: "\\[\\d+\\]", with: "", options: .regularExpression
         )
-        // Strip file references [filename.ext]
         result = result.replacingOccurrences(
             of: "\\[[^\\]]*\\.[a-z]{2,5}\\]", with: "", options: .regularExpression
         )
 
-        // Remove source/citation lines (keep the rest)
-        let lines = result.components(separatedBy: "\n").filter { line in
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("이 정보는") && t.contains("파일") { return false }
-            if t.hasPrefix("출처") && t.contains(":") { return false }
-            return true
+        // Cut off at meta-commentary — only keep lines before it starts
+        let cutoffPhrases = [
+            "제공된 증거",
+            "주어진 데이터",
+            "정확한 메뉴를 알고",
+            "정확한 답변을",
+            "이 정보는",
+            "출처:",
+            "참고:",
+            "Note:",
+            "다만,",
+            "하지만 예시로",
+        ]
+        let lines = result.components(separatedBy: "\n")
+        var kept: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            // Stop at first meta-commentary line
+            if cutoffPhrases.contains(where: { trimmed.hasPrefix($0) }) { break }
+            // Skip bullet points that are just repeating the answer
+            if trimmed.hasPrefix("- ") && kept.count >= 3 { continue }
+            kept.append(trimmed)
         }
-        result = lines.joined(separator: "\n")
+        result = kept.joined(separator: ". ")
 
-        // Convert newlines to periods for natural speech pauses
-        result = result.replacingOccurrences(of: "\n", with: ". ")
-        // Clean extra whitespace and periods
+        // Clean extra periods and whitespace
         result = result.replacingOccurrences(
             of: "\\.\\s*\\.+", with: ".", options: .regularExpression
         )
