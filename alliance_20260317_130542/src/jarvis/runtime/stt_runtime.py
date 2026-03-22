@@ -186,42 +186,152 @@ class WhisperCppSTT:
 
 
 def _has_speech_energy(audio_path: Path, threshold: float = _MIN_RMS_ENERGY) -> bool:
-    """Check if a PCM WAV file has enough energy to contain speech.
+    """Check if an audio file contains speech using Silero VAD.
 
-    Reads the WAV header to detect bit-depth (16 or 32-bit PCM) and
-    normalises the RMS to a 16-bit scale so the threshold is consistent
-    regardless of recorder backend.
+    Uses Silero VAD (neural network) for accurate speech detection.
+    Falls back to RMS energy check if Silero is unavailable.
+
+    Silero VAD requires 16kHz mono audio — the recording pipeline
+    already converts via ffmpeg, so this is always satisfied.
     """
+    # Try Silero VAD first (ML-based, more accurate)
+    silero_result = _has_speech_silero(audio_path)
+    if silero_result is not None:
+        return silero_result
+
+    # Fallback: energy-based RMS check
+    return _has_speech_energy_rms(audio_path, threshold)
+
+
+# --- Silero VAD ---
+
+_silero_model = None
+_silero_available: bool | None = None
+
+
+def _load_silero_model():
+    """Lazy-load Silero VAD model (cached across calls)."""
+    global _silero_model, _silero_available
+
+    if _silero_available is False:
+        return None
+    if _silero_model is not None:
+        return _silero_model
+
+    try:
+        from silero_vad import load_silero_vad
+        _silero_model = load_silero_vad()
+        _silero_available = True
+        logger.info("Silero VAD model loaded")
+        return _silero_model
+    except Exception as exc:
+        _silero_available = False
+        logger.debug("Silero VAD unavailable: %s — using energy fallback", exc)
+        return None
+
+
+def _load_wav_as_tensor(audio_path: Path):
+    """Load a WAV file as a torch float32 tensor at 16kHz.
+
+    Avoids torchaudio's read_audio() which requires torchcodec in
+    torchaudio >= 2.10. Directly reads PCM WAV using struct.
+    """
+    import torch
+
+    with open(audio_path, "rb") as f:
+        header = f.read(44)
+        if len(header) < 44 or header[:4] != b"RIFF":
+            return None
+        bits_per_sample = struct.unpack_from("<H", header, 34)[0]
+        sample_rate = struct.unpack_from("<I", header, 24)[0]
+        raw = f.read()
+
+    if bits_per_sample == 16:
+        n = len(raw) // 2
+        samples = struct.unpack(f"<{n}h", raw[:n * 2])
+        tensor = torch.FloatTensor(samples) / 32768.0
+    elif bits_per_sample == 32:
+        n = len(raw) // 4
+        samples = struct.unpack(f"<{n}i", raw[:n * 4])
+        tensor = torch.FloatTensor(samples) / 2147483648.0
+    else:
+        return None
+
+    # Resample to 16kHz if needed (Silero requires 16kHz)
+    if sample_rate != 16000 and sample_rate > 0:
+        # Simple decimation for common rates (44100→16000, 48000→16000)
+        ratio = sample_rate / 16000
+        indices = torch.arange(0, len(tensor), ratio).long()
+        indices = indices[indices < len(tensor)]
+        tensor = tensor[indices]
+
+    return tensor
+
+
+def _has_speech_silero(audio_path: Path, threshold: float = 0.3) -> bool | None:
+    """Check for speech using Silero VAD. Returns None if unavailable."""
+    model = _load_silero_model()
+    if model is None:
+        return None
+
+    try:
+        from silero_vad import get_speech_timestamps
+
+        wav = _load_wav_as_tensor(audio_path)
+        if wav is None:
+            return None
+
+        timestamps = get_speech_timestamps(wav, model, threshold=threshold)
+        has_speech = len(timestamps) > 0
+
+        if timestamps:
+            total_speech_ms = sum(
+                (ts["end"] - ts["start"]) for ts in timestamps
+            ) / 16  # 16 samples per ms at 16kHz
+            logger.debug(
+                "Silero VAD: %d speech segments, %.0fms total speech",
+                len(timestamps), total_speech_ms,
+            )
+        else:
+            logger.debug("Silero VAD: no speech detected")
+
+        return has_speech
+    except Exception as exc:
+        logger.debug("Silero VAD check failed: %s", exc)
+        return None
+
+
+def _has_speech_energy_rms(audio_path: Path, threshold: float = _MIN_RMS_ENERGY) -> bool:
+    """Fallback: check if a PCM WAV file has enough RMS energy for speech."""
     try:
         with open(audio_path, "rb") as f:
             header = f.read(44)
             if len(header) < 44 or header[:4] != b"RIFF":
-                return True  # Not a standard WAV — skip check, let whisper decide.
-            # WAV header byte 34-35: bits per sample (little-endian uint16).
+                return True
             bits_per_sample = struct.unpack_from("<H", header, 34)[0]
             raw = f.read()
         if bits_per_sample == 32:
             sample_size = 4
-            fmt = "i"  # signed 32-bit int
-            scale = 1.0 / (1 << 16)  # normalise to 16-bit range
+            fmt = "i"
+            scale = 1.0 / (1 << 16)
         elif bits_per_sample == 16:
             sample_size = 2
-            fmt = "h"  # signed 16-bit int
+            fmt = "h"
             scale = 1.0
         else:
-            return True  # Unusual bit depth — skip check.
+            return True
         n_samples = len(raw) // sample_size
         if n_samples == 0:
             return False
         samples = struct.unpack(f"<{n_samples}{fmt}", raw[: n_samples * sample_size])
         rms = (sum(s * s for s in samples) / n_samples) ** 0.5 * scale
         logger.debug(
-            "Audio RMS energy: %.1f (threshold: %.1f, bits=%d)",
+            "RMS energy fallback: %.1f (threshold: %.1f, bits=%d)",
             rms, threshold, bits_per_sample,
         )
         return rms >= threshold
     except Exception:
-        return True  # On error, let whisper proceed.
+        return True
 
 
 def _is_hallucination(text: str) -> bool:
