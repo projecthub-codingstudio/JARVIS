@@ -77,6 +77,19 @@ class MLXRuntime:
         self._citation_verifier = CitationVerifier()
         self._status_detail = status_detail
 
+    def _post_verify(self, answer: AnswerDraft) -> None:
+        """Run citation verification after answer is yielded (post-verification).
+
+        Updates answer.verification_warnings in place. This runs after
+        the AnswerDraft has been yielded to the REPL, so the user sees
+        the answer immediately without waiting for verification.
+        """
+        try:
+            warnings = self._citation_verifier.verify(answer.content, answer.evidence)
+            answer.verification_warnings = warnings
+        except Exception:
+            pass  # Verification failure should not affect the answer
+
     def _assemble_context(self, evidence: VerifiedEvidenceSet) -> str:
         """Assemble evidence into context string, respecting token budget.
 
@@ -296,15 +309,18 @@ class MLXRuntime:
                     MetricName.TTFT_MS, elapsed_ms,
                     tags={"stage": "generation"},
                 )
-            warnings = self._citation_verifier.verify(response_text, evidence)
-
-            yield AnswerDraft(
+            # Yield AnswerDraft immediately without verification (post-verification)
+            answer = AnswerDraft(
                 content=response_text,
                 evidence=evidence,
                 model_id=self._backend.model_id if hasattr(self._backend, "model_id") else self._model_id,
                 generation_time_ms=elapsed_ms,
-                verification_warnings=warnings,
+                verification_warnings=(),
             )
+            yield answer
+
+            # Run verification asynchronously — updates answer in place
+            self._post_verify(answer)
         else:
             # No streaming support — fall back to non-streaming generate
             answer = self.generate(prompt, evidence, recent_turns=recent_turns)
