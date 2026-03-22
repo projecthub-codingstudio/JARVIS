@@ -37,12 +37,15 @@ from jarvis.observability.metrics import MetricName, MetricsCollector
 
 # Patterns for extracting specific identifiers from queries
 _FILENAME_RE = re.compile(r"[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf)")
+# Also match filenames without extension (e.g., "14day_diet_supplements_final")
+_FILENAME_STEM_RE = re.compile(r"\b([a-zA-Z0-9][\w-]{5,}(?:_[\w-]+)+)\b")
 _CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class names like _build_foo, MyClass
 
 # Boost values
-_FILENAME_MATCH_BOOST = 0.10   # document path contains queried filename
+_FILENAME_MATCH_BOOST = 0.20   # document path contains queried filename
+_FILENAME_STEM_BOOST = 0.15    # document stem matches without extension
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
-MIN_RELEVANCE_SCORE = 0.15     # exclude low-relevance noise (greetings, etc.)
+MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
 
 
 class EvidenceBuilder:
@@ -73,6 +76,7 @@ class EvidenceBuilder:
         # Extract filename and identifier terms from query for boost scoring
         query_text = " ".join(f.text for f in fragments)
         query_filenames = {m.lower() for m in _FILENAME_RE.findall(query_text)}
+        query_filename_stems = {m.lower() for m in _FILENAME_STEM_RE.findall(query_text)}
         query_identifiers = {m for m in _CODE_IDENT_RE.findall(query_text) if len(m) > 4}
 
         items: list[EvidenceItem] = []
@@ -115,10 +119,21 @@ class EvidenceBuilder:
             boost += self._freshness.compute_freshness_boost(doc)
 
             # Filename match boost: document path contains queried filename
-            if query_filenames and doc.path:
+            if doc.path:
                 doc_filename = Path(doc.path).name.lower()
-                if doc_filename in query_filenames:
+                doc_stem = Path(doc.path).stem.lower()
+                if query_filenames and doc_filename in query_filenames:
                     boost += _FILENAME_MATCH_BOOST
+                elif query_filename_stems and doc_stem in query_filename_stems:
+                    boost += _FILENAME_STEM_BOOST
+                else:
+                    # Fuzzy: check if query words match document stem tokens
+                    # e.g., "14day diet supplements final" matches "14day_diet_supplements_final"
+                    stem_tokens = set(doc_stem.replace("-", "_").split("_"))
+                    query_words = {w.lower() for f in fragments for w in f.text.split() if len(w) > 2}
+                    overlap = stem_tokens & query_words
+                    if len(overlap) >= 2 and len(overlap) >= len(stem_tokens) * 0.5:
+                        boost += _FILENAME_STEM_BOOST
 
             # Identifier match boost: chunk contains queried code identifier
             chunk_text = chunk_row[0] if chunk_row[0] else ""
