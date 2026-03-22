@@ -68,6 +68,7 @@ class Orchestrator:
         conversation_store: ConversationStoreProtocol,
         task_log_store: TaskLogStoreProtocol,
         planner: object | None = None,
+        reranker: object | None = None,
         metrics: MetricsCollector | None = None,
         error_monitor: ErrorMonitor | None = None,
     ) -> None:
@@ -82,6 +83,7 @@ class Orchestrator:
         self._conversation_store = conversation_store
         self._task_log_store = task_log_store
         self._planner = planner
+        self._reranker = reranker
         self._metrics = metrics
         self._error_monitor = error_monitor
 
@@ -327,8 +329,30 @@ class Orchestrator:
         hybrid_results = self._hybrid_fusion.fuse(
             fts_hits,
             vector_hits,
-            top_k=runtime_decision.max_retrieved_chunks,
+            # Fetch more candidates for reranker to filter
+            top_k=runtime_decision.max_retrieved_chunks * 2 if self._reranker else runtime_decision.max_retrieved_chunks,
         )
+
+        # Rerank if available: cross-encoder re-scores candidates
+        if self._reranker is not None and hasattr(self._reranker, "rerank"):
+            # Fetch chunk texts for better reranking (snippets may be truncated)
+            chunk_texts: dict[str, str] = {}
+            db = getattr(self._fts_retriever, "_db", None)
+            if db is not None:
+                for r in hybrid_results:
+                    row = db.execute(
+                        "SELECT text FROM chunks WHERE chunk_id = ?", (r.chunk_id,)
+                    ).fetchone()
+                    if row:
+                        chunk_texts[r.chunk_id] = row[0]
+
+            hybrid_results = self._reranker.rerank(
+                query,
+                hybrid_results,
+                top_k=runtime_decision.max_retrieved_chunks,
+                chunk_texts=chunk_texts,
+            )
+
         evidence = self._evidence_builder.build(hybrid_results, fragments)
         if len(evidence.items) > runtime_decision.max_retrieved_chunks:
             evidence = VerifiedEvidenceSet(
@@ -354,11 +378,16 @@ class Orchestrator:
     ) -> list:
         """Search within a specific document when filename is mentioned in query.
 
-        If the user says "pipeline.py의 함수를 알려줘", this finds pipeline.py
-        in the DB and searches only its chunks, bypassing BM25 noise from
-        large unrelated documents.
+        Handles both exact filenames ("pipeline.py") and space-separated
+        references ("14day diet supplements final" → 14day_diet_supplements_final).
         """
+        from jarvis.retrieval.query_decomposer import _extract_filenames
+
         filenames = self._FILENAME_RE.findall(query)
+        # Also detect underscore-separated stems and space-separated variants
+        filenames.extend(_extract_filenames(query))
+        # Deduplicate
+        filenames = list(dict.fromkeys(filenames))
         if not filenames:
             return []
 
@@ -371,19 +400,28 @@ class Orchestrator:
 
         targeted: list[SearchHit] = []
         for filename in filenames:
-            # Find documents matching this filename
+            # Find documents matching this filename (exact path ending)
             rows = db.execute(
                 "SELECT document_id FROM documents"
                 " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
                 (f"%/{filename}",),
             ).fetchall()
             if not rows:
-                # Try partial match (filename without path)
+                # Try partial match (filename without path, stem match)
                 rows = db.execute(
                     "SELECT document_id FROM documents"
                     " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
                     (f"%{filename}%",),
                 ).fetchall()
+            if not rows:
+                # Try space→underscore conversion
+                underscore_name = filename.replace(" ", "_").replace("-", "_")
+                if underscore_name != filename:
+                    rows = db.execute(
+                        "SELECT document_id FROM documents"
+                        " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
+                        (f"%{underscore_name}%",),
+                    ).fetchall()
 
             for (doc_id,) in rows:
                 # Get all chunks for this document, scored by keyword match
