@@ -444,14 +444,14 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
             kind="query_result",
             query_result=_run_query(
                 query=str(payload["query"]),
-                model_id=str(payload.get("model", "qwen3:14b")),
+                model_id=str(payload.get("model", "exaone3.5:7.8b")),
             ),
         )
     if command == "record-once":
         return MenuBarCommandEnvelope(
             kind="query_result",
             query_result=_record_once(
-                model_id=str(payload.get("model", "qwen3:14b")),
+                model_id=str(payload.get("model", "exaone3.5:7.8b")),
                 device=str(payload["device"]) if payload.get("device") else None,
             ),
         )
@@ -459,7 +459,7 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
         return MenuBarCommandEnvelope(
             kind="transcription_result",
             transcription_result=_transcribe_once(
-                model_id=str(payload.get("model", "qwen3:14b")),
+                model_id=str(payload.get("model", "exaone3.5:7.8b")),
                 device=str(payload["device"]) if payload.get("device") else None,
             ),
         )
@@ -480,7 +480,7 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
             ),
         )
     if command == "health":
-        context = _build_context(model_id=str(payload.get("model", "qwen3:14b")))
+        context = _build_context(model_id=str(payload.get("model", "exaone3.5:7.8b")))
         try:
             return MenuBarCommandEnvelope(
                 kind="health_result",
@@ -588,13 +588,13 @@ def main(argv: list[str] | None = None) -> int:
 
     ask_parser = subparsers.add_parser("ask", help="Run a text query")
     ask_parser.add_argument("--query", required=True, help="User query to send to JARVIS")
-    ask_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    ask_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
 
     record_parser = subparsers.add_parser("record-once", help="Record one microphone query")
-    record_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    record_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
     record_parser.add_argument("--device", help="Optional microphone input device name")
     transcribe_parser = subparsers.add_parser("transcribe-once", help="Record one microphone query and return transcript only")
-    transcribe_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    transcribe_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
     transcribe_parser.add_argument("--device", help="Optional microphone input device name")
 
     transcribe_file_parser = subparsers.add_parser("transcribe-file", help="Transcribe a pre-recorded audio file")
@@ -609,9 +609,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Approval already granted in the menu bar UI",
     )
     health_parser = subparsers.add_parser("health", help="Return menu bar startup health")
-    health_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    health_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
     server_parser = subparsers.add_parser("server", help="Run persistent stdin/stdout JSON bridge")
-    server_parser.add_argument("--model", default="qwen3:14b", help="Override default model")
+    server_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
     args = parser.parse_args(argv)
 
     if args.command == "server":
