@@ -417,6 +417,91 @@ actor JarvisBridge {
         }
     }
 
+    // MARK: - Wake Word via Server Bridge
+
+    /// Start a persistent wake word listening session.
+    ///
+    /// Returns a WakeWordSession that can send audio chunks and receive
+    /// detection events. Uses the Python bridge server with OpenWakeWord.
+    func startWakeWordSession() async throws -> WakeWordSession {
+        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
+        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+            throw BridgeError.missingPython(pythonURL.path)
+        }
+
+        let process = Process()
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        process.executableURL = pythonURL
+        process.currentDirectoryURL = configuration.allianceRoot
+        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONPATH"] = configuration.pythonPath
+        environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        environment["TRANSFORMERS_VERBOSITY"] = "error"
+        environment["TOKENIZERS_PARALLELISM"] = "false"
+        environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        environment["TRUST_REMOTE_CODE"] = "1"
+        if let sttBinary = configuration.defaultSTTBinary {
+            environment["JARVIS_STT_BINARY"] = environment["JARVIS_STT_BINARY"] ?? sttBinary
+        }
+        if let sttModel = configuration.defaultSTTModel {
+            environment["JARVIS_STT_MODEL"] = environment["JARVIS_STT_MODEL"] ?? sttModel
+        }
+        process.environment = environment
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        bridgeLog("Wake word server launched")
+
+        let decoder = JSONDecoder()
+        let fileHandle = stdoutPipe.fileHandleForReading
+
+        // Wait for ready
+        var ready = false
+        while !ready {
+            let available = fileHandle.availableData
+            if available.isEmpty { continue }
+            for lineData in available.split(separator: UInt8(ascii: "\n")) {
+                if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)),
+                   envelope.kind == "ready" {
+                    ready = true
+                }
+            }
+        }
+
+        // Send wake-listen-start
+        let startCmd = try JSONSerialization.data(withJSONObject: ["command": "wake-listen-start"])
+        stdinPipe.fileHandleForWriting.write(startCmd)
+        stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+
+        // Wait for wake_ready
+        var wakeReady = false
+        while !wakeReady {
+            let available = fileHandle.availableData
+            if available.isEmpty { continue }
+            for lineData in available.split(separator: UInt8(ascii: "\n")) {
+                if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)),
+                   envelope.kind == "wake_ready" {
+                    wakeReady = true
+                }
+            }
+        }
+
+        bridgeLog("Wake word session ready")
+        return WakeWordSession(
+            process: process,
+            stdinPipe: stdinPipe,
+            stdoutPipe: stdoutPipe,
+            decoder: decoder
+        )
+    }
+
     private func send(_ query: String, command: String) async throws -> MenuResponse {
         let envelope = try runCommand([
             "command": command,
@@ -431,4 +516,62 @@ actor JarvisBridge {
     private func send(_ payload: [String: Any]) async throws -> CommandEnvelope {
         try runCommand(payload)
     }
+}
+
+/// Persistent session for sending audio chunks to Python wake word detector.
+final class WakeWordSession: @unchecked Sendable {
+    private let process: Process
+    private let stdinPipe: Pipe
+    private let stdoutPipe: Pipe
+    private let decoder: JSONDecoder
+    private var buffer = Data()
+
+    init(process: Process, stdinPipe: Pipe, stdoutPipe: Pipe, decoder: JSONDecoder) {
+        self.process = process
+        self.stdinPipe = stdinPipe
+        self.stdoutPipe = stdoutPipe
+        self.decoder = decoder
+    }
+
+    /// Send a 16kHz mono Int16 PCM audio chunk for wake word detection.
+    ///
+    /// Returns true if wake word was detected in this chunk.
+    func sendAudioChunk(_ pcmData: Data) -> Bool {
+        let b64 = pcmData.base64EncodedString()
+        let payload: [String: Any] = ["command": "wake-audio", "pcm_b64": b64]
+        guard let json = try? JSONSerialization.data(withJSONObject: payload) else { return false }
+        stdinPipe.fileHandleForWriting.write(json)
+        stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+
+        // Check for detection response (non-blocking read)
+        let available = stdoutPipe.fileHandleForReading.availableData
+        if available.isEmpty { return false }
+        buffer.append(available)
+
+        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+            let lineData = buffer[buffer.startIndex..<newlineIndex]
+            buffer = Data(buffer[buffer.index(after: newlineIndex)...])
+
+            guard !lineData.isEmpty,
+                  let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)),
+                  envelope.kind == "wake_detected"
+            else { continue }
+
+            bridgeLog("Wake word detected via bridge (score=\(envelope.score ?? 0))")
+            return true
+        }
+        return false
+    }
+
+    /// Stop the wake word session and terminate the Python process.
+    func stop() {
+        let stopCmd = try? JSONSerialization.data(withJSONObject: ["command": "shutdown"])
+        if let cmd = stopCmd {
+            stdinPipe.fileHandleForWriting.write(cmd)
+            stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+        }
+        process.terminate()
+    }
+
+    var isRunning: Bool { process.isRunning }
 }
