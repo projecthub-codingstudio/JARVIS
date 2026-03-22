@@ -548,6 +548,11 @@ def build_runtime_context(
     from jarvis.core.planner import Planner
 
     planner = Planner(model_id="exaone3.5:7.8b")
+
+    # Cross-encoder reranker (lazy-loaded on first query)
+    from jarvis.retrieval.reranker import Reranker
+    reranker = Reranker(metrics=result.metrics)
+
     orchestrator = Orchestrator(
         governor=governor,
         query_decomposer=QueryDecomposer(),
@@ -560,6 +565,7 @@ def build_runtime_context(
         conversation_store=ConversationStore(db=result.db),
         task_log_store=TaskLogStore(db=result.db),
         planner=planner,
+        reranker=reranker,
         metrics=result.metrics,
         error_monitor=error_monitor,
     )
