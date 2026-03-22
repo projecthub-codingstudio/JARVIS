@@ -9,6 +9,9 @@ from jarvis.contracts import ChunkRecord, DocumentElement
 from jarvis.indexing.chunker import Chunker
 
 
+_MIN_CHUNK_CHARS = 30  # Skip chunks shorter than this (noise, page numbers, etc.)
+
+
 class ParagraphChunkStrategy:
     """Default chunk strategy using paragraph boundaries."""
 
@@ -22,4 +25,5 @@ class ParagraphChunkStrategy:
         heading = element.metadata.get("heading_path", "")
         if heading:
             chunks = [replace(c, heading_path=heading) if not c.heading_path else c for c in chunks]
-        return chunks
+        # Filter out noise chunks (page numbers, short headers, etc.)
+        return [c for c in chunks if len(c.text.strip()) >= _MIN_CHUNK_CHARS]

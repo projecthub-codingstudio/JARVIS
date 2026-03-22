@@ -5,11 +5,11 @@ from jarvis.indexing.strategies.paragraph import ParagraphChunkStrategy
 
 class TestParagraphChunkStrategy:
     def test_single_paragraph(self) -> None:
-        el = DocumentElement(element_type="text", text="Short paragraph here.")
+        el = DocumentElement(element_type="text", text="A paragraph that is long enough to pass the minimum chunk filter threshold for testing.")
         strategy = ParagraphChunkStrategy()
         chunks = strategy.chunk(el, document_id="d1")
         assert len(chunks) >= 1
-        assert "Short paragraph" in chunks[0].text
+        assert "paragraph" in chunks[0].text
 
     def test_long_text_splits(self) -> None:
         el = DocumentElement(element_type="text", text="Word " * 600)
