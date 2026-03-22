@@ -27,11 +27,14 @@ _MLX_PROBE_TTL_SECONDS = 60 * 60
 # EXAONE Deep: reasoning-specialized (2025.02, slow on simple queries)
 # Qwen3: alternative multilingual models
 _MODEL_ALIASES: dict[str, str] = {
-    # EXAONE 3.5 — default for general use
+    # EXAONE 3.5 — default for general use (fast + accurate)
     "exaone3.5:7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
     "exaone3.5:32b": "mlx-community/EXAONE-3.5-32B-Instruct-4bit",
     "exaone3.5:2.4b": "mlx-community/EXAONE-3.5-2.4B-Instruct-4bit",
-    # EXAONE Deep — reasoning tasks (math, coding, complex analysis)
+    # EXAONE 4.0 — latest (128K context, hybrid reasoning, tool use)
+    "exaone4.0:1.2b": "mlx-community/exaone-4.0-1.2b-4bit",
+    "exaone4.0:32b": "mlx-community/EXAONE-4.0-32B-4bit",
+    # EXAONE Deep — reasoning-only (math, coding)
     "exaone-deep:7.8b": "mlx-community/EXAONE-Deep-7.8B-3bit",
     "exaone-deep:32b": "mlx-community/EXAONE-Deep-32B-4bit",
     # Legacy aliases
