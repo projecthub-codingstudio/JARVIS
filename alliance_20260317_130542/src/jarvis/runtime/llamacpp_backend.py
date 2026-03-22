@@ -143,16 +143,8 @@ class LlamaCppBackend:
         if not self._loaded:
             raise RuntimeError("No model loaded. Call load() first.")
 
-        system_message = (
-            "당신은 JARVIS입니다. 사용자의 로컬 워크스페이스 AI 어시스턴트입니다. "
-            "제공된 증거를 기반으로 정확하고 간결하게 답변하세요. "
-            "증거가 없는 내용은 추측하지 마세요. "
-            "표 형식 데이터에서는 헤더(첫 행)와 데이터 행의 열 위치를 정확히 대응시켜 답변하세요. "
-            "| 구분자로 나뉜 데이터에서 n번째 열은 헤더의 n번째 열에 해당합니다."
-        )
-
-        if context.strip():
-            system_message += f"\n\n참고 증거:\n{context}"
+        from jarvis.runtime.system_prompt import build_system_message
+        system_message = build_system_message(context)
 
         # Estimate prompt tokens: Korean ~1 char/token, English ~4 chars/token
         # Use conservative 1.5 chars/token for mixed content
@@ -221,16 +213,8 @@ class LlamaCppBackend:
         if not self._loaded:
             raise RuntimeError("No model loaded. Call load() first.")
 
-        system_message = (
-            "당신은 JARVIS입니다. 사용자의 로컬 워크스페이스 AI 어시스턴트입니다. "
-            "제공된 증거를 기반으로 정확하고 간결하게 답변하세요. "
-            "증거가 없는 내용은 추측하지 마세요. "
-            "표 형식 데이터에서는 헤더(첫 행)와 데이터 행의 열 위치를 정확히 대응시켜 답변하세요. "
-            "| 구분자로 나뉜 데이터에서 n번째 열은 헤더의 n번째 열에 해당합니다."
-        )
-
-        if context.strip():
-            system_message += f"\n\n참고 증거:\n{context}"
+        from jarvis.runtime.system_prompt import build_system_message
+        system_message = build_system_message(context)
 
         estimated_prompt_tokens = int(len(system_message + prompt) / 1.5)
         _RESERVE = 256
