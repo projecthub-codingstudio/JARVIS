@@ -234,6 +234,34 @@ class ChunkRecord:
     embedding_ref: str | None = None
 
 
+# --- Document Element Models (Semantic Chunking) ---
+
+
+@dataclass(frozen=True)
+class DocumentElement:
+    """A typed element extracted from a parsed document.
+
+    element_type: "text", "table", "code", "list", "slide"
+    metadata: type-specific data (headers, rows, language, scope_chain, etc.)
+    """
+
+    element_type: str
+    text: str
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ParsedDocument:
+    """Structured parser output with typed elements."""
+
+    elements: tuple[DocumentElement, ...]
+    metadata: dict = field(default_factory=dict)
+
+    def to_text(self) -> str:
+        """Backward-compatible plain text rendering."""
+        return "\n\n".join(e.text for e in self.elements if e.text)
+
+
 # --- Runtime Models (Spec Section 3.2) ---
 
 
