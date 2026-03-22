@@ -40,7 +40,7 @@ class LocalTTSRuntime:
         persona: VoicePersona | None = None,
     ) -> None:
         self._persona = persona or DEFAULT_PERSONA
-        self._voice = voice or self._persona.macos_voice
+        self._voice_override = voice  # None = auto-detect language
         self._backend = backend
         self._binary_path = binary_path
         self._model_router = model_router
@@ -87,11 +87,23 @@ class LocalTTSRuntime:
             logger.debug("Qwen3-TTS unavailable: %s — falling back to macOS say", exc)
             return None
 
+    def _select_voice(self, text: str) -> str:
+        """Select the appropriate macOS voice based on text language."""
+        if self._voice_override:
+            return self._voice_override
+        # Detect if text is primarily Korean (contains Hangul)
+        korean_chars = sum(1 for c in text if '\uac00' <= c <= '\ud7a3' or '\u3131' <= c <= '\u3163')
+        if korean_chars > len(text) * 0.2:
+            return self._persona.macos_voice_ko
+        return self._persona.macos_voice_en
+
     def _synthesize_macos_say(self, text: str, output_path: Path) -> Path:
-        """Synthesize via macOS `say` command with persona voice."""
+        """Synthesize via macOS `say` command with language-appropriate voice."""
         binary = self._binary_path or shutil.which("say")
         if binary is None:
             raise RuntimeError("macOS `say` command not found")
+
+        voice = self._select_voice(text)
 
         if self._model_router is not None:
             granted = self._model_router.request_load("tts-local", self._estimated_memory_gb)
@@ -101,7 +113,7 @@ class LocalTTSRuntime:
         try:
             cmd = [
                 binary,
-                "-v", self._voice,
+                "-v", voice,
                 "-r", str(self._persona.macos_rate),
                 "-o", str(output_path),
                 text,
