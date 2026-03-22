@@ -455,20 +455,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
     private var ttsProcess: Process?
 
     /// Speak response text using macOS TTS with JARVIS persona voice.
+    /// Only reads the core answer — strips citations, sources, and technical content.
     func speakResponse(_ text: String) {
-        // Strip markdown for natural speech
-        let clean = text
-            .replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "###", with: "")
-            .replacingOccurrences(of: "##", with: "")
-            .replacingOccurrences(of: "#", with: "")
-        let stripped = clean.replacingOccurrences(
-            of: "\\[\\d+\\]", with: "", options: .regularExpression
-        ).replacingOccurrences(
-            of: "\\[[^\\]]*\\.[a-z]{2,5}\\]", with: "", options: .regularExpression
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-
+        let stripped = Self.stripForTTS(text)
         guard !stripped.isEmpty else { return }
 
         // Stop any previous TTS
@@ -493,6 +482,54 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 appLog("TTS failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Strip markdown, citations, sources, and technical content for natural TTS.
+    static func stripForTTS(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+
+        // Remove lines that are source/citation references
+        lines = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
+            // Skip citation lines
+            if trimmed.hasPrefix("이 정보는") && trimmed.contains("파일") { return false }
+            if trimmed.hasPrefix("출처:") || trimmed.hasPrefix("출처 :") { return false }
+            if trimmed.hasPrefix("source:") { return false }
+            // Skip key=value technical format lines
+            if trimmed.contains("key=value") { return false }
+            if trimmed.hasPrefix("`") && trimmed.hasSuffix("`") { return false }
+            // Skip "제공된 증거" meta-commentary
+            if trimmed.hasPrefix("제공된 증거") { return false }
+            if trimmed.hasPrefix("주어진 데이터") { return false }
+            return true
+        }
+
+        var result = lines.joined(separator: "\n")
+
+        // Strip markdown formatting
+        result = result.replacingOccurrences(of: "**", with: "")
+        result = result.replacingOccurrences(of: "`", with: "")
+        result = result.replacingOccurrences(of: "###", with: "")
+        result = result.replacingOccurrences(of: "##", with: "")
+        result = result.replacingOccurrences(of: "#", with: "")
+
+        // Strip citation labels [1], [2], etc.
+        result = result.replacingOccurrences(
+            of: "\\[\\d+\\]", with: "", options: .regularExpression
+        )
+        // Strip file references [filename.ext]
+        result = result.replacingOccurrences(
+            of: "\\[[^\\]]*\\.[a-z]{2,5}\\]", with: "", options: .regularExpression
+        )
+        // Strip [source_name] patterns
+        result = result.replacingOccurrences(
+            of: "\\[[A-Za-z0-9_+.-]+\\]", with: "", options: .regularExpression
+        )
+        // Clean multiple spaces/newlines
+        result = result.replacingOccurrences(
+            of: "\\s{2,}", with: " ", options: .regularExpression
+        )
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Stop any currently playing TTS.
