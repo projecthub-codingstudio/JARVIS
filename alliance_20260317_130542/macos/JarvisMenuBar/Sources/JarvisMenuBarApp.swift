@@ -240,6 +240,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
     @Published var query = ""
     @Published var response: MenuResponse?
     @Published var isLoading = false
+    @Published var streamingText = ""
+    @Published var isStreaming = false
     @Published var errorMessage: String?
     @Published var exportMessage: String?
     @Published var showApprovalPanel = false
@@ -333,21 +335,40 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
 
         isLoading = true
+        isStreaming = true
+        streamingText = ""
         errorMessage = nil
+        response = nil
         transitionToAnswering()
         Task {
-            do {
-                let payload = try await bridge.ask(trimmed)
-                transitionToAnswering()
-                response = payload
-                exportMessage = nil
-                lastTranscript = payload.query
-            } catch {
-                appLog("ask failed: \(error.localizedDescription)")
-                errorMessage = error.localizedDescription
-                cancelPhaseTransition()
-                voiceLoopPhase = .error
+            let stream = await bridge.askStreaming(trimmed)
+            for await event in stream {
+                switch event {
+                case .token(let token):
+                    streamingText += token
+                case .done(let finalResponse):
+                    if let finalResponse {
+                        response = finalResponse
+                        lastTranscript = finalResponse.query
+                    }
+                    isStreaming = false
+                case .error(let message):
+                    appLog("streaming ask failed: \(message)")
+                    // Fallback to non-streaming
+                    do {
+                        let payload = try await bridge.ask(trimmed)
+                        response = payload
+                        lastTranscript = payload.query
+                    } catch {
+                        errorMessage = error.localizedDescription
+                        cancelPhaseTransition()
+                        voiceLoopPhase = .error
+                    }
+                    isStreaming = false
+                }
             }
+            if isStreaming { isStreaming = false }  // Safety
+            exportMessage = nil
             isLoading = false
             if !voiceLoopEnabled {
                 cancelPhaseTransition()
@@ -1257,6 +1278,18 @@ struct JarvisMenuContentView: View {
                     }
 
                     SectionCard("Response", subtitle: "응답과 출처") {
+                        // Streaming text display (tokens arriving in real-time)
+                        if viewModel.isStreaming && !viewModel.streamingText.isEmpty {
+                            ScrollView {
+                                Text(viewModel.streamingText)
+                                    .font(.body)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .animation(.none, value: viewModel.streamingText)
+                            }
+                            .frame(minHeight: 100, maxHeight: 340)
+                        }
+
                         if let response = viewModel.response {
                             if let status = response.status {
                                 HStack(spacing: 6) {
