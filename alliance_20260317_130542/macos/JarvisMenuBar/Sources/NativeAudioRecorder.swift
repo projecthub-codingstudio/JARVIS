@@ -42,6 +42,9 @@ final class NativeAudioRecorder: @unchecked Sendable {
     /// Set this to feed audio to the Python wake word detector.
     var onWakeWordAudioChunk: ((Data) -> Void)?
 
+    /// Cached downsample ratio (native rate / 16000), set during activate()
+    private var _wakeDownsampleRatio: Int = 3  // default 48kHz/16kHz
+
     var isSessionRunning: Bool { engine.isRunning }
 
     // MARK: - Activation
@@ -78,6 +81,9 @@ final class NativeAudioRecorder: @unchecked Sendable {
         try engine.start()
         currentDeviceID = deviceID
         engineReady = true
+        // Cache downsample ratio for wake word audio
+        let nativeRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+        _wakeDownsampleRatio = max(1, Int(nativeRate / 16000))
         appLog("AVAudioEngine started")
     }
 
@@ -231,21 +237,26 @@ final class NativeAudioRecorder: @unchecked Sendable {
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0, let channelData = buffer.floatChannelData?[0] else { return }
 
-        // --- Wake word audio forwarding (always, even when not recording) ---
+        // --- Wake word audio forwarding (only when NOT recording) ---
         if let wakeCallback = onWakeWordAudioChunk, !isWriting {
-            // Downsample float32 at native rate to Int16 at 16kHz
-            let nativeRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
-            let ratio = max(1, Int(nativeRate / 16000))
+            // Downsample float32 to Int16 at ~16kHz (ratio cached on activation)
+            let ratio = max(1, _wakeDownsampleRatio)
             let outputCount = frameCount / ratio
-            var int16Samples = [Int16](repeating: 0, count: outputCount)
-            for i in 0..<outputCount {
-                let sample = max(-1.0, min(1.0, channelData[i * ratio]))
-                int16Samples[i] = Int16(sample * 32767)
+            if outputCount > 0 {
+                var int16Samples = [Int16](repeating: 0, count: outputCount)
+                for i in 0..<outputCount {
+                    let idx = i * ratio
+                    if idx < frameCount {
+                        let sample = max(-1.0, min(1.0, channelData[idx]))
+                        int16Samples[i] = Int16(sample * 32767)
+                    }
+                }
+                let pcmData = Data(bytes: &int16Samples, count: outputCount * 2)
+                DispatchQueue.global(qos: .utility).async {
+                    wakeCallback(pcmData)
+                }
             }
-            let pcmData = int16Samples.withUnsafeBufferPointer { ptr in
-                Data(buffer: ptr)
-            }
-            wakeCallback(pcmData)
+            return  // Don't process VAD when in wake word mode
         }
 
         // --- Recording mode ---
