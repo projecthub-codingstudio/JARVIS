@@ -18,8 +18,8 @@ from jarvis.observability.metrics import MetricName, MetricsCollector
 
 logger = logging.getLogger(__name__)
 
-# Lightweight multilingual cross-encoder (~80MB)
-_DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# Multilingual cross-encoder for Korean + English queries (~450MB)
+_DEFAULT_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 _RERANK_BATCH_SIZE = 16
 
 
