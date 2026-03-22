@@ -47,17 +47,18 @@ class HybridSearch:
         Returns:
             Ranked list of HybridSearchResult.
         """
+        # Pre-build vector rank lookup for O(1) access (was O(n) linear scan)
+        vector_rank_map: dict[str, int] = {
+            vh.chunk_id: vr for vr, vh in enumerate(vector_hits, 1)
+        }
+
         chunk_ids: set[str] = set()
         results: list[HybridSearchResult] = []
 
         for rank, hit in enumerate(fts_hits, 1):
             if hit.chunk_id not in chunk_ids:
                 chunk_ids.add(hit.chunk_id)
-                vector_rank = None
-                for vr, vh in enumerate(vector_hits, 1):
-                    if vh.chunk_id == hit.chunk_id:
-                        vector_rank = vr
-                        break
+                vector_rank = vector_rank_map.get(hit.chunk_id)
                 rrf_score = 1.0 / (self._rrf_k + rank)
                 if vector_rank is not None:
                     rrf_score += 1.0 / (self._rrf_k + vector_rank)

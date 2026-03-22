@@ -15,6 +15,7 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
@@ -210,6 +211,66 @@ class LlamaCppBackend:
         )
 
         return response_text
+
+    def generate_stream(self, prompt: str, context: str, intent: str) -> Iterator[str]:
+        """Generate a response via Ollama API, yielding tokens as they arrive.
+
+        Same parameters as generate(), but yields individual tokens
+        for real-time display instead of returning the full response.
+        """
+        if not self._loaded:
+            raise RuntimeError("No model loaded. Call load() first.")
+
+        system_message = (
+            "당신은 JARVIS입니다. 사용자의 로컬 워크스페이스 AI 어시스턴트입니다. "
+            "제공된 증거를 기반으로 정확하고 간결하게 답변하세요. "
+            "증거가 없는 내용은 추측하지 마세요. "
+            "표 형식 데이터에서는 헤더(첫 행)와 데이터 행의 열 위치를 정확히 대응시켜 답변하세요. "
+            "| 구분자로 나뉜 데이터에서 n번째 열은 헤더의 n번째 열에 해당합니다."
+        )
+
+        if context.strip():
+            system_message += f"\n\n참고 증거:\n{context}"
+
+        estimated_prompt_tokens = int(len(system_message + prompt) / 1.5)
+        _RESERVE = 256
+        num_predict = max(256, self._context_window - estimated_prompt_tokens - _RESERVE)
+
+        payload = json.dumps({
+            "model": self._model_id,
+            "system": system_message,
+            "prompt": prompt,
+            "stream": True,
+            "think": False,
+            "options": {
+                "num_ctx": self._context_window,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": num_predict,
+            },
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{self._base_url}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode().strip()
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    token = chunk.get("response", "")
+                    if token:
+                        yield token
+                    if chunk.get("done", False):
+                        break
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Ollama API error: {e}") from e
 
     def _check_model_available(self, model_tag: str) -> bool:
         """Check if model exists in Ollama."""

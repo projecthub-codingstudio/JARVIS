@@ -10,14 +10,35 @@ Per Spec Task 1.4/1.5 and Section 3.2/3.5:
 
 from __future__ import annotations
 
+import re
+import sys
 from pathlib import Path
 
-from jarvis.contracts import AnswerDraft, EvidenceItem
+from jarvis.contracts import AnswerDraft, ConversationTurn, EvidenceItem
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.retrieval.evidence_builder import MIN_RELEVANCE_SCORE
 
 # Max quote length for display
 _MAX_QUOTE_CHARS = 120
+
+# Regex to match inline full paths like (/Users/.../file.ext) or (path/to/file.ext)
+_INLINE_PATH_RE = re.compile(
+    r"\((/[^\)]{20,})\)"
+)
+
+
+def _strip_inline_paths(text: str) -> str:
+    """Replace inline full paths with just the filename for cleaner output.
+
+    Transforms: [1] (/Users/foo/bar/file.xlsx) → [1] file.xlsx
+    """
+    def _replace(m: re.Match) -> str:
+        full_path = m.group(1)
+        try:
+            return Path(full_path).name
+        except Exception:
+            return m.group(0)
+    return _INLINE_PATH_RE.sub(_replace, text)
 
 
 def _detect_source_type(path: str) -> str:
@@ -86,28 +107,71 @@ class JarvisREPL:
                 print("👋 안녕히 가세요!")
                 break
 
-            turn = self._orchestrator.handle_turn(user_input)
-            answer = self._orchestrator.last_answer
-
-            self._display_response(
-                turn.assistant_output or "(응답 없음)",
-                answer=answer,
-            )
+            # Use streaming if available, fall back to non-streaming
+            if hasattr(self._orchestrator, "handle_turn_stream"):
+                self._handle_streaming(user_input)
+            else:
+                turn = self._orchestrator.handle_turn(user_input)
+                answer = self._orchestrator.last_answer
+                self._display_response(
+                    turn.assistant_output or "(응답 없음)",
+                    answer=answer,
+                )
 
     def stop(self) -> None:
         """Gracefully stop the REPL loop."""
         self._running = False
 
+    def _handle_streaming(self, user_input: str) -> None:
+        """Handle a turn with real-time streaming token display."""
+        sys.stdout.write("\n  ")
+        sys.stdout.flush()
+        turn: ConversationTurn | None = None
+        token_count = 0
+
+        for item in self._orchestrator.handle_turn_stream(user_input):
+            if isinstance(item, str):
+                # Real-time token display with inline path stripping
+                clean = _strip_inline_paths(item)
+                sys.stdout.write(clean)
+                sys.stdout.flush()
+                token_count += 1
+            else:
+                # ConversationTurn sentinel — stream complete
+                turn = item
+
+        if token_count > 0:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+        if turn is not None and token_count == 0:
+            # Non-streaming response (safety block, no evidence, etc.)
+            clean = _strip_inline_paths(turn.assistant_output or "(응답 없음)")
+            print(f"  {clean}")
+
+        answer = self._orchestrator.last_answer
+        if answer is not None and answer.verification_warnings:
+            print("\n  ⚠  검증 경고")
+            for warning in answer.verification_warnings[:3]:
+                print(f"     {warning}")
+
+        if answer is not None and not answer.evidence.is_empty:
+            self._display_citations(answer)
+
+        print()
+
     def _display_response(
         self, response: str, *, answer: AnswerDraft | None = None
     ) -> None:
         """Display response with citations per Spec Task 1.4/1.5."""
-        print(f"\n  {response}")
+        # Strip any inline full paths from LLM output for cleaner display
+        clean_response = _strip_inline_paths(response)
+        print(f"\n  {clean_response}")
 
         if answer is not None and answer.verification_warnings:
-            print("\n  ─── 검증 경고 ───")
+            print("\n  ⚠  검증 경고")
             for warning in answer.verification_warnings[:3]:
-                print(f"  - {warning}")
+                print(f"     {warning}")
 
         if answer is not None and not answer.evidence.is_empty:
             self._display_citations(answer)
@@ -160,7 +224,10 @@ class JarvisREPL:
         if not top_items:
             return
 
-        print("\n  ─── 출처 ───")
+        print()
+        print("  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌")
+        print("   출처")
+        print("  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌")
         for item in top_items:
             source = item.source_path or item.document_id
             filename = _shorten_path(source)
@@ -170,16 +237,17 @@ class JarvisREPL:
             warning = ""
             if item.citation.state.needs_warning:
                 state_labels = {
-                    "STALE": "파일 변경됨 — 재인덱싱 필요",
-                    "MISSING": "파일 삭제됨",
-                    "ACCESS_LOST": "접근 불가",
+                    "STALE": " ⚠ 변경됨",
+                    "MISSING": " ⚠ 삭제됨",
+                    "ACCESS_LOST": " ⚠ 접근불가",
                 }
                 label = state_labels.get(item.citation.state.value, item.citation.state.value)
-                warning = f" ⚠ {label}"
+                warning = label
 
-            print(f"  - {filename} ({source_type}){warning}")
+            label = item.citation.label
+            print(f"   {label} {filename}{warning}")
 
-            # Quote
+            # Quote in subdued style (indented further)
             quote = _make_quote(item)
             if quote:
-                print(f"    \"{quote}\"")
+                print(f"      \033[2m{quote}\033[0m")
