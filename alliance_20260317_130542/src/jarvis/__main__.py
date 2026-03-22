@@ -38,6 +38,7 @@ def main() -> None:
     voice_output: Path | None = None
     voice_device: str | None = os.getenv("JARVIS_PTT_DEVICE")
     voice_ptt = False
+    wake_word = False
     if len(sys.argv) > 1 and sys.argv[1].startswith("--model="):
         model_id = sys.argv[1].split("=", 1)[1]
     for arg in sys.argv[1:]:
@@ -49,6 +50,8 @@ def main() -> None:
             voice_device = arg.split("=", 1)[1]
         elif arg == "--voice-ptt":
             voice_ptt = True
+        elif arg == "--wake-word":
+            wake_word = True
 
     print("\n🤖 JARVIS v0.1.0-beta1")
     print(f"   LLM: {model_id} (MLX primary → Ollama fallback)")
@@ -72,7 +75,7 @@ def main() -> None:
     print(f"   Vector search: {'active' if vector_available else 'disabled (FTS only)'}")
 
     try:
-        if voice_file is not None or voice_ptt:
+        if wake_word or voice_file is not None or voice_ptt:
             stt_runtime = WhisperCppSTT(
                 model_path=(
                     Path(os.getenv("JARVIS_STT_MODEL", "")).expanduser()
@@ -82,7 +85,7 @@ def main() -> None:
                 model_router=context.model_router,
             )
             tts_runtime = LocalTTSRuntime(
-                voice=os.getenv("JARVIS_TTS_VOICE", "Sora"),
+                voice=os.getenv("JARVIS_TTS_VOICE"),
                 model_router=context.model_router,
             )
             recorder = AudioRecorder(
@@ -95,6 +98,35 @@ def main() -> None:
                 tts_runtime=tts_runtime,
                 recorder=recorder,
             )
+            if wake_word:
+                print("\n🎙 Wake word mode: 'Hey JARVIS'라고 말하면 자동으로 응답합니다.")
+                print("   종료: Ctrl+C\n")
+
+                def _on_wake():
+                    print("  [감지] 'Hey JARVIS' — 녹음 중...")
+
+                def _on_response(text: str):
+                    print(f"\n  JARVIS: {text}\n")
+                    print("  ... 'Hey JARVIS' 대기 중 ...")
+
+                def _on_error(msg: str):
+                    print(f"  [오류] {msg}")
+
+                session.start_wake_word_loop(
+                    on_wake=_on_wake,
+                    on_response=_on_response,
+                    on_error=_on_error,
+                )
+                try:
+                    import time
+                    print("  ... 'Hey JARVIS' 대기 중 ...")
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    print("\n\n  Wake word 모드 종료.")
+                    session.stop_wake_word_loop()
+                return
+
             if voice_ptt:
                 print("\n🎙 push-to-talk once: recording...")
                 if voice_device:
