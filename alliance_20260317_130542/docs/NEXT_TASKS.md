@@ -14,27 +14,15 @@
 - [x] Semantic Chunking (Table/Code/Paragraph 전략)
 - [x] 시스템 프롬프트 중앙화 + key=value 데이터 지시
 - [x] EXAONE 4.0 벤치마크 + deep tier 등록
+- [x] **PDF 구조화 청킹** — 19,543→2,620 청크 (87% 감소), PyMuPDF 블록 좌표 + 테이블 감지
+- [x] **Claim-level 인용 검증** — 문장→주장 단위 분리, 접속사 기반 split + 숫자값 매칭
+- [x] **질문 복잡도 기반 모델 라우팅** — simple→balanced, complex→deep 자동 전환
+- [x] **test_skips_mlx_when_probe_fails 수정** — LlamaCppBackend도 mock하여 full fallback chain 테스트
+- [x] **Knowledge base 재인덱싱** — 22,692→5,855 청크, 임베딩 백필 100% 완료
 
 ## Priority 1 — 안정성/품질
 
-- [ ] **PDF 청킹 품질 개선**
-  - 씨샵.pdf: 19,543 청크 (avg 85자) — 너무 작음
-  - LayoutChunkStrategy 구현: 최소 청크 크기 하한(200자) + 페이지/섹션 경계 존중
-  - PyMuPDF 블록 좌표 활용
-
-- [ ] **Claim-level 인용 검증**
-  - 현재: 문장 단위 `[digit]` 태그 확인
-  - 목표: 주장 단위 검증 (각 factual claim이 증거에 근거하는지)
-  - 출처: AUDIT_REPORT Section 12
-
-- [ ] **test_skips_mlx_when_probe_fails 수정**
-  - MLX probe 테스트 1건 계속 실패
-  - probe 캐시 TTL 로직 검토 필요
-
-- [ ] **질문 복잡도 기반 모델 선택**
-  - 간단한 데이터 조회 → EXAONE-3.5-7.8B (1.5초)
-  - 복잡한 분석/추론 → EXAONE-4.0-32B (8.8초)
-  - Planner의 intent 분류 활용
+(모두 완료)
 
 ## Priority 2 — 기능 확장
 
@@ -69,5 +57,5 @@
 ## 현재 브랜치
 
 - Branch: `feature/menubar-ui-refresh`
-- 20+ commits ahead of origin
+- 22+ commits ahead of origin
 - PR 미생성
