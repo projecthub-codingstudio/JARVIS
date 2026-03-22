@@ -15,9 +15,11 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_system_message(context: str) -> str:
-    """Build the full system message with evidence context."""
+def build_system_message(context: str, *, persona_prompt: str = "") -> str:
+    """Build the full system message with evidence context and optional persona."""
     msg = SYSTEM_PROMPT
+    if persona_prompt:
+        msg += f"\n\n{persona_prompt}"
     if context.strip():
         msg += f"\n\n참고 증거:\n{context}"
     return msg
