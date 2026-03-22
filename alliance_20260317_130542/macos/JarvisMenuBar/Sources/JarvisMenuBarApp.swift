@@ -484,36 +484,18 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
     }
 
-    /// Strip markdown, citations, sources, and technical content for natural TTS.
+    /// Strip markdown and source references for natural TTS reading.
     static func stripForTTS(_ text: String) -> String {
-        var lines = text.components(separatedBy: "\n")
-
-        // Remove lines that are source/citation references
-        lines = lines.filter { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
-            // Skip citation lines
-            if trimmed.hasPrefix("이 정보는") && trimmed.contains("파일") { return false }
-            if trimmed.hasPrefix("출처:") || trimmed.hasPrefix("출처 :") { return false }
-            if trimmed.hasPrefix("source:") { return false }
-            // Skip key=value technical format lines
-            if trimmed.contains("key=value") { return false }
-            if trimmed.hasPrefix("`") && trimmed.hasSuffix("`") { return false }
-            // Skip "제공된 증거" meta-commentary
-            if trimmed.hasPrefix("제공된 증거") { return false }
-            if trimmed.hasPrefix("주어진 데이터") { return false }
-            return true
-        }
-
-        var result = lines.joined(separator: "\n")
+        var result = text
 
         // Strip markdown formatting
         result = result.replacingOccurrences(of: "**", with: "")
         result = result.replacingOccurrences(of: "`", with: "")
-        result = result.replacingOccurrences(of: "###", with: "")
-        result = result.replacingOccurrences(of: "##", with: "")
-        result = result.replacingOccurrences(of: "#", with: "")
+        result = result.replacingOccurrences(of: "### ", with: "")
+        result = result.replacingOccurrences(of: "## ", with: "")
+        result = result.replacingOccurrences(of: "# ", with: "")
 
-        // Strip citation labels [1], [2], etc.
+        // Strip citation labels [1], [2]
         result = result.replacingOccurrences(
             of: "\\[\\d+\\]", with: "", options: .regularExpression
         )
@@ -521,13 +503,19 @@ final class JarvisMenuBarViewModel: ObservableObject {
         result = result.replacingOccurrences(
             of: "\\[[^\\]]*\\.[a-z]{2,5}\\]", with: "", options: .regularExpression
         )
-        // Strip [source_name] patterns
+
+        // Remove source/citation lines (keep the rest)
+        let lines = result.components(separatedBy: "\n").filter { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("이 정보는") && t.contains("파일") { return false }
+            if t.hasPrefix("출처") && t.contains(":") { return false }
+            return true
+        }
+        result = lines.joined(separator: "\n")
+
+        // Clean extra whitespace
         result = result.replacingOccurrences(
-            of: "\\[[A-Za-z0-9_+.-]+\\]", with: "", options: .regularExpression
-        )
-        // Clean multiple spaces/newlines
-        result = result.replacingOccurrences(
-            of: "\\s{2,}", with: " ", options: .regularExpression
+            of: "  +", with: " ", options: .regularExpression
         )
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
