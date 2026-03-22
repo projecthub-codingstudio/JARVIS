@@ -21,7 +21,7 @@ class TestGovernor:
         decision = Governor().select_runtime("balanced")
 
         assert decision.tier == "balanced"
-        assert decision.model_id == "qwen3:14b"
+        assert decision.model_id == "exaone3.5:7.8b"
 
     def test_idle_ac_power_can_request_deep_tier(self, monkeypatch) -> None:
         from jarvis.core import governor as governor_module

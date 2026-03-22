@@ -461,7 +461,7 @@ def create_llm_backend(
 
 def build_runtime_context(
     *,
-    model_id: str = "qwen3:14b",
+    model_id: str = "exaone3.5:7.8b",
     knowledge_base_path: Path = _DEFAULT_KB_PATH,
     start_watcher_enabled: bool = True,
     start_background_backfill: bool = True,
