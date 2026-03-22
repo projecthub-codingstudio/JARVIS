@@ -203,6 +203,13 @@ actor JarvisBridge {
         if environment["TOKENIZERS_PARALLELISM"] == nil {
             environment["TOKENIZERS_PARALLELISM"] = "false"
         }
+        // Suppress HuggingFace interactive prompts and tqdm output
+        if environment["HF_HUB_DISABLE_TELEMETRY"] == nil {
+            environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        }
+        if environment["TRUST_REMOTE_CODE"] == nil {
+            environment["TRUST_REMOTE_CODE"] = "1"
+        }
         if environment["JARVIS_STT_BINARY"] == nil, let sttBinary = configuration.defaultSTTBinary {
             environment["JARVIS_STT_BINARY"] = sttBinary
         }
