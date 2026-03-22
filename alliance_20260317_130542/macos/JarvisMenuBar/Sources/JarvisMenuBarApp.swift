@@ -1311,11 +1311,6 @@ struct JarvisMenuContentView: View {
                                     viewModel.toggleVoiceLoop()
                                 }
 
-                                Button(viewModel.wakeWordEnabled ? "🔴 Wake Off" : "🟢 Hey JARVIS") {
-                                    viewModel.toggleWakeWord()
-                                }
-                                .help("\"Hey JARVIS\" wake word detection")
-
                                 Button(viewModel.bypassEnabled ? "Bypass Off" : "Bypass On") {
                                     viewModel.toggleBypass()
                                 }
