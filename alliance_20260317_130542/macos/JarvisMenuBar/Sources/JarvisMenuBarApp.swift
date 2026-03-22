@@ -513,7 +513,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
         result = lines.joined(separator: "\n")
 
-        // Clean extra whitespace
+        // Convert newlines to periods for natural speech pauses
+        result = result.replacingOccurrences(of: "\n", with: ". ")
+        // Clean extra whitespace and periods
+        result = result.replacingOccurrences(
+            of: "\\.\\s*\\.+", with: ".", options: .regularExpression
+        )
         result = result.replacingOccurrences(
             of: "  +", with: " ", options: .regularExpression
         )
