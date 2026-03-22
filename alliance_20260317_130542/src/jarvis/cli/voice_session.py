@@ -1,13 +1,16 @@
 """Voice session orchestration for STT-first CLI mode.
 
-Phase 1: fixed-duration push-to-talk via afrecord/rec.
-Phase 2 (deferred): Silero VAD for silence-aware recording + wake word.
+Supports two activation modes:
+  1. Push-to-talk: manual trigger → record → STT → LLM → TTS
+  2. Wake word: "Hey JARVIS" → auto-record → STT → LLM → TTS → resume listening
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 import tempfile
@@ -22,10 +25,11 @@ logger = logging.getLogger(__name__)
 
 
 class VoiceSession:
-    """Run a single voice interaction from audio file to answer.
+    """Run voice interactions via push-to-talk or wake word activation.
 
-    Phase 1 scope: file-based STT, push-to-talk once, STT→LLM→TTS pipeline.
-    Phase 2 scope (deferred): Silero VAD, live voice loop with wake word.
+    Modes:
+      - Push-to-talk: call record_and_handle_once() directly
+      - Wake word: call start_wake_word_loop() for "Hey JARVIS" activation
     """
 
     def __init__(
@@ -41,6 +45,7 @@ class VoiceSession:
         self._tts_runtime = tts_runtime
         self._recorder = recorder
         self._mic_checked = False
+        self._wake_detector = None
 
     def handle_audio_file(self, audio_path: Path) -> ConversationTurn:
         """Transcribe an audio file and run a normal JARVIS turn."""
@@ -125,3 +130,115 @@ class VoiceSession:
             if not transcript:
                 raise RuntimeError("Empty transcript")
             return transcript
+
+    # --- Wake Word Mode ---
+
+    def start_wake_word_loop(
+        self,
+        *,
+        on_wake: Callable[[], None] | None = None,
+        on_response: Callable[[str], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        """Start continuous wake word listening.
+
+        When "Hey JARVIS" is detected:
+          1. Calls on_wake() to signal activation
+          2. Records audio (push-to-talk duration)
+          3. Transcribes → LLM → generates response
+          4. Synthesizes TTS and plays audio
+          5. Calls on_response(text) with the answer
+          6. Resumes listening for next wake word
+
+        Args:
+            on_wake: Called when wake word detected (e.g., play chime)
+            on_response: Called with LLM response text
+            on_error: Called with error message on failure
+        """
+        try:
+            from jarvis.runtime.wake_word import WakeWordDetector, is_available
+        except ImportError:
+            if on_error:
+                on_error("OpenWakeWord가 설치되지 않았습니다.")
+            return
+
+        if not is_available():
+            if on_error:
+                on_error("Wake word 의존성(pyaudio, openwakeword)이 설치되지 않았습니다.")
+            return
+
+        def _handle_wake():
+            """Called in the wake word thread when 'Hey JARVIS' detected."""
+            logger.info("Wake word activated — starting voice interaction")
+
+            # Pause wake detection during interaction
+            if self._wake_detector is not None:
+                self._wake_detector.stop()
+
+            if on_wake is not None:
+                try:
+                    on_wake()
+                except Exception:
+                    pass
+
+            try:
+                # Record → Transcribe → LLM → TTS
+                transcript = self.record_and_transcribe_once()
+                logger.info("Transcript: %s", transcript[:80])
+
+                turn = self._orchestrator.handle_turn(transcript)
+                response_text = turn.assistant_output or ""
+
+                if on_response is not None:
+                    on_response(response_text)
+
+                # TTS playback
+                if self._tts_runtime is not None and response_text:
+                    self._speak(response_text)
+
+            except RuntimeError as exc:
+                msg = str(exc)
+                logger.warning("Wake word interaction failed: %s", msg)
+                if on_error is not None:
+                    on_error(msg)
+            except Exception as exc:
+                logger.warning("Wake word interaction error: %s", exc)
+                if on_error is not None:
+                    on_error(str(exc))
+
+            # Resume wake detection
+            if self._wake_detector is not None:
+                self._wake_detector.start()
+
+        self._wake_detector = WakeWordDetector(on_wake=_handle_wake)
+        self._wake_detector.start()
+        logger.info("Wake word loop started — say 'Hey JARVIS' to activate")
+
+    def stop_wake_word_loop(self) -> None:
+        """Stop the wake word listening loop."""
+        if self._wake_detector is not None:
+            self._wake_detector.stop()
+            self._wake_detector = None
+            logger.info("Wake word loop stopped")
+
+    @property
+    def wake_word_active(self) -> bool:
+        return self._wake_detector is not None and self._wake_detector.is_running
+
+    def _speak(self, text: str) -> None:
+        """Synthesize and play TTS audio."""
+        if self._tts_runtime is None:
+            return
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
+                audio_path = Path(f.name)
+            self._tts_runtime.synthesize(text, audio_path)
+            # Play via macOS afplay (non-blocking would be better but simple first)
+            subprocess.run(
+                ["afplay", str(audio_path)],
+                timeout=30, check=False,
+                capture_output=True,
+            )
+            audio_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("TTS playback failed: %s", exc)
