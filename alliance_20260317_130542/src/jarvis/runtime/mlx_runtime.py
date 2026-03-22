@@ -27,11 +27,11 @@ from jarvis.retrieval.citation_verifier import CitationVerifier
 if TYPE_CHECKING:
     from jarvis.contracts import ConversationTurn
 
-_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_THINK_RE = re.compile(r"<think>.*?</think>\s*|<thought>.*?</thought>\s*", re.DOTALL)
 
 
 def strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> blocks from LLM output."""
+    """Remove <think>...</think> and <thought>...</thought> blocks from LLM output."""
     return _THINK_RE.sub("", text).strip()
 
 
@@ -253,9 +253,10 @@ class MLXRuntime:
                 combined = "".join(think_buffer) + token if think_buffer else token
 
                 if not in_think:
-                    if "<think>" in combined:
+                    if "<think>" in combined or "<thought>" in combined:
                         # Entered think block — emit text before tag
-                        before = combined.split("<think>", 1)[0]
+                        tag = "<think>" if "<think>" in combined else "<thought>"
+                        before = combined.split(tag, 1)[0]
                         if before:
                             yield before
                         in_think = True
@@ -273,7 +274,7 @@ class MLXRuntime:
                     yield token
                 else:
                     # Inside think block — suppress output
-                    if "</think>" in combined:
+                    if "</think>" in combined or "</thought>" in combined:
                         in_think = False
                         after = combined.split("</think>", 1)[1]
                         think_buffer = []
