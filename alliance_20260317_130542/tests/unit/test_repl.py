@@ -19,7 +19,7 @@ def _answer_with_warning() -> AnswerDraft:
     return AnswerDraft(
         content="응답 본문 [1]",
         evidence=evidence,
-        verification_warnings=("근거 정렬 미확인 문장: 테스트 문장",),
+        verification_warnings=("근거 미확인: 테스트 문장",),
     )
 
 
@@ -35,4 +35,4 @@ class TestJarvisREPL:
 
         captured = capsys.readouterr().out
         assert "검증 경고" in captured
-        assert "근거 정렬 미확인 문장" in captured
+        assert "근거 미확인" in captured

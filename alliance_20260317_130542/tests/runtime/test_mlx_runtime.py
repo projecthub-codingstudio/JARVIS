@@ -40,7 +40,7 @@ class TestMLXRuntime:
         answer = runtime.generate("설명해줘", _evidence_set())
 
         assert len(answer.verification_warnings) == 1
-        assert "근거 정렬 미확인 문장" in answer.verification_warnings[0]
+        assert "근거 미확인" in answer.verification_warnings[0]
 
 
 class TestStripThinkTags:
