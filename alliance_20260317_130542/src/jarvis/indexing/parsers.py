@@ -700,6 +700,164 @@ class DocumentParser:
                 continue
         return raw.decode("utf-8", errors="replace")
 
+    def parse_structured(self, path: Path) -> "ParsedDocument":
+        """Parse a file into a structured ParsedDocument with typed elements.
+
+        Routes to type-specific element extraction. Falls back to
+        wrapping plain text as a single TextElement.
+        """
+        from jarvis.contracts import DocumentElement, ParsedDocument
+
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        doc_type = self.detect_type(p)
+        suffix = p.suffix.lower()
+        metadata = {"filename": p.name, "format": doc_type}
+
+        # xlsx/csv → TableElement with headers and rows
+        if doc_type == "xlsx":
+            elements = self._parse_xlsx_structured(p)
+            return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # Code files → CodeElement
+        code_types = {
+            "python", "typescript", "javascript", "code",
+            "c", "cpp", "go", "rust", "java", "swift", "kotlin",
+        }
+        if doc_type in code_types:
+            text = self.parse(p)
+            if text.strip():
+                lang_map = {"python": "python", "typescript": "typescript", "javascript": "javascript",
+                            "swift": "swift", "java": "java", "go": "go", "rust": "rust"}
+                lang = lang_map.get(doc_type, doc_type)
+                return ParsedDocument(
+                    elements=(DocumentElement(element_type="code", text=text, metadata={"language": lang}),),
+                    metadata=metadata,
+                )
+            return ParsedDocument(elements=(), metadata=metadata)
+
+        # csv/tsv → TableElement
+        if suffix in (".csv", ".tsv"):
+            elements = self._parse_csv_structured(p, delimiter="\t" if suffix == ".tsv" else ",")
+            return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # docx → text + table elements
+        if doc_type == "docx":
+            elements = self._parse_docx_structured(p)
+            return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # All other formats → plain text wrapped as TextElement
+        text = self.parse(p)
+        if not text.strip():
+            return ParsedDocument(elements=(), metadata=metadata)
+
+        return ParsedDocument(
+            elements=(DocumentElement(element_type="text", text=text),),
+            metadata=metadata,
+        )
+
+    def _parse_xlsx_structured(self, path: Path) -> list:
+        """Parse xlsx into TableElement per sheet."""
+        from jarvis.contracts import DocumentElement
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            logger.warning("openpyxl not installed — skipping XLSX: %s", path.name)
+            return []
+
+        elements = []
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            headers: tuple[str, ...] = ()
+            rows: list[tuple[str, ...]] = []
+            for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+                cells = tuple(str(c) if c is not None else "" for c in row)
+                if not any(cells):
+                    continue
+                if row_idx == 0:
+                    headers = cells
+                else:
+                    rows.append(cells)
+            if headers or rows:
+                text = f"[{sheet_name}] {' | '.join(headers)}" if headers else f"[{sheet_name}]"
+                elements.append(DocumentElement(
+                    element_type="table",
+                    text=text,
+                    metadata={
+                        "headers": headers,
+                        "rows": tuple(rows),
+                        "sheet_name": sheet_name,
+                    },
+                ))
+        wb.close()
+        return elements
+
+    def _parse_csv_structured(self, path: Path, *, delimiter: str = ",") -> list:
+        """Parse CSV/TSV into TableElement."""
+        from jarvis.contracts import DocumentElement
+        text = self._read_text_with_fallback(path)
+        if not text.strip():
+            return []
+
+        lines = [l for l in text.strip().split("\n") if l.strip()]
+        if not lines:
+            return []
+
+        headers = tuple(cell.strip() for cell in lines[0].split(delimiter))
+        rows = tuple(
+            tuple(cell.strip() for cell in line.split(delimiter))
+            for line in lines[1:]
+            if line.strip()
+        )
+        return [DocumentElement(
+            element_type="table",
+            text=f"[{path.stem}] {' | '.join(headers)}",
+            metadata={"headers": headers, "rows": rows, "sheet_name": path.stem},
+        )]
+
+    def _parse_docx_structured(self, path: Path) -> list:
+        """Parse DOCX into text + table elements."""
+        from jarvis.contracts import DocumentElement
+        try:
+            from docx import Document
+        except ImportError:
+            logger.warning("python-docx not installed — skipping DOCX: %s", path.name)
+            return []
+
+        elements = []
+        doc = Document(str(path))
+
+        # Paragraphs as text
+        text_parts = [para.text for para in doc.paragraphs if para.text.strip()]
+        if text_parts:
+            elements.append(DocumentElement(
+                element_type="text",
+                text="\n\n".join(text_parts),
+            ))
+
+        # Tables as TableElement
+        for table_idx, table in enumerate(doc.tables):
+            headers: tuple[str, ...] = ()
+            rows: list[tuple[str, ...]] = []
+            for row_idx, row in enumerate(table.rows):
+                cells = tuple(cell.text.strip() for cell in row.cells)
+                if not any(cells):
+                    continue
+                if row_idx == 0:
+                    headers = cells
+                else:
+                    rows.append(cells)
+            if headers or rows:
+                elements.append(DocumentElement(
+                    element_type="table",
+                    text=f"[Table {table_idx + 1}] {' | '.join(headers)}" if headers else f"[Table {table_idx + 1}]",
+                    metadata={"headers": headers, "rows": tuple(rows), "sheet_name": f"Table {table_idx + 1}"},
+                ))
+        return elements
+
     def create_record(self, path: Path) -> DocumentRecord:
         """Create a DocumentRecord for a file.
 
