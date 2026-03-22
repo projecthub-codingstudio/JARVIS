@@ -36,7 +36,7 @@ def test_backfill_embeddings_runs(pipeline_with_db):
     pipeline, db, config = pipeline_with_db
 
     with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False) as f:
-        f.write("테스트 임베딩 백필 문서입니다.")
+        f.write("테스트 임베딩 백필 문서입니다. 이 문서는 충분히 긴 텍스트를 포함하여 청크 최소 크기 필터를 통과합니다.")
         tmp = f.name
 
     pipeline.index_file(Path(tmp))

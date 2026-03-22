@@ -25,6 +25,16 @@ class TestCreateLLMBackend:
             "jarvis.runtime.mlx_backend.mlx_import_probe",
             lambda: (False, "mlx probe failed"),
         )
+        # Also force LlamaCppBackend.load() to fail so we reach the stub
+        import jarvis.runtime.llamacpp_backend as _lcpp
+
+        monkeypatch.setattr(
+            _lcpp.LlamaCppBackend,
+            "load",
+            lambda self, decision: (_ for _ in ()).throw(
+                RuntimeError("ollama unavailable in test")
+            ),
+        )
 
         runtime = create_llm_backend(
             _decision(),

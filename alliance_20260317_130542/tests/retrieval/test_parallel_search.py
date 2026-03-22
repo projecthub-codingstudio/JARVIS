@@ -37,8 +37,8 @@ def indexed_db(tmp_path: Path) -> sqlite3.Connection:
         tombstone_manager=TombstoneManager(db=db),
         embedding_runtime=FakeEmbeddingRuntime(),
     )
-    (tmp_path / "doc1.md").write_text("# Architecture\n\nMonolith-first design pattern.")
-    (tmp_path / "doc2.md").write_text("# 음성 인식\n\nWhisper.cpp 기반 시스템.")
+    (tmp_path / "doc1.md").write_text("# Architecture\n\nMonolith-first design pattern for local AI assistant with modular components.")
+    (tmp_path / "doc2.md").write_text("# 음성 인식\n\nWhisper.cpp 기반 음성 인식 시스템으로 로컬에서 실시간 처리를 수행합니다.")
     pipeline.index_file(tmp_path / "doc1.md")
     pipeline.index_file(tmp_path / "doc2.md")
     return db

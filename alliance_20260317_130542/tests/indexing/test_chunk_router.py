@@ -6,7 +6,7 @@ from jarvis.indexing.chunk_router import ChunkRouter
 class TestChunkRouter:
     def test_routes_text_to_paragraph_strategy(self) -> None:
         doc = ParsedDocument(
-            elements=(DocumentElement(element_type="text", text="Hello world"),),
+            elements=(DocumentElement(element_type="text", text="Hello world, this is a sufficiently long paragraph for chunking tests."),),
             metadata={},
         )
         router = ChunkRouter()
@@ -49,12 +49,12 @@ class TestChunkRouter:
     def test_mixed_document(self) -> None:
         doc = ParsedDocument(
             elements=(
-                DocumentElement(element_type="text", text="Introduction paragraph."),
+                DocumentElement(element_type="text", text="Introduction paragraph with enough text to pass minimum chunk filter requirements."),
                 DocumentElement(
                     element_type="table", text="",
                     metadata={"headers": ("A", "B"), "rows": (("1", "2"),), "sheet_name": "S1"},
                 ),
-                DocumentElement(element_type="code", text="x = 1", metadata={"language": "python"}),
+                DocumentElement(element_type="code", text="def example():\n    x = 1\n    return x\n", metadata={"language": "python"}),
             ),
             metadata={},
         )
@@ -70,7 +70,7 @@ class TestChunkRouter:
 
     def test_unknown_element_type_uses_paragraph(self) -> None:
         doc = ParsedDocument(
-            elements=(DocumentElement(element_type="slide", text="Slide content here"),),
+            elements=(DocumentElement(element_type="slide", text="Slide content here with some extra detail for the minimum chunk size"),),
             metadata={},
         )
         router = ChunkRouter()

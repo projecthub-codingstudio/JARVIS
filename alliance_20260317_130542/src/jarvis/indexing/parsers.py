@@ -260,6 +260,146 @@ def _parse_pdf(path: Path) -> str:
     return "\n\n".join(pages)
 
 
+_MIN_BLOCK_CHARS = 200  # Minimum characters per merged text block
+_MAX_PDF_TEXT_CHARS = 500_000  # ~250K tokens
+
+
+def _parse_pdf_structured(path: Path) -> list:
+    """Extract structured elements from PDF using PyMuPDF block-level data.
+
+    Instead of page.get_text() which flattens everything into raw text,
+    uses page.get_text("blocks") to get individual text blocks with
+    positions. Merges small blocks on the same page to avoid the
+    micro-chunk problem (e.g. 씨샵.pdf: 19,543 chunks avg 85 chars).
+
+    Also attempts table extraction via page.find_tables() when available.
+    """
+    from jarvis.contracts import DocumentElement
+
+    try:
+        import pymupdf
+    except ImportError:
+        logger.warning("pymupdf not installed — skipping PDF: %s", path.name)
+        return []
+
+    elements: list[DocumentElement] = []
+    total_chars = 0
+
+    with pymupdf.open(str(path)) as doc:
+        for page_num, page in enumerate(doc):
+            if total_chars > _MAX_PDF_TEXT_CHARS:
+                logger.info(
+                    "PDF truncated at page %d (%d chars): %s",
+                    page_num, total_chars, path.name,
+                )
+                break
+
+            # --- Table extraction (PyMuPDF ≥ 1.23) ---
+            table_rects: list = []
+            try:
+                tables = page.find_tables()
+                for table in tables:
+                    table_rects.append(table.bbox)
+                    extracted = table.extract()
+                    if not extracted or len(extracted) < 2:
+                        continue
+                    headers = tuple(str(c) if c else "" for c in extracted[0])
+                    rows = tuple(
+                        tuple(str(c) if c else "" for c in row)
+                        for row in extracted[1:]
+                        if any(str(c).strip() for c in row if c)
+                    )
+                    if headers or rows:
+                        text = f"[Page {page_num + 1}] {' | '.join(headers)}" if headers else f"[Page {page_num + 1}]"
+                        elements.append(DocumentElement(
+                            element_type="table",
+                            text=text,
+                            metadata={
+                                "headers": headers,
+                                "rows": rows,
+                                "sheet_name": f"Page {page_num + 1}",
+                            },
+                        ))
+            except Exception:
+                # find_tables() not available or failed — proceed with text only
+                pass
+
+            # --- Text block extraction ---
+            blocks = page.get_text("blocks")  # (x0, y0, x1, y1, text, block_no, block_type)
+            text_blocks: list[str] = []
+
+            for block in blocks:
+                # block_type 0 = text, 1 = image
+                if block[6] != 0:
+                    continue
+
+                block_text = block[4].strip()
+                if not block_text:
+                    continue
+
+                # Skip blocks that fall inside a detected table region
+                bx0, by0, bx1, by1 = block[0], block[1], block[2], block[3]
+                in_table = False
+                for trect in table_rects:
+                    tx0, ty0, tx1, ty1 = trect
+                    if bx0 >= tx0 - 2 and by0 >= ty0 - 2 and bx1 <= tx1 + 2 and by1 <= ty1 + 2:
+                        in_table = True
+                        break
+                if in_table:
+                    continue
+
+                text_blocks.append(block_text)
+
+            # --- Merge small adjacent blocks ---
+            merged = _merge_small_blocks(text_blocks, min_chars=_MIN_BLOCK_CHARS)
+
+            for block_text in merged:
+                total_chars += len(block_text)
+                elements.append(DocumentElement(
+                    element_type="text",
+                    text=block_text,
+                    metadata={"page": page_num + 1},
+                ))
+
+                if total_chars > _MAX_PDF_TEXT_CHARS:
+                    break
+
+    return elements
+
+
+def _merge_small_blocks(blocks: list[str], *, min_chars: int) -> list[str]:
+    """Merge consecutive small text blocks until each meets min_chars.
+
+    Blocks that are already large enough are emitted as-is.
+    The last accumulated group is always emitted regardless of size.
+    """
+    if not blocks:
+        return []
+
+    merged: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+
+    for block in blocks:
+        buf.append(block)
+        buf_len += len(block)
+
+        if buf_len >= min_chars:
+            merged.append("\n\n".join(buf))
+            buf = []
+            buf_len = 0
+
+    # Emit remaining buffer
+    if buf:
+        # Try to attach to previous merged block if it exists and result is reasonable
+        if merged and buf_len < min_chars // 2:
+            merged[-1] = merged[-1] + "\n\n" + "\n\n".join(buf)
+        else:
+            merged.append("\n\n".join(buf))
+
+    return merged
+
+
 def _parse_docx(path: Path) -> str:
     """Extract text from DOCX using python-docx.
 
@@ -747,6 +887,20 @@ class DocumentParser:
         if doc_type == "docx":
             elements = self._parse_docx_structured(p)
             return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # PDF → structured block-level extraction
+        if doc_type == "pdf":
+            elements = _parse_pdf_structured(p)
+            if elements:
+                return ParsedDocument(elements=tuple(elements), metadata=metadata)
+            # Fallback to plain text if structured extraction returned nothing
+            text = self.parse(p)
+            if text.strip():
+                return ParsedDocument(
+                    elements=(DocumentElement(element_type="text", text=text),),
+                    metadata=metadata,
+                )
+            return ParsedDocument(elements=(), metadata=metadata)
 
         # All other formats → plain text wrapped as TextElement
         text = self.parse(p)

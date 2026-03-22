@@ -96,7 +96,7 @@ class TestIndexFile:
         self, pipeline: IndexPipeline, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
         f = tmp_path / "doc.md"
-        f.write_text("same content")
+        f.write_text("Same content repeated here to ensure it meets the minimum chunk size threshold for testing.")
         r1 = pipeline.index_file(f)
         r2 = pipeline.index_file(f)
         assert r1.document_id == r2.document_id
@@ -112,14 +112,14 @@ class TestReindexFile:
         self, pipeline: IndexPipeline, db: sqlite3.Connection, tmp_path: Path
     ) -> None:
         f = tmp_path / "doc.md"
-        f.write_text("Original content")
+        f.write_text("Original content that is long enough to survive minimum chunk size filtering requirements.")
         r1 = pipeline.index_file(f)
         old_chunks = db.execute(
             "SELECT chunk_id FROM chunks WHERE document_id = ?",
             (r1.document_id,),
         ).fetchall()
 
-        f.write_text("Updated content with new information")
+        f.write_text("Updated content with new information that also passes the minimum chunk size requirements.")
         r2 = pipeline.reindex_file(f)
         assert r2.document_id == r1.document_id
         assert r2.indexing_status == IndexingStatus.INDEXED

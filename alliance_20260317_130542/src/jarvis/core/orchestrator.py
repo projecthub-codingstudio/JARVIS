@@ -86,6 +86,7 @@ class Orchestrator:
         self._reranker = reranker
         self._metrics = metrics
         self._error_monitor = error_monitor
+        self._query_complexity: str = "moderate"
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
@@ -124,6 +125,10 @@ class Orchestrator:
             analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
             if analysis.search_terms:
                 search_query = " ".join(analysis.search_terms)
+            # Complexity classification for model routing
+            classify = getattr(self._planner, "classify_complexity", None)
+            if callable(classify):
+                self._query_complexity = classify(user_input)
 
         # 4. Retrieve evidence using analyzed search terms
         evidence = self._retrieve_evidence(search_query)
@@ -231,6 +236,9 @@ class Orchestrator:
             analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
             if analysis.search_terms:
                 search_query = " ".join(analysis.search_terms)
+            classify = getattr(self._planner, "classify_complexity", None)
+            if callable(classify):
+                self._query_complexity = classify(user_input)
 
         evidence = self._retrieve_evidence(search_query)
 
@@ -491,6 +499,12 @@ class Orchestrator:
                 requested_tier = suggest_idle()
             if self._error_monitor is not None and self._error_monitor.degraded_mode:
                 requested_tier = "fast"
+            # Complexity-based tier adjustment
+            complexity = getattr(self, "_query_complexity", "moderate")
+            if complexity == "complex" and requested_tier != "fast":
+                requested_tier = "deep"
+            elif complexity == "simple" and requested_tier == "deep":
+                requested_tier = "balanced"
             return select_runtime(requested_tier)
 
         class _FallbackDecision:
