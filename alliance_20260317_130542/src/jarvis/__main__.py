@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -116,7 +117,12 @@ def main() -> None:
                 print("   종료: Ctrl+C\n")
 
                 def _on_wake():
-                    print("\n  [감지] 'Hey JARVIS' — 녹음 중... (말씀하세요)")
+                    # Chime sound to signal "I'm listening"
+                    subprocess.run(
+                        ["afplay", "/System/Library/Sounds/Tink.aiff"],
+                        check=False, capture_output=True,
+                    )
+                    print("\n  [감지] 'Hey JARVIS' — 🎙 듣고 있습니다...")
 
                 def _on_response(text: str):
                     print(f"  JARVIS: {text}\n")
