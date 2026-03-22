@@ -22,11 +22,23 @@ _MLX_PROBE_CACHE = Path("/tmp/jarvis_mlx_probe_status.json")
 _MLX_PROBE_TTL_SECONDS = 60 * 60
 
 # Model ID mapping: short alias -> HuggingFace repo
+# Model ID mapping: short alias -> HuggingFace repo
+# EXAONE 3.5: general-purpose (2024.12, latest stable)
+# EXAONE Deep: reasoning-specialized (2025.02, slow on simple queries)
+# Qwen3: alternative multilingual models
 _MODEL_ALIASES: dict[str, str] = {
+    # EXAONE 3.5 — default for general use
+    "exaone3.5:7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
+    "exaone3.5:32b": "mlx-community/EXAONE-3.5-32B-Instruct-4bit",
+    "exaone3.5:2.4b": "mlx-community/EXAONE-3.5-2.4B-Instruct-4bit",
+    # EXAONE Deep — reasoning tasks (math, coding, complex analysis)
+    "exaone-deep:7.8b": "mlx-community/EXAONE-Deep-7.8B-3bit",
+    "exaone-deep:32b": "mlx-community/EXAONE-Deep-32B-4bit",
+    # Legacy aliases
+    "exaone-deep-7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
+    # Qwen3
     "qwen3:14b": "mlx-community/Qwen3-14B-4bit",
     "qwen3-14b": "mlx-community/Qwen3-14B-4bit",
-    "exaone3.5:7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
-    "exaone-deep-7.8b": "mlx-community/EXAONE-3.5-7.8B-Instruct-4bit",
 }
 
 
