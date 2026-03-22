@@ -71,6 +71,7 @@ class Orchestrator:
         reranker: object | None = None,
         metrics: MetricsCollector | None = None,
         error_monitor: ErrorMonitor | None = None,
+        user_knowledge_store: object | None = None,
     ) -> None:
         self._governor = governor
         self._query_decomposer = query_decomposer
@@ -87,6 +88,7 @@ class Orchestrator:
         self._metrics = metrics
         self._error_monitor = error_monitor
         self._query_complexity: str = "moderate"
+        self._user_knowledge_store = user_knowledge_store
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
@@ -189,6 +191,7 @@ class Orchestrator:
         turn.has_evidence = True
         self._last_answer = answer
         self._conversation_store.save_turn(turn)
+        self._extract_user_knowledge(turn)
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
@@ -284,6 +287,7 @@ class Orchestrator:
         turn.has_evidence = True
         self._last_answer = answer
         self._conversation_store.save_turn(turn)
+        self._extract_user_knowledge(turn)
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
@@ -459,12 +463,43 @@ class Orchestrator:
         targeted.sort(key=lambda h: h.score, reverse=True)
         return targeted[:5]
 
+    def _extract_user_knowledge(self, turn: ConversationTurn) -> None:
+        """Extract and store user knowledge from a completed turn (Tier 3 memory)."""
+        if self._user_knowledge_store is None:
+            return
+        try:
+            from jarvis.memory.user_knowledge import extract_knowledge
+
+            entries = extract_knowledge(
+                turn.user_input, turn.assistant_output or "",
+                turn_id=turn.turn_id,
+            )
+            upsert = getattr(self._user_knowledge_store, "upsert", None)
+            if callable(upsert):
+                for entry in entries:
+                    upsert(entry)
+        except Exception:
+            pass  # Knowledge extraction failure should never block the main flow
+
+    def _get_user_knowledge_context(self) -> str:
+        """Get formatted user knowledge for LLM prompt injection."""
+        if self._user_knowledge_store is None:
+            return ""
+        fmt = getattr(self._user_knowledge_store, "format_for_prompt", None)
+        if callable(fmt):
+            return fmt(max_entries=8)
+        return ""
+
     def _generate_answer(
         self,
         prompt: str,
         evidence: VerifiedEvidenceSet,
         recent_turns: list[ConversationTurn] | None = None,
     ) -> AnswerDraft:
+        # Inject user knowledge into prompt if available
+        knowledge_ctx = self._get_user_knowledge_context()
+        if knowledge_ctx:
+            prompt = f"{knowledge_ctx}\n\n{prompt}"
         return self._llm_generator.generate(prompt, evidence, recent_turns=recent_turns)
 
     def _build_safe_mode_response(
