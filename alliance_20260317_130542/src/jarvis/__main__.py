@@ -52,6 +52,8 @@ def main() -> None:
             voice_ptt = True
         elif arg == "--wake-word":
             wake_word = True
+        elif arg.startswith("--wake-device="):
+            os.environ["JARVIS_WAKE_DEVICE"] = arg.split("=", 1)[1]
 
     print("\n🤖 JARVIS v0.1.0-beta1")
     print(f"   LLM: {model_id} (MLX primary → Ollama fallback)")
@@ -99,7 +101,18 @@ def main() -> None:
                 recorder=recorder,
             )
             if wake_word:
+                # Enable wake word logging for debugging
+                logging.getLogger("jarvis.runtime.wake_word").setLevel(logging.INFO)
+                logging.getLogger("jarvis.runtime.wake_word").addHandler(
+                    logging.StreamHandler(sys.stderr)
+                )
+
+                wake_device = os.getenv("JARVIS_WAKE_DEVICE")
+                wake_device_idx = int(wake_device) if wake_device and wake_device.isdigit() else None
+
                 print("\n🎙 Wake word mode: 'Hey JARVIS'라고 말하면 자동으로 응답합니다.")
+                if wake_device_idx is not None:
+                    print(f"   Input device: index {wake_device_idx}")
                 print("   종료: Ctrl+C\n")
 
                 def _on_wake():
@@ -116,6 +129,7 @@ def main() -> None:
                     on_wake=_on_wake,
                     on_response=_on_response,
                     on_error=_on_error,
+                    device_index=wake_device_idx,
                 )
                 try:
                     import time

@@ -139,6 +139,7 @@ class VoiceSession:
         on_wake: Callable[[], None] | None = None,
         on_response: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        device_index: int | None = None,
     ) -> None:
         """Start continuous wake word listening.
 
@@ -210,7 +211,10 @@ class VoiceSession:
             if self._wake_detector is not None:
                 self._wake_detector.start()
 
-        self._wake_detector = WakeWordDetector(on_wake=_handle_wake)
+        self._wake_detector = WakeWordDetector(
+            on_wake=_handle_wake,
+            device_index=device_index,
+        )
         self._wake_detector.start()
         logger.info("Wake word loop started — say 'Hey JARVIS' to activate")
 
