@@ -406,6 +406,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 let payload = try await bridge.ask(transcript.transcript)
                 response = payload
                 exportMessage = nil
+
+                // Step 4: TTS — speak the response
+                speakResponse(payload.response)
             } catch {
                 appLog("recordOnce failed: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
@@ -440,48 +443,71 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     private func startWakeWord() {
         wakeWordEnabled = true
-        appLog("Starting wake word detection via bridge")
-        Task {
+        appLog("JARVIS mode active — continuous voice interaction")
+        // Start continuous voice loop with TTS responses
+        if !voiceLoopEnabled {
+            startVoiceLoop()
+        }
+    }
+
+    // MARK: - TTS Playback
+
+    private var ttsProcess: Process?
+
+    /// Speak response text using macOS TTS with JARVIS persona voice.
+    func speakResponse(_ text: String) {
+        // Strip markdown for natural speech
+        let clean = text
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "###", with: "")
+            .replacingOccurrences(of: "##", with: "")
+            .replacingOccurrences(of: "#", with: "")
+        let stripped = clean.replacingOccurrences(
+            of: "\\[\\d+\\]", with: "", options: .regularExpression
+        ).replacingOccurrences(
+            of: "\\[[^\\]]*\\.[a-z]{2,5}\\]", with: "", options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !stripped.isEmpty else { return }
+
+        // Stop any previous TTS
+        ttsProcess?.terminate()
+
+        // Detect language: Korean or English
+        let koreanCount = stripped.unicodeScalars.filter { $0.value >= 0xAC00 && $0.value <= 0xD7A3 }.count
+        let voice = koreanCount > stripped.count / 5 ? "Jian (Premium)" : "Daniel"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = ["-v", voice, "-r", "165", stripped]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        ttsProcess = process
+
+        DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let session = try await bridge.startWakeWordSession()
-                wakeWordSession = session
-                appLog("Wake word session ready — listening")
-
-                // Start the NativeAudioRecorder tap for wake word audio
-                let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
-                try nativeRecorder.activate(deviceID: deviceID)
-
-                // Install a wake word audio processor on the engine's input
-                nativeRecorder.onWakeWordAudioChunk = { [weak self] pcmData in
-                    guard let self, let session = self.wakeWordSession, session.isRunning else { return }
-                    let detected = session.sendAudioChunk(pcmData)
-                    if detected {
-                        DispatchQueue.main.async {
-                            appLog("Wake word detected — starting recording")
-                            self.nativeRecorder.onWakeWordAudioChunk = nil
-                            self.recordOnce()
-                            // Re-enable wake listening after response
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
-                                if self.wakeWordEnabled {
-                                    self.startWakeWord()
-                                }
-                            }
-                        }
-                    }
-                }
+                try process.run()
+                process.waitUntilExit()
             } catch {
-                appLog("Wake word start failed: \(error.localizedDescription)")
-                wakeWordEnabled = false
+                appLog("TTS failed: \(error.localizedDescription)")
             }
         }
     }
 
+    /// Stop any currently playing TTS.
+    func stopTTS() {
+        ttsProcess?.terminate()
+        ttsProcess = nil
+    }
+
     private func stopWakeWord() {
         wakeWordEnabled = false
-        nativeRecorder.onWakeWordAudioChunk = nil
-        wakeWordSession?.stop()
-        wakeWordSession = nil
-        appLog("Wake word stopped")
+        if voiceLoopEnabled {
+            stopVoiceLoop()
+        }
+        stopTTS()
+        appLog("JARVIS mode stopped")
     }
 
     func refreshHealth() async {
@@ -743,6 +769,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
             errorMessage = nil
             consecutiveLoopErrors = 0
             isLoading = false
+
+            // TTS — speak the response
+            speakResponse(payload.response)
+
             voiceLoopPhase = .cooldown
             return successLoopDelay
         } catch {
