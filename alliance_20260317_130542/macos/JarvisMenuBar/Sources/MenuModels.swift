@@ -105,6 +105,7 @@ struct CommandEnvelope: Codable {
     let transcriptionResult: TranscriptionResponse?
     let healthResult: HealthResponse?
     let error: String?
+    let token: String?
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -113,5 +114,13 @@ struct CommandEnvelope: Codable {
         case transcriptionResult = "transcription_result"
         case healthResult = "health_result"
         case error
+        case token
     }
+}
+
+/// Represents a streaming event from the Python bridge server.
+enum StreamEvent {
+    case token(String)
+    case done(MenuResponse?)
+    case error(String)
 }

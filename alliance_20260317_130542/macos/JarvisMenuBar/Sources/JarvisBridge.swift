@@ -298,6 +298,125 @@ actor JarvisBridge {
         throw BridgeError.decodeFailed(outputText)
     }
 
+    // MARK: - Streaming
+
+    /// Ask a query with streaming token delivery via server mode.
+    ///
+    /// Launches the Python bridge in server mode (persistent stdin/stdout),
+    /// sends the query with `"stream": true`, and yields tokens as they
+    /// arrive. The final event contains the complete MenuResponse.
+    func askStreaming(_ query: String) -> AsyncStream<StreamEvent> {
+        AsyncStream { continuation in
+            Task.detached { [configuration] in
+                do {
+                    let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
+                    guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+                        continuation.yield(.error("Python not found"))
+                        continuation.finish()
+                        return
+                    }
+
+                    let process = Process()
+                    let stdinPipe = Pipe()
+                    let stdoutPipe = Pipe()
+                    let stderrPipe = Pipe()
+
+                    process.executableURL = pythonURL
+                    process.currentDirectoryURL = configuration.allianceRoot
+                    process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
+
+                    var environment = ProcessInfo.processInfo.environment
+                    environment["PYTHONPATH"] = configuration.pythonPath
+                    environment["HF_HUB_DISABLE_PROGRESS_BARS"] = environment["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
+                    environment["TRANSFORMERS_VERBOSITY"] = environment["TRANSFORMERS_VERBOSITY"] ?? "error"
+                    environment["TOKENIZERS_PARALLELISM"] = environment["TOKENIZERS_PARALLELISM"] ?? "false"
+                    environment["HF_HUB_DISABLE_TELEMETRY"] = environment["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
+                    environment["TRUST_REMOTE_CODE"] = environment["TRUST_REMOTE_CODE"] ?? "1"
+                    if let sttBinary = configuration.defaultSTTBinary {
+                        environment["JARVIS_STT_BINARY"] = environment["JARVIS_STT_BINARY"] ?? sttBinary
+                    }
+                    if let sttModel = configuration.defaultSTTModel {
+                        environment["JARVIS_STT_MODEL"] = environment["JARVIS_STT_MODEL"] ?? sttModel
+                    }
+                    process.environment = environment
+                    process.standardInput = stdinPipe
+                    process.standardOutput = stdoutPipe
+                    process.standardError = stderrPipe
+
+                    try process.run()
+                    bridgeLog("Server mode launched for streaming query")
+
+                    let decoder = JSONDecoder()
+                    let fileHandle = stdoutPipe.fileHandleForReading
+
+                    // Wait for "ready" signal
+                    var ready = false
+                    while !ready {
+                        guard let lineData = fileHandle.availableData.split(separator: UInt8(ascii: "\n")).first else {
+                            continue
+                        }
+                        if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)) {
+                            if envelope.kind == "ready" { ready = true }
+                        }
+                    }
+
+                    // Send streaming query
+                    let payload = try JSONSerialization.data(
+                        withJSONObject: ["command": "ask", "query": query, "stream": true]
+                    )
+                    stdinPipe.fileHandleForWriting.write(payload)
+                    stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+
+                    // Read streaming responses line by line
+                    var buffer = Data()
+                    var done = false
+                    while !done {
+                        let chunk = fileHandle.availableData
+                        if chunk.isEmpty { break }
+                        buffer.append(chunk)
+
+                        // Process complete JSON lines
+                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                            let lineData = buffer[buffer.startIndex..<newlineIndex]
+                            buffer = Data(buffer[buffer.index(after: newlineIndex)...])
+
+                            guard !lineData.isEmpty,
+                                  let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData))
+                            else { continue }
+
+                            switch envelope.kind {
+                            case "stream_chunk":
+                                if let token = envelope.token {
+                                    continuation.yield(.token(token))
+                                }
+                            case "stream_done":
+                                continuation.yield(.done(envelope.queryResult))
+                                done = true
+                            case "error":
+                                continuation.yield(.error(envelope.error ?? "unknown error"))
+                                done = true
+                            default:
+                                break
+                            }
+                        }
+                    }
+
+                    // Shutdown server
+                    let shutdownPayload = try JSONSerialization.data(
+                        withJSONObject: ["command": "shutdown"]
+                    )
+                    stdinPipe.fileHandleForWriting.write(shutdownPayload)
+                    stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+                    process.waitUntilExit()
+
+                } catch {
+                    continuation.yield(.error(error.localizedDescription))
+                }
+                continuation.finish()
+            }
+        }
+    }
+
     private func send(_ query: String, command: String) async throws -> MenuResponse {
         let envelope = try runCommand([
             "command": command,
