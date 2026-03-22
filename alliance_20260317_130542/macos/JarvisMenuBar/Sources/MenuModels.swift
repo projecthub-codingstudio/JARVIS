@@ -106,6 +106,7 @@ struct CommandEnvelope: Codable {
     let healthResult: HealthResponse?
     let error: String?
     let token: String?
+    let score: Double?
 
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -115,6 +116,7 @@ struct CommandEnvelope: Codable {
         case healthResult = "health_result"
         case error
         case token
+        case score
     }
 }
 

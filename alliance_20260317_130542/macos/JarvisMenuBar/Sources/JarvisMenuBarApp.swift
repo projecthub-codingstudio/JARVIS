@@ -249,6 +249,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
     @Published var exportFormat: ExportFormat = .txt
     @Published var exportLocation: ExportLocation = .jarvisExports
     @Published var voiceLoopEnabled = false
+    @Published var wakeWordEnabled = false
+    private var wakeWordSession: WakeWordSession?
     @Published var voiceLoopPhase: VoiceLoopPhase = .idle
     @Published var lastTranscript = ""
     @Published var health: HealthResponse?
@@ -424,6 +426,62 @@ final class JarvisMenuBarViewModel: ObservableObject {
         } else {
             startVoiceLoop()
         }
+    }
+
+    // MARK: - Wake Word
+
+    func toggleWakeWord() {
+        if wakeWordEnabled {
+            stopWakeWord()
+        } else {
+            startWakeWord()
+        }
+    }
+
+    private func startWakeWord() {
+        wakeWordEnabled = true
+        appLog("Starting wake word detection via bridge")
+        Task {
+            do {
+                let session = try await bridge.startWakeWordSession()
+                wakeWordSession = session
+                appLog("Wake word session ready — listening")
+
+                // Start the NativeAudioRecorder tap for wake word audio
+                let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+                try nativeRecorder.activate(deviceID: deviceID)
+
+                // Install a wake word audio processor on the engine's input
+                nativeRecorder.onWakeWordAudioChunk = { [weak self] pcmData in
+                    guard let self, let session = self.wakeWordSession, session.isRunning else { return }
+                    let detected = session.sendAudioChunk(pcmData)
+                    if detected {
+                        DispatchQueue.main.async {
+                            appLog("Wake word detected — starting recording")
+                            self.nativeRecorder.onWakeWordAudioChunk = nil
+                            self.recordOnce()
+                            // Re-enable wake listening after response
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                                if self.wakeWordEnabled {
+                                    self.startWakeWord()
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {
+                appLog("Wake word start failed: \(error.localizedDescription)")
+                wakeWordEnabled = false
+            }
+        }
+    }
+
+    private func stopWakeWord() {
+        wakeWordEnabled = false
+        nativeRecorder.onWakeWordAudioChunk = nil
+        wakeWordSession?.stop()
+        wakeWordSession = nil
+        appLog("Wake word stopped")
     }
 
     func refreshHealth() async {
@@ -1222,6 +1280,11 @@ struct JarvisMenuContentView: View {
                                 Button(viewModel.voiceLoopEnabled ? "Stop Loop" : "Live Loop") {
                                     viewModel.toggleVoiceLoop()
                                 }
+
+                                Button(viewModel.wakeWordEnabled ? "🔴 Wake Off" : "🟢 Hey JARVIS") {
+                                    viewModel.toggleWakeWord()
+                                }
+                                .help("\"Hey JARVIS\" wake word detection")
 
                                 Button(viewModel.bypassEnabled ? "Bypass Off" : "Bypass On") {
                                     viewModel.toggleBypass()

@@ -38,6 +38,10 @@ final class NativeAudioRecorder: @unchecked Sendable {
     /// Callback for guidance messages (e.g., wrong device selected).
     var onGuidanceMessage: ((String) -> Void)?
 
+    /// Callback for wake word audio chunks (16kHz mono Int16 PCM, ~80ms each).
+    /// Set this to feed audio to the Python wake word detector.
+    var onWakeWordAudioChunk: ((Data) -> Void)?
+
     var isSessionRunning: Bool { engine.isRunning }
 
     // MARK: - Activation
@@ -224,10 +228,28 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
     /// Called by AVAudioEngine tap — buffer is at native format.
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard isWriting, let file = audioFile else { return }
-
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0, let channelData = buffer.floatChannelData?[0] else { return }
+
+        // --- Wake word audio forwarding (always, even when not recording) ---
+        if let wakeCallback = onWakeWordAudioChunk, !isWriting {
+            // Downsample float32 at native rate to Int16 at 16kHz
+            let nativeRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+            let ratio = max(1, Int(nativeRate / 16000))
+            let outputCount = frameCount / ratio
+            var int16Samples = [Int16](repeating: 0, count: outputCount)
+            for i in 0..<outputCount {
+                let sample = max(-1.0, min(1.0, channelData[i * ratio]))
+                int16Samples[i] = Int16(sample * 32767)
+            }
+            let pcmData = int16Samples.withUnsafeBufferPointer { ptr in
+                Data(buffer: ptr)
+            }
+            wakeCallback(pcmData)
+        }
+
+        // --- Recording mode ---
+        guard isWriting, let file = audioFile else { return }
 
         // --- VAD ---
         var sumSquares: Float = 0
