@@ -63,8 +63,9 @@ class Reranker:
             logging.getLogger("transformers").setLevel(logging.ERROR)
 
             from sentence_transformers import CrossEncoder
-            self._model = CrossEncoder(self._model_id)
-            logger.info("Loaded reranker model: %s", self._model_id)
+            # Force CPU to avoid Metal GPU conflicts with MLX LLM
+            self._model = CrossEncoder(self._model_id, device="cpu")
+            logger.info("Loaded reranker model: %s (cpu)", self._model_id)
             return self._model
         except Exception as e:
             logger.warning("Failed to load reranker: %s", e)
@@ -122,10 +123,12 @@ class Reranker:
             return list(results[:top_k])
 
         # Combine cross-encoder score with original RRF score
+        import math
         reranked: list[tuple[float, HybridSearchResult]] = []
         for result, ce_score in zip(results, scores):
-            # Normalize cross-encoder score to [0, 1] range (sigmoid output)
             ce_norm = float(ce_score)
+            if math.isnan(ce_norm) or math.isinf(ce_norm):
+                ce_norm = 0.0
             # Combined score: weight cross-encoder heavily (0.7) + RRF (0.3)
             combined = 0.7 * ce_norm + 0.3 * (result.rrf_score * 60)  # Scale RRF
             reranked.append((combined, result))
