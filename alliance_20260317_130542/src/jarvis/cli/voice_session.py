@@ -172,9 +172,9 @@ class VoiceSession:
             """Called in the wake word thread when 'Hey JARVIS' detected."""
             logger.info("Wake word activated — starting voice interaction")
 
-            # Pause wake detection during interaction
+            # Pause detection (not stop — we're in the same thread!)
             if self._wake_detector is not None:
-                self._wake_detector.stop()
+                self._wake_detector.pause()
 
             if on_wake is not None:
                 try:
@@ -207,9 +207,9 @@ class VoiceSession:
                 if on_error is not None:
                     on_error(str(exc))
 
-            # Resume wake detection
+            # Resume detection
             if self._wake_detector is not None:
-                self._wake_detector.start()
+                self._wake_detector.resume()
 
         self._wake_detector = WakeWordDetector(
             on_wake=_handle_wake,

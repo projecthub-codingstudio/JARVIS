@@ -86,11 +86,20 @@ class WakeWordDetector:
         self._threshold = threshold
         self._device_index = device_index
         self._running = False
+        self._paused = False
         self._thread: threading.Thread | None = None
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def pause(self) -> None:
+        """Pause detection (safe to call from the wake callback thread)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume detection after pause."""
+        self._paused = False
 
     def start(self) -> None:
         """Start background wake word listening."""
@@ -164,6 +173,11 @@ class WakeWordDetector:
             logger.info("Listening for 'Hey JARVIS' (threshold=%.2f)", self._threshold)
 
             while self._running:
+                if self._paused:
+                    import time
+                    time.sleep(0.1)
+                    continue
+
                 try:
                     pcm_bytes = stream.read(native_chunk, exception_on_overflow=False)
                 except OSError:
