@@ -23,7 +23,7 @@ def init_database(config: JarvisConfig) -> sqlite3.Connection:
     assert config.db_path is not None
     config.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(config.db_path))
+    conn = sqlite3.connect(str(config.db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
 

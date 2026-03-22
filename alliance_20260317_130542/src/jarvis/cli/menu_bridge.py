@@ -128,11 +128,12 @@ def build_menu_response(
     if answer is not None:
         relevant_items = [i for i in answer.evidence.items if i.relevance_score >= MIN_RELEVANCE_SCORE]
         for item in relevant_items[:5]:
-            source_path = item.source_path or item.document_id
+            full_path = item.source_path or item.document_id
+            display_name = Path(full_path).name if full_path else item.document_id
             citations.append(MenuBarCitation(
                 label=item.citation.label,
-                source_path=source_path,
-                source_type=_detect_source_type(source_path),
+                source_path=display_name,
+                source_type=_detect_source_type(full_path),
                 quote=_quote_for(item),
                 state=item.citation.state.value,
                 relevance_score=item.relevance_score,
@@ -479,13 +480,26 @@ def _run_server(model_id: str) -> int:
                     print(json.dumps({"kind": "shutdown"}), flush=True)
                     return 0
                 if command == "ask":
-                    envelope = MenuBarCommandEnvelope(
-                        kind="query_result",
-                        query_result=_response_from_context(
-                            context=context,
-                            turn=context.orchestrator.handle_turn(str(payload["query"])),
-                        ),
-                    )
+                    stream_mode = bool(payload.get("stream", False))
+                    if stream_mode and hasattr(context.orchestrator, "handle_turn_stream"):
+                        turn = None
+                        for item in context.orchestrator.handle_turn_stream(str(payload["query"])):
+                            if isinstance(item, str):
+                                print(json.dumps({"kind": "stream_chunk", "token": item}, ensure_ascii=False), flush=True)
+                            else:
+                                turn = item
+                        envelope = MenuBarCommandEnvelope(
+                            kind="stream_done",
+                            query_result=_response_from_context(context=context, turn=turn) if turn else None,
+                        )
+                    else:
+                        envelope = MenuBarCommandEnvelope(
+                            kind="query_result",
+                            query_result=_response_from_context(
+                                context=context,
+                                turn=context.orchestrator.handle_turn(str(payload["query"])),
+                            ),
+                        )
                 elif command == "record-once":
                     envelope = MenuBarCommandEnvelope(
                         kind="query_result",

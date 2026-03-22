@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import re
 import time
+import logging
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+
+_logger = logging.getLogger(__name__)
 
 from jarvis.contracts import (
     AnswerDraft,
@@ -190,6 +194,97 @@ class Orchestrator:
 
         return turn
 
+    def handle_turn_stream(self, user_input: str) -> Iterator[str | ConversationTurn]:
+        """Stream a turn — yields tokens then a final ConversationTurn.
+
+        Retrieval is synchronous. Only the LLM generation phase streams.
+        The last yielded item is always a ConversationTurn.
+        """
+        started_at = time.perf_counter()
+        turn = ConversationTurn(user_input=user_input)
+
+        # Safety, governor, planner checks (same as handle_turn)
+        if self._is_destructive_request(user_input):
+            turn.assistant_output = (
+                "파괴적이거나 대량 삭제로 이어질 수 있는 요청은 안전 정책상 수행할 수 없습니다."
+            )
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            yield turn
+            return
+
+        if not self._governor.check_resource_budget():
+            turn.assistant_output = "시스템 리소스가 부족하여 처리할 수 없습니다."
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            yield turn
+            return
+
+        self._task_log_store.log_entry(TaskLogEntry(
+            turn_id=turn.turn_id, stage="start", status=TaskStatus.RUNNING,
+        ))
+
+        search_query = user_input
+        if self._planner is not None:
+            analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
+            if analysis.search_terms:
+                search_query = " ".join(analysis.search_terms)
+
+        evidence = self._retrieve_evidence(search_query)
+
+        if evidence.is_empty:
+            turn.assistant_output = "관련 증거를 찾을 수 없어 답변을 생성할 수 없습니다."
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            self._task_log_store.log_entry(TaskLogEntry(
+                turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
+            ))
+            yield turn
+            return
+
+        # Stream LLM generation
+        recent_turns = self._conversation_store.get_recent_turns(limit=3)
+        generate_stream = getattr(self._llm_generator, "generate_stream", None)
+
+        if callable(generate_stream):
+            full_text_parts: list[str] = []
+            answer: AnswerDraft | None = None
+
+            for item in generate_stream(user_input, evidence, recent_turns=recent_turns):
+                if isinstance(item, str):
+                    full_text_parts.append(item)
+                    yield item
+                else:
+                    # AnswerDraft sentinel
+                    answer = item
+
+            if answer is None:
+                # Shouldn't happen, but handle gracefully
+                from jarvis.runtime.mlx_runtime import strip_think_tags
+                answer = AnswerDraft(
+                    content=strip_think_tags("".join(full_text_parts)),
+                    evidence=evidence,
+                    model_id="unknown",
+                )
+        else:
+            # No streaming — fall back to non-streaming
+            answer = self._generate_answer(user_input, evidence, recent_turns)
+
+        turn.assistant_output = answer.content
+        turn.has_evidence = True
+        self._last_answer = answer
+        self._conversation_store.save_turn(turn)
+        self._task_log_store.log_entry(TaskLogEntry(
+            turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
+        ))
+        if self._metrics is not None:
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                (time.perf_counter() - started_at) * 1000,
+                tags={"has_evidence": "true", "streaming": "true"},
+            )
+        yield turn
+
     @property
     def last_answer(self) -> AnswerDraft | None:
         """Access the last AnswerDraft for citation rendering."""
@@ -201,6 +296,7 @@ class Orchestrator:
     )
 
     def _retrieve_evidence(self, query: str) -> VerifiedEvidenceSet:
+        retrieval_start = time.perf_counter()
         fragments = self._query_decomposer.decompose(query)
         if not fragments:
             return VerifiedEvidenceSet(items=(), query_fragments=())
@@ -208,19 +304,18 @@ class Orchestrator:
         runtime_decision = self._resolve_runtime_decision()
         retrieval_top_k = max(4, runtime_decision.max_retrieved_chunks * 2)
 
-        can_parallelize = (
-            getattr(self._fts_retriever, "_db", None) is None
-            and getattr(self._vector_retriever, "_db", None) is None
-        )
-        if can_parallelize:
+        search_start = time.perf_counter()
+        try:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 fts_future = executor.submit(self._fts_retriever.search, fragments, retrieval_top_k)
                 vector_future = executor.submit(self._vector_retriever.search, fragments, retrieval_top_k)
                 fts_hits = fts_future.result()
                 vector_hits = vector_future.result()
-        else:
+        except Exception:
+            _logger.warning("Parallel search failed, falling back to sequential")
             fts_hits = self._fts_retriever.search(fragments, retrieval_top_k)
             vector_hits = self._vector_retriever.search(fragments, retrieval_top_k)
+        search_ms = (time.perf_counter() - search_start) * 1000
 
         # Document-targeted search: if query mentions a filename,
         # also search within that specific document's chunks
@@ -239,6 +334,18 @@ class Orchestrator:
             evidence = VerifiedEvidenceSet(
                 items=evidence.items[:runtime_decision.max_retrieved_chunks],
                 query_fragments=evidence.query_fragments,
+            )
+
+        retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
+        _logger.info(
+            "Retrieval: search=%.0fms total=%.0fms fts=%d vector=%d fused=%d",
+            search_ms, retrieval_ms, len(fts_hits), len(vector_hits),
+            len(hybrid_results),
+        )
+        if self._metrics is not None:
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS, search_ms,
+                tags={"stage": "parallel_search"},
             )
         return evidence
 

@@ -12,6 +12,7 @@ import logging
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
@@ -228,6 +229,60 @@ class MLXBackend:
         )
 
         return response
+
+    def generate_stream(self, prompt: str, context: str, intent: str) -> Iterator[str]:
+        """Generate a response, yielding tokens for real-time display.
+
+        Uses mlx_lm.stream_generate if available, otherwise falls back
+        to yielding the full response as a single chunk.
+        """
+        if self._model is None or self._tokenizer is None:
+            raise RuntimeError("No model loaded. Call load() first.")
+
+        from mlx_lm.sample_utils import make_sampler
+
+        system_message = (
+            "당신은 JARVIS입니다. 사용자의 로컬 워크스페이스 AI 어시스턴트입니다. "
+            "제공된 증거를 기반으로 정확하고 간결하게 답변하세요. "
+            "증거가 없는 내용은 추측하지 마세요. "
+            "표 형식 데이터에서는 헤더(첫 행)와 데이터 행의 열 위치를 정확히 대응시켜 답변하세요. "
+            "| 구분자로 나뉜 데이터에서 n번째 열은 헤더의 n번째 열에 해당합니다."
+        )
+
+        if context.strip():
+            system_message += f"\n\n참고 증거:\n{context}"
+
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt},
+        ]
+
+        formatted_prompt = self._tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True
+        )
+
+        prompt_tokens = len(formatted_prompt) if isinstance(formatted_prompt, list) else len(self._tokenizer.encode(formatted_prompt))
+        _RESERVE = 256
+        max_tokens = max(256, self._context_window - prompt_tokens - _RESERVE)
+
+        sampler = make_sampler(0.7, 0.9, 0.0, 1)
+
+        try:
+            from mlx_lm import stream_generate as mlx_stream
+            for chunk in mlx_stream(
+                self._model,
+                self._tokenizer,
+                prompt=formatted_prompt,
+                max_tokens=max_tokens,
+                sampler=sampler,
+            ):
+                # stream_generate yields GenerationResponse objects with .text
+                text = chunk.text if hasattr(chunk, "text") else str(chunk)
+                if text:
+                    yield text
+        except (ImportError, AttributeError):
+            # Fallback: no stream_generate available, yield full response
+            yield self.generate(prompt, context, intent)
 
 
 # Runtime-checkable verification

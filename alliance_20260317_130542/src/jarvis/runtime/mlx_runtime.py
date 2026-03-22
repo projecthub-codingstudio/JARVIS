@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from jarvis.contracts import (
@@ -87,9 +88,13 @@ class MLXRuntime:
 
         for item in evidence.items:
             label = item.citation.label
-            source = f" ({item.source_path})" if item.source_path else ""
+            # Use filename only (not full path) to keep LLM output clean
+            source_name = ""
+            if item.source_path:
+                from pathlib import Path as _P
+                source_name = f" ({_P(item.source_path).name})"
             heading = f" [{item.heading_path}]" if item.heading_path else ""
-            part = f"{label}{source}{heading}: {item.text}"
+            part = f"{label}{source_name}{heading}: {item.text}"
 
             if total_chars + len(part) > self._max_context_chars:
                 # Budget exhausted — truncate this part or stop
@@ -206,3 +211,101 @@ class MLXRuntime:
             generation_time_ms=1.0,
             verification_warnings=(),
         )
+
+    def generate_stream(
+        self,
+        prompt: str,
+        evidence: VerifiedEvidenceSet,
+        *,
+        recent_turns: list[ConversationTurn] | None = None,
+    ) -> Iterator[str | AnswerDraft]:
+        """Stream tokens from the LLM, filtering think tags mid-stream.
+
+        Yields:
+            str: Individual tokens for real-time display.
+            AnswerDraft: Final sentinel containing the complete response
+                         (always the last item yielded).
+        """
+        if evidence.is_empty:
+            yield AnswerDraft(
+                content="충분한 증거가 없어 답변을 생성할 수 없습니다.",
+                evidence=evidence,
+                model_id=self._model_id,
+            )
+            return
+
+        context = self._assemble_context(evidence)
+        history = self._assemble_history(recent_turns)
+        if history:
+            context = f"[이전 대화]\n{history}\n\n[참고 증거]\n{context}"
+
+        # Check if backend supports streaming
+        if self._backend is not None and hasattr(self._backend, "generate_stream"):
+            t0 = time.perf_counter()
+            full_tokens: list[str] = []
+            in_think = False
+            think_buffer: list[str] = []
+
+            for token in self._backend.generate_stream(prompt, context, "read_only"):
+                full_tokens.append(token)
+
+                # Think-tag state machine
+                combined = "".join(think_buffer) + token if think_buffer else token
+
+                if not in_think:
+                    if "<think>" in combined:
+                        # Entered think block — emit text before tag
+                        before = combined.split("<think>", 1)[0]
+                        if before:
+                            yield before
+                        in_think = True
+                        think_buffer = []
+                        continue
+                    # Check for partial tag at end (e.g., "<thi")
+                    if "<" in token and not token.endswith(">"):
+                        think_buffer.append(token)
+                        continue
+                    if think_buffer:
+                        # False alarm — flush buffer
+                        for buf_token in think_buffer:
+                            yield buf_token
+                        think_buffer = []
+                    yield token
+                else:
+                    # Inside think block — suppress output
+                    if "</think>" in combined:
+                        in_think = False
+                        after = combined.split("</think>", 1)[1]
+                        think_buffer = []
+                        if after.strip():
+                            yield after
+                    # else: keep suppressing
+
+            # Flush any remaining buffer
+            if think_buffer and not in_think:
+                for buf_token in think_buffer:
+                    yield buf_token
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            raw_text = "".join(full_tokens)
+            response_text = strip_think_tags(raw_text)
+
+            if self._metrics is not None:
+                self._metrics.record(
+                    MetricName.TTFT_MS, elapsed_ms,
+                    tags={"stage": "generation"},
+                )
+            warnings = self._citation_verifier.verify(response_text, evidence)
+
+            yield AnswerDraft(
+                content=response_text,
+                evidence=evidence,
+                model_id=self._backend.model_id if hasattr(self._backend, "model_id") else self._model_id,
+                generation_time_ms=elapsed_ms,
+                verification_warnings=warnings,
+            )
+        else:
+            # No streaming support — fall back to non-streaming generate
+            answer = self.generate(prompt, evidence, recent_turns=recent_turns)
+            yield answer.content
+            yield answer
