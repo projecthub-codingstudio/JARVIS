@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = 1280  # 80ms at 16kHz
-_DEFAULT_THRESHOLD = 0.3  # Lower for Korean accent tolerance
+_DEFAULT_THRESHOLD = 0.2  # Low threshold for Korean accent tolerance
 _DEFAULT_MODEL = "hey_jarvis_v0.1"
 
 # Virtual/aggregate device keywords to skip when auto-selecting

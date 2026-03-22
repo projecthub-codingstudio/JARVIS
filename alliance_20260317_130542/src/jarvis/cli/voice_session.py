@@ -239,15 +239,46 @@ class VoiceSession:
         if self._tts_runtime is None:
             return
         try:
+            clean = _strip_markup_for_tts(text)
+            if not clean.strip():
+                return
             with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
                 audio_path = Path(f.name)
-            self._tts_runtime.synthesize(text, audio_path)
-            # Play via macOS afplay (non-blocking would be better but simple first)
+            self._tts_runtime.synthesize(clean, audio_path)
             subprocess.run(
                 ["afplay", str(audio_path)],
-                timeout=30, check=False,
+                timeout=60, check=False,
                 capture_output=True,
             )
             audio_path.unlink(missing_ok=True)
         except Exception as exc:
             logger.debug("TTS playback failed: %s", exc)
+
+
+import re
+
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_ITALIC_RE = re.compile(r"\*(.+?)\*")
+_BRACKET_CITATION_RE = re.compile(r"\[(\d+)\]")
+_BRACKET_FILE_RE = re.compile(r"\[([^\]]*\.\w{2,5})\]")
+_BRACKET_SOURCE_RE = re.compile(r"\[([^\]]+)\]\s*파일")
+_CODE_INLINE_RE = re.compile(r"`([^`]+)`")
+_HEADING_RE = re.compile(r"^#{1,4}\s+", re.MULTILINE)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+
+
+def _strip_markup_for_tts(text: str) -> str:
+    """Remove markdown/markup tags for natural TTS reading."""
+    t = text
+    t = _BOLD_RE.sub(r"\1", t)
+    t = _ITALIC_RE.sub(r"\1", t)
+    t = _BRACKET_CITATION_RE.sub("", t)
+    t = _BRACKET_SOURCE_RE.sub(r"\1 파일", t)
+    t = _BRACKET_FILE_RE.sub(r"\1", t)
+    t = _CODE_INLINE_RE.sub(r"\1", t)
+    t = _HEADING_RE.sub("", t)
+    t = _MARKDOWN_LINK_RE.sub(r"\1", t)
+    # Clean up extra whitespace
+    t = re.sub(r"  +", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
