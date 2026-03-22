@@ -369,6 +369,15 @@ def start_file_watcher(
     return watcher
 
 
+def _create_user_knowledge_store(db):
+    """Create the Tier 3 user knowledge store if the table exists."""
+    try:
+        from jarvis.memory.user_knowledge import UserKnowledgeStore
+        return UserKnowledgeStore(db=db)
+    except Exception:
+        return None
+
+
 def create_llm_backend(
     decision: RuntimeDecision,
     *,
@@ -568,6 +577,7 @@ def build_runtime_context(
         reranker=reranker,
         metrics=result.metrics,
         error_monitor=error_monitor,
+        user_knowledge_store=_create_user_knowledge_store(result.db),
     )
 
     return RuntimeContext(

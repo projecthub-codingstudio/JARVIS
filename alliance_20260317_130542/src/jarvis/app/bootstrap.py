@@ -37,6 +37,21 @@ def init_database(config: JarvisConfig) -> sqlite3.Connection:
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE chunks ADD COLUMN embedding_ref TEXT DEFAULT NULL")
 
+    # Migration: create user_knowledge table if missing (Tier 3 memory, added in v0.3)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_knowledge (
+            knowledge_id  TEXT PRIMARY KEY,
+            category      TEXT NOT NULL DEFAULT 'general',
+            key           TEXT NOT NULL DEFAULT '',
+            value         TEXT NOT NULL DEFAULT '',
+            confidence    REAL NOT NULL DEFAULT 0.5,
+            source_turn   TEXT DEFAULT NULL,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(category, key)
+        )
+    """)
+
     return conn
 
 
