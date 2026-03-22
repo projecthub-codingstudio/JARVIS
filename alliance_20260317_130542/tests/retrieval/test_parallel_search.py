@@ -96,19 +96,20 @@ class TestRRFFusionDictOptimization:
         ]
 
     def test_fuse_correct_scores(self) -> None:
-        fusion = HybridSearch(rrf_k=60)
+        vw = 2.0  # default vector_weight
+        fusion = HybridSearch(rrf_k=60, vector_weight=vw)
         results = fusion.fuse(self._make_fts_hits(), self._make_vector_hits(), top_k=10)
 
         scores = {r.chunk_id: r.rrf_score for r in results}
 
-        # c1: FTS rank 1 + Vector rank 3 → 1/61 + 1/63
-        assert abs(scores["c1"] - (1 / 61 + 1 / 63)) < 1e-9
-        # c2: FTS rank 2 + Vector rank 1 → 1/62 + 1/61
-        assert abs(scores["c2"] - (1 / 62 + 1 / 61)) < 1e-9
+        # c1: FTS rank 1 + Vector rank 3 → 1/61 + vw/63
+        assert abs(scores["c1"] - (1 / 61 + vw / 63)) < 1e-9
+        # c2: FTS rank 2 + Vector rank 1 → 1/62 + vw/61
+        assert abs(scores["c2"] - (1 / 62 + vw / 61)) < 1e-9
         # c3: FTS rank 3 only → 1/63
         assert abs(scores["c3"] - 1 / 63) < 1e-9
-        # c4: Vector rank 2 only → 1/62
-        assert abs(scores["c4"] - 1 / 62) < 1e-9
+        # c4: Vector rank 2 only → vw/62
+        assert abs(scores["c4"] - vw / 62) < 1e-9
 
     def test_fuse_ranking_order(self) -> None:
         fusion = HybridSearch(rrf_k=60)
