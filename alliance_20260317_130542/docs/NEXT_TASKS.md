@@ -14,28 +14,20 @@
 - [x] Semantic Chunking (Table/Code/Paragraph 전략)
 - [x] 시스템 프롬프트 중앙화 + key=value 데이터 지시
 - [x] EXAONE 4.0 벤치마크 + deep tier 등록
-- [x] **PDF 구조화 청킹** — 19,543→2,620 청크 (87% 감소), PyMuPDF 블록 좌표 + 테이블 감지
-- [x] **Claim-level 인용 검증** — 문장→주장 단위 분리, 접속사 기반 split + 숫자값 매칭
-- [x] **질문 복잡도 기반 모델 라우팅** — simple→balanced, complex→deep 자동 전환
-- [x] **test_skips_mlx_when_probe_fails 수정** — LlamaCppBackend도 mock하여 full fallback chain 테스트
-- [x] **Knowledge base 재인덱싱** — 22,692→5,855 청크, 임베딩 백필 100% 완료
-- [x] **HWPX 구조화 파싱** — XML 테이블(hp:tbl) 추출 → TableElement로 변환
-- [x] **tree-sitter 코드 청킹** — AST 기반 Python/JS/TS 함수 경계 분리, regex fallback
-- [x] **Citation post-verification** — 스트리밍 시 답변 먼저 표시, 검증은 yield 후 in-place 업데이트
+- [x] **PDF 구조화 청킹** — 19,543→2,620 청크 (87% 감소)
+- [x] **Claim-level 인용 검증** — 주장 단위 분리 + 숫자값 매칭
+- [x] **질문 복잡도 기반 모델 라우팅** — simple→balanced, complex→deep
+- [x] **test_skips_mlx_when_probe_fails 수정**
+- [x] **Knowledge base 재인덱싱** — 22,692→5,855 청크
+- [x] **HWPX 구조화 파싱** — XML 테이블 추출
+- [x] **tree-sitter 코드 청킹** — AST 기반 Python/JS/TS
+- [x] **Citation post-verification** — 스트리밍 시 답변 먼저 표시
+- [x] **Silero VAD** — ML 기반 음성 감지 (에너지 기반 fallback)
+- [x] **SwiftUI 스트리밍 렌더링** — 서버 모드 브리지 + 실시간 토큰 표시
 
-## Priority 1 — 안정성/품질
+## Priority 1~2
 
 (모두 완료)
-
-## Priority 2 — 기능 확장
-
-- [ ] **Silero VAD 업그레이드**
-  - 에너지 기반 → ML 기반 음성 감지
-  - 출처: NEXT_ITERATION_UI_VOICE.md Priority 1
-
-- [ ] **메뉴바 SwiftUI 스트리밍 렌더링**
-  - Python bridge에서 `stream_chunk` JSON은 이미 전송
-  - SwiftUI 측에서 수신하여 실시간 텍스트 표시 구현 필요
 
 ## Priority 3 — Phase 2
 
@@ -48,5 +40,5 @@
 ## 현재 브랜치
 
 - Branch: `feature/menubar-ui-refresh`
-- 25+ commits ahead of origin
+- 28+ commits ahead of origin
 - PR 미생성
