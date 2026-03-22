@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from jarvis.contracts import ChunkRecord, DocumentRecord, EmbeddingRuntimeProtocol, IndexingStatus
+from jarvis.indexing.chunk_router import ChunkRouter
 from jarvis.indexing.chunker import Chunker
 from jarvis.indexing.parsers import DocumentParser
 from jarvis.indexing.tombstone import TombstoneManager
@@ -34,6 +35,7 @@ class IndexPipeline:
         self._db = db
         self._parser = parser
         self._chunker = chunker
+        self._chunk_router = ChunkRouter()
         self._tombstone = tombstone_manager
         self._embedding_runtime = embedding_runtime
         self._vector_index = vector_index
@@ -197,9 +199,9 @@ class IndexPipeline:
             record = replace(record, document_id=existing.document_id)
             self._delete_chunks(existing.document_id)
 
-        # Parse and chunk
-        text = self._parser.parse(path)
-        chunks = self._chunker.chunk(text, document_id=record.document_id)
+        # Parse and chunk using structured pipeline
+        parsed_doc = self._parser.parse_structured(path)
+        chunks = self._chunk_router.chunk(parsed_doc, document_id=record.document_id)
 
         # Write document as INDEXING
         record = replace(record, indexing_status=IndexingStatus.INDEXING)
@@ -238,8 +240,8 @@ class IndexPipeline:
                 self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
             self._delete_chunks(existing.document_id)
 
-        text = self._parser.parse(path)
-        chunks = self._chunker.chunk(text, document_id=record.document_id)
+        parsed_doc = self._parser.parse_structured(path)
+        chunks = self._chunk_router.chunk(parsed_doc, document_id=record.document_id)
 
         record = replace(record, indexing_status=IndexingStatus.INDEXING)
         self._write_document(record)
