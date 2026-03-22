@@ -7,6 +7,8 @@ Phase 2 (deferred): Silero VAD for silence-aware recording + wake word.
 from __future__ import annotations
 
 import logging
+import sys
+from collections.abc import Callable
 from pathlib import Path
 import tempfile
 
@@ -67,6 +69,35 @@ class VoiceSession:
         """
         transcript = self.record_and_transcribe_once()
         return self._orchestrator.handle_turn(transcript)
+
+    def record_and_handle_once_stream(
+        self,
+        *,
+        on_token: Callable[[str], None] | None = None,
+    ) -> ConversationTurn:
+        """Record, transcribe, and stream the LLM response.
+
+        Tokens are passed to on_token callback for real-time display.
+        The full ConversationTurn is returned after generation completes
+        (for TTS or other post-processing that needs the full text).
+        """
+        transcript = self.record_and_transcribe_once()
+
+        stream_fn = getattr(self._orchestrator, "handle_turn_stream", None)
+        if not callable(stream_fn):
+            return self._orchestrator.handle_turn(transcript)
+
+        turn: ConversationTurn | None = None
+        for item in stream_fn(transcript):
+            if isinstance(item, str):
+                if on_token is not None:
+                    on_token(item)
+            else:
+                turn = item
+
+        if turn is None:
+            return self._orchestrator.handle_turn(transcript)
+        return turn
 
     def record_and_transcribe_once(self) -> str:
         """Record one utterance and return only the transcript."""

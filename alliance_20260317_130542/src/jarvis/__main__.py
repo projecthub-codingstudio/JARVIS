@@ -99,7 +99,18 @@ def main() -> None:
                 print("\n🎙 push-to-talk once: recording...")
                 if voice_device:
                     print(f"   Input device: {voice_device}")
-                turn = session.record_and_handle_once()
+
+                import sys as _sys
+
+                def _print_token(token: str) -> None:
+                    _sys.stdout.write(token)
+                    _sys.stdout.flush()
+
+                _sys.stdout.write("\n  ")
+                _sys.stdout.flush()
+                turn = session.record_and_handle_once_stream(on_token=_print_token)
+                _sys.stdout.write("\n")
+                _sys.stdout.flush()
             elif voice_output is not None and voice_file is not None:
                 turn, generated_audio = session.handle_audio_file_with_tts(
                     voice_file,

@@ -304,6 +304,32 @@ def _record_once_in_context(*, context: object, device: str | None = None) -> Me
     return _response_from_context(context=context, turn=turn)
 
 
+def _record_once_stream_in_context(*, context: object, device: str | None = None) -> ConversationTurn | None:
+    """Record once with streaming tokens sent as stream_chunk JSON."""
+    stt_runtime = WhisperCppSTT(
+        model_path=(
+            Path(model_path).expanduser()
+            if (model_path := __import__("os").getenv("JARVIS_STT_MODEL"))
+            else None
+        ),
+        model_router=context.model_router,
+    )
+    recorder = AudioRecorder(
+        input_device=device,
+        duration_seconds=int(__import__("os").getenv("JARVIS_PTT_SECONDS", "8"))
+    )
+    session = VoiceSession(
+        orchestrator=context.orchestrator,
+        stt_runtime=stt_runtime,
+        recorder=recorder,
+    )
+
+    def _emit_token(token: str) -> None:
+        print(json.dumps({"kind": "stream_chunk", "token": token}, ensure_ascii=False), flush=True)
+
+    return session.record_and_handle_once_stream(on_token=_emit_token)
+
+
 def _transcribe_once_in_context(*, context: object, device: str | None = None) -> MenuBarTranscriptionResponse:
     stt_runtime = WhisperCppSTT(
         model_path=(
@@ -501,13 +527,22 @@ def _run_server(model_id: str) -> int:
                             ),
                         )
                 elif command == "record-once":
-                    envelope = MenuBarCommandEnvelope(
-                        kind="query_result",
-                        query_result=_record_once_in_context(
-                            context=context,
-                            device=str(payload["device"]) if payload.get("device") else None,
-                        ),
-                    )
+                    stream_mode = bool(payload.get("stream", False))
+                    device = str(payload["device"]) if payload.get("device") else None
+                    if stream_mode and hasattr(context.orchestrator, "handle_turn_stream"):
+                        turn = _record_once_stream_in_context(context=context, device=device)
+                        envelope = MenuBarCommandEnvelope(
+                            kind="stream_done",
+                            query_result=_response_from_context(context=context, turn=turn) if turn else None,
+                        )
+                    else:
+                        envelope = MenuBarCommandEnvelope(
+                            kind="query_result",
+                            query_result=_record_once_in_context(
+                                context=context,
+                                device=device,
+                            ),
+                        )
                 elif command == "transcribe-once":
                     envelope = MenuBarCommandEnvelope(
                         kind="transcription_result",
