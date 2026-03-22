@@ -532,6 +532,100 @@ def _parse_hwpx(path: Path) -> str:
         return _parse_hwpx_fallback(path)
 
 
+def _parse_hwpx_structured(path: Path) -> list:
+    """Extract structured elements (text + tables) from HWPX.
+
+    HWPX is a ZIP archive with OWPML XML (KS X 6101).
+    Extracts text paragraphs and tables as separate DocumentElements.
+    Uses hwpx library for text, and direct XML parsing for tables.
+    """
+    from jarvis.contracts import DocumentElement
+
+    elements: list[DocumentElement] = []
+
+    # 1. Extract text via hwpx library (best quality)
+    try:
+        from hwpx import HwpxPackage, TextExtractor
+
+        pkg = HwpxPackage.open(str(path))
+        extractor = TextExtractor(pkg)
+        text = extractor.extract_text(paragraph_separator="\n\n", skip_empty=True)
+        extractor.close()
+        pkg.close()
+        if text.strip():
+            elements.append(DocumentElement(element_type="text", text=text.strip()))
+    except Exception:
+        # Fallback to manual text extraction
+        text = _parse_hwpx_fallback(path)
+        if text.strip():
+            elements.append(DocumentElement(element_type="text", text=text.strip()))
+
+    # 2. Extract tables from XML directly
+    tables = _extract_hwpx_tables(path)
+    elements.extend(tables)
+
+    return elements
+
+
+def _extract_hwpx_tables(path: Path) -> list:
+    """Extract tables from HWPX ZIP by parsing XML for <hp:tbl> elements."""
+    import zipfile
+    from xml.etree import ElementTree
+    from jarvis.contracts import DocumentElement
+
+    _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    tables: list[DocumentElement] = []
+    table_idx = 0
+
+    try:
+        with zipfile.ZipFile(str(path), "r") as zf:
+            for name in sorted(zf.namelist()):
+                if not (name.startswith("Contents/") and name.endswith(".xml")):
+                    continue
+                try:
+                    xml_bytes = zf.read(name)
+                    root = ElementTree.fromstring(xml_bytes)
+                except (ElementTree.ParseError, KeyError):
+                    continue
+
+                # Find all table elements (hp:tbl)
+                for tbl_elem in root.iter(f"{{{_HP_NS}}}tbl"):
+                    rows_data: list[list[str]] = []
+                    for tr_elem in tbl_elem.iter(f"{{{_HP_NS}}}tr"):
+                        cells: list[str] = []
+                        for tc_elem in tr_elem.iter(f"{{{_HP_NS}}}tc"):
+                            # Collect all text within this cell
+                            cell_texts = []
+                            for t_elem in tc_elem.iter(f"{{{_HP_NS}}}t"):
+                                if t_elem.text:
+                                    cell_texts.append(t_elem.text.strip())
+                            cells.append(" ".join(cell_texts))
+                        if cells:
+                            rows_data.append(cells)
+
+                    if len(rows_data) < 2:
+                        continue
+
+                    table_idx += 1
+                    headers = tuple(rows_data[0])
+                    rows = tuple(tuple(r) for r in rows_data[1:] if any(r))
+                    label = f"Table {table_idx}"
+                    text_repr = f"[{label}] {' | '.join(headers)}" if headers else f"[{label}]"
+                    tables.append(DocumentElement(
+                        element_type="table",
+                        text=text_repr,
+                        metadata={
+                            "headers": headers,
+                            "rows": rows,
+                            "sheet_name": label,
+                        },
+                    ))
+    except Exception as exc:
+        logger.warning("HWPX table extraction failed: %s", exc)
+
+    return tables
+
+
 def _parse_hwpx_fallback(path: Path) -> str:
     """Fallback HWPX parser using direct ZIP+XML extraction."""
     import zipfile
@@ -887,6 +981,19 @@ class DocumentParser:
         if doc_type == "docx":
             elements = self._parse_docx_structured(p)
             return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # HWPX → text + table elements
+        if doc_type == "hwpx":
+            elements = _parse_hwpx_structured(p)
+            if elements:
+                return ParsedDocument(elements=tuple(elements), metadata=metadata)
+            text = self.parse(p)
+            if text.strip():
+                return ParsedDocument(
+                    elements=(DocumentElement(element_type="text", text=text),),
+                    metadata=metadata,
+                )
+            return ParsedDocument(elements=(), metadata=metadata)
 
         # PDF → structured block-level extraction
         if doc_type == "pdf":
