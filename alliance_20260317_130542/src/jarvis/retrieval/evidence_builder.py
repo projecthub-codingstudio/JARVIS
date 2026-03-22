@@ -45,7 +45,11 @@ _CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class name
 _FILENAME_MATCH_BOOST = 0.20   # document path contains queried filename
 _FILENAME_STEM_BOOST = 0.15    # document stem matches without extension
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
+_ROW_NUMBER_MATCH_BOOST = 0.25  # chunk contains exact row number from query (e.g., Day=9)
 MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
+
+# Pattern to extract numbers referenced in queries (e.g., "9일차", "day 5", "13일")
+_QUERY_NUMBER_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
 
 
 class EvidenceBuilder:
@@ -142,6 +146,19 @@ class EvidenceBuilder:
                     if ident in chunk_text:
                         boost += _IDENTIFIER_MATCH_BOOST
                         break  # One boost per chunk
+
+            # Row number match boost: query mentions a specific number (e.g., "9일차")
+            # and chunk contains that exact row (e.g., "Day=9 |")
+            query_numbers = _QUERY_NUMBER_RE.findall(query_text)
+            if query_numbers and chunk_text:
+                for num in query_numbers:
+                    # Match table row patterns: "Day=N", "N |", row-N
+                    if (f"Day={num} " in chunk_text
+                            or f"Day={num}|" in chunk_text
+                            or f"={num} |" in chunk_text
+                            or f"row-{num}" in chunk_text.lower()):
+                        boost += _ROW_NUMBER_MATCH_BOOST
+                        break
 
             boosted_score = result.rrf_score + boost
 
