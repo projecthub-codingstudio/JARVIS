@@ -137,6 +137,7 @@ class VoiceSession:
         self,
         *,
         on_wake: Callable[[], None] | None = None,
+        on_transcript: Callable[[str], None] | None = None,
         on_response: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         device_index: int | None = None,
@@ -146,13 +147,14 @@ class VoiceSession:
         When "Hey JARVIS" is detected:
           1. Calls on_wake() to signal activation
           2. Records audio (push-to-talk duration)
-          3. Transcribes → LLM → generates response
-          4. Synthesizes TTS and plays audio
-          5. Calls on_response(text) with the answer
+          3. Transcribes → calls on_transcript(text)
+          4. LLM → generates response
+          5. Calls on_response(text) + TTS playback
           6. Resumes listening for next wake word
 
         Args:
             on_wake: Called when wake word detected (e.g., play chime)
+            on_transcript: Called with the STT transcript for display
             on_response: Called with LLM response text
             on_error: Called with error message on failure
         """
@@ -186,6 +188,9 @@ class VoiceSession:
                 # Record → Transcribe → LLM → TTS
                 transcript = self.record_and_transcribe_once()
                 logger.info("Transcript: %s", transcript[:80])
+
+                if on_transcript is not None:
+                    on_transcript(transcript)
 
                 turn = self._orchestrator.handle_turn(transcript)
                 response_text = turn.assistant_output or ""

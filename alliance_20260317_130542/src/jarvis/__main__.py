@@ -116,17 +116,21 @@ def main() -> None:
                 print("   종료: Ctrl+C\n")
 
                 def _on_wake():
-                    print("  [감지] 'Hey JARVIS' — 녹음 중...")
+                    print("\n  [감지] 'Hey JARVIS' — 녹음 중... (말씀하세요)")
 
                 def _on_response(text: str):
-                    print(f"\n  JARVIS: {text}\n")
+                    print(f"  JARVIS: {text}\n")
                     print("  ... 'Hey JARVIS' 대기 중 ...")
 
                 def _on_error(msg: str):
                     print(f"  [오류] {msg}")
 
+                def _on_transcript(text: str):
+                    print(f"  [인식] \"{text}\"")
+
                 session.start_wake_word_loop(
                     on_wake=_on_wake,
+                    on_transcript=_on_transcript,
                     on_response=_on_response,
                     on_error=_on_error,
                     device_index=wake_device_idx,

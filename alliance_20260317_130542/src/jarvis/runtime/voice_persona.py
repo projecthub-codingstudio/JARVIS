@@ -17,10 +17,10 @@ class VoicePersona:
 
     name: str
     description: str
-    # macOS `say` voice name (fallback)
-    macos_voice: str
-    # Speed multiplier (1.0 = normal, 0.9 = slower, 1.1 = faster)
-    speed: float
+    # macOS `say` voice name for Korean
+    macos_voice_ko: str
+    # macOS `say` voice name for English
+    macos_voice_en: str
     # Speaking rate for macOS `say` (words per minute, default ~175)
     macos_rate: int
     # System prompt addition for persona-aware LLM responses
@@ -32,13 +32,13 @@ class VoicePersona:
 # The Iron Man JARVIS persona
 JARVIS_PERSONA = VoicePersona(
     name="JARVIS",
-    description="Iron Man AI 버틀러 — 차분하고 정중한 영국식 톤",
-    macos_voice="Daniel",
-    speed=0.95,
+    description="Iron Man AI 버틀러 — 차분하고 정중한 톤",
+    macos_voice_ko="Jian (Premium)",  # Korean male premium voice
+    macos_voice_en="Daniel",           # British English male voice
     macos_rate=165,
     response_style_prompt=(
         "당신의 말투는 아이언맨의 JARVIS입니다. "
-        "차분하고 정중하며 약간의 건조한 유머가 있는 영국 버틀러 스타일로 대답하세요. "
+        "차분하고 정중하며 약간의 건조한 유머가 있는 버틀러 스타일로 대답하세요. "
         "간결하게 핵심만 전달하되, 존칭을 사용하세요. "
         "예: '네, 확인했습니다.' '말씀하신 파일을 찾았습니다.' '흥미로운 질문이시군요.'"
     ),
