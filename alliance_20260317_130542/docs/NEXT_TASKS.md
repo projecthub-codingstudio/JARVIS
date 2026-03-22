@@ -19,6 +19,9 @@
 - [x] **질문 복잡도 기반 모델 라우팅** — simple→balanced, complex→deep 자동 전환
 - [x] **test_skips_mlx_when_probe_fails 수정** — LlamaCppBackend도 mock하여 full fallback chain 테스트
 - [x] **Knowledge base 재인덱싱** — 22,692→5,855 청크, 임베딩 백필 100% 완료
+- [x] **HWPX 구조화 파싱** — XML 테이블(hp:tbl) 추출 → TableElement로 변환
+- [x] **tree-sitter 코드 청킹** — AST 기반 Python/JS/TS 함수 경계 분리, regex fallback
+- [x] **Citation post-verification** — 스트리밍 시 답변 먼저 표시, 검증은 yield 후 in-place 업데이트
 
 ## Priority 1 — 안정성/품질
 
@@ -34,18 +37,6 @@
   - Python bridge에서 `stream_chunk` JSON은 이미 전송
   - SwiftUI 측에서 수신하여 실시간 텍스트 표시 구현 필요
 
-- [ ] **Citation post-verification**
-  - 답변 먼저 표시, 인용 비동기 검증
-  - 출처: NEXT_ITERATION Priority 2
-
-- [ ] **tree-sitter 코드 청킹**
-  - 현재 regex 기반 def/class 감지 → AST 기반 정확한 함수 경계
-  - CodeChunkStrategy에 tree-sitter 통합
-
-- [ ] **HWP/HWPX 구조화 파싱**
-  - 현재 텍스트만 추출 → 표/목록 분리하여 TableElement로 변환
-  - DocumentChunkStrategy 구현
-
 ## Priority 3 — Phase 2
 
 - [ ] Wake word (push-to-talk → wake word 전환)
@@ -57,5 +48,5 @@
 ## 현재 브랜치
 
 - Branch: `feature/menubar-ui-refresh`
-- 22+ commits ahead of origin
+- 25+ commits ahead of origin
 - PR 미생성
