@@ -75,6 +75,7 @@ class MLXRuntime:
         self._max_context_chars = max_context_chars
         self._metrics = metrics
         self._citation_verifier = CitationVerifier()
+        self._context_assembler = None
         self._status_detail = status_detail
 
     def _post_verify(self, answer: AnswerDraft) -> None:
@@ -90,36 +91,15 @@ class MLXRuntime:
         except Exception:
             pass  # Verification failure should not affect the answer
 
-    def _assemble_context(self, evidence: VerifiedEvidenceSet) -> str:
-        """Assemble evidence into context string, respecting token budget.
-
-        Evidence items are added in order (highest relevance first)
-        until the budget is exhausted. Per Spec Task 1.3.
-        """
-        context_parts: list[str] = []
-        total_chars = 0
-
-        for item in evidence.items:
-            label = item.citation.label
-            # Use filename only (not full path) to keep LLM output clean
-            source_name = ""
-            if item.source_path:
-                from pathlib import Path as _P
-                source_name = f" ({_P(item.source_path).name})"
-            heading = f" [{item.heading_path}]" if item.heading_path else ""
-            part = f"{label}{source_name}{heading}: {item.text}"
-
-            if total_chars + len(part) > self._max_context_chars:
-                # Budget exhausted — truncate this part or stop
-                remaining = self._max_context_chars - total_chars
-                if remaining > 100:  # Only include if meaningful portion fits
-                    context_parts.append(part[:remaining] + "...")
-                break
-
-            context_parts.append(part)
-            total_chars += len(part)
-
-        return "\n".join(context_parts)
+    def _assemble_context(self, evidence: VerifiedEvidenceSet, query: str = "") -> str:
+        """Assemble evidence via ContextAssembler (Pipeline Step 5)."""
+        if self._context_assembler is None:
+            from jarvis.retrieval.context_assembler import ContextAssembler
+            self._context_assembler = ContextAssembler(
+                max_context_chars=self._max_context_chars,
+            )
+        assembled = self._context_assembler.assemble(evidence, query)
+        return assembled.render_for_llm()
 
     @property
     def model_id(self) -> str:
@@ -182,7 +162,7 @@ class MLXRuntime:
             )
 
         # Assemble evidence with token budget enforcement
-        context = self._assemble_context(evidence)
+        context = self._assemble_context(evidence, prompt)
 
         # Assemble conversation history (sliding window, 3 turns)
         history = self._assemble_history(recent_turns)
@@ -247,7 +227,7 @@ class MLXRuntime:
             )
             return
 
-        context = self._assemble_context(evidence)
+        context = self._assemble_context(evidence, prompt)
         history = self._assemble_history(recent_turns)
         if history:
             context = f"[이전 대화]\n{history}\n\n[참고 증거]\n{context}"
