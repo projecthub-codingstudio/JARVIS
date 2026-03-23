@@ -826,12 +826,19 @@ def _parse_hwp(path: Path) -> str:
     import shutil
     import subprocess
 
-    if shutil.which("hwp5txt") is None:
+    # hwp5txt may live inside .venv/bin — check venv path as well as system PATH
+    hwp5txt_bin = shutil.which("hwp5txt")
+    if hwp5txt_bin is None:
+        import sys
+        venv_bin = Path(sys.executable).parent / "hwp5txt"
+        if venv_bin.exists():
+            hwp5txt_bin = str(venv_bin)
+    if hwp5txt_bin is None:
         logger.warning("hwp5txt not installed — skipping HWP: %s", path.name)
         return ""
 
     result = subprocess.run(
-        ["hwp5txt", str(path)],
+        [hwp5txt_bin, str(path)],
         capture_output=True,
         text=True,
         timeout=60,
