@@ -33,7 +33,7 @@ class VoicePersona:
 JARVIS_PERSONA = VoicePersona(
     name="JARVIS",
     description="Refined futuristic AI assistant — calm, intelligent, lightly playful",
-    macos_voice_ko="Jian (Premium)",  # Korean male premium voice
+    macos_voice_ko="Yuna (Premium)",   # Korean female premium voice
     macos_voice_en="Daniel",           # British English male voice
     macos_rate=165,
     response_style_prompt=(
