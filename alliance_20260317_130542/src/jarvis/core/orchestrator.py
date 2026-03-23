@@ -358,6 +358,7 @@ class Orchestrator:
                     if row:
                         chunk_texts[r.chunk_id] = row[0]
 
+            pre_rerank_results = list(hybrid_results)
             hybrid_results = self._reranker.rerank(
                 query,
                 hybrid_results,
@@ -365,7 +366,25 @@ class Orchestrator:
                 chunk_texts=chunk_texts,
             )
 
+            # Protect row-matched chunks: if query mentions specific day/row
+            # numbers, ensure those chunks survive reranking even if they
+            # were ranked below the top_k cutoff.
+            _ROW_NUM_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
+            query_numbers = _ROW_NUM_RE.findall(query)
+            if query_numbers:
+                reranked_ids = {r.chunk_id for r in hybrid_results}
+                for r in pre_rerank_results:
+                    if r.chunk_id in reranked_ids:
+                        continue
+                    ct = chunk_texts.get(r.chunk_id, "")
+                    for num in query_numbers:
+                        if f"Day={num} " in ct or f"Day={num}|" in ct:
+                            hybrid_results.append(r)
+                            reranked_ids.add(r.chunk_id)
+                            break
+
         evidence = self._evidence_builder.build(hybrid_results, fragments)
+
         if len(evidence.items) > runtime_decision.max_retrieved_chunks:
             evidence = VerifiedEvidenceSet(
                 items=evidence.items[:runtime_decision.max_retrieved_chunks],
