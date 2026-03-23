@@ -52,6 +52,7 @@ class Planner:
 
     def __init__(self, *, model_id: str = "qwen3:30b-a3b") -> None:
         self._model_id = model_id
+        self._ollama_available: bool | None = None
 
     def analyze(self, raw_text: str) -> QueryAnalysis:
         """Analyze a user query using LLM to extract search terms and intent.
@@ -59,10 +60,16 @@ class Planner:
         Returns structured QueryAnalysis with bilingual search terms.
         Falls back to simple whitespace splitting if LLM is unavailable.
         """
+        # Skip Ollama if previously unavailable (avoid repeated connection errors)
+        if self._ollama_available is False:
+            return self._fallback_analyze(raw_text)
         try:
-            return self._llm_analyze(raw_text)
+            result = self._llm_analyze(raw_text)
+            self._ollama_available = True
+            return result
         except Exception as e:
-            logger.warning("LLM analysis failed: %s — using fallback", e)
+            self._ollama_available = False
+            logger.warning("LLM analysis failed: %s — using fallback (will not retry)", e)
             return self._fallback_analyze(raw_text)
 
     def _llm_analyze(self, raw_text: str) -> QueryAnalysis:
