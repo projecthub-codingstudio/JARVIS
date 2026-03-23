@@ -921,6 +921,120 @@ def _parse_hwp_xml(hwp5proc_bin: str, path: Path) -> str:
         return ""
 
 
+def _parse_hwp_structured(path: Path) -> list:
+    """Parse HWP into separate text + table DocumentElements via hwp5proc XML.
+
+    Each table becomes a DocumentElement(element_type="table") with headers/rows.
+    Text between tables becomes DocumentElement(element_type="text").
+    This enables the ChunkRouter to apply TableChunkStrategy for tables
+    and ParagraphChunkStrategy for text.
+    """
+    import subprocess
+
+    hwp5proc_bin = _resolve_hwp5_binary("hwp5proc")
+    if hwp5proc_bin is None:
+        return []
+
+    result = subprocess.run(
+        [hwp5proc_bin, "xml", str(path)],
+        capture_output=True, timeout=120, check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return []
+
+    try:
+        from lxml import etree
+        from jarvis.contracts import DocumentElement
+
+        root = etree.fromstring(result.stdout)
+        elements: list[DocumentElement] = []
+
+        # Build set of elements inside tables (to skip their Text)
+        table_element_ids: set[int] = set()
+        for tbl in root.iter():
+            tbl_tag = tbl.tag.split("}")[-1] if "}" in tbl.tag else tbl.tag
+            if tbl_tag in ("TableBody", "TableCell", "TableRow", "TableControl", "TableCaption"):
+                table_element_ids.add(id(tbl))
+                for desc in tbl.iter():
+                    table_element_ids.add(id(desc))
+
+        # Collect text paragraphs and tables in document order
+        text_buffer: list[str] = []
+        table_idx = 0
+
+        def _flush_text():
+            nonlocal text_buffer
+            if text_buffer:
+                combined = "\n\n".join(text_buffer)
+                if combined.strip():
+                    elements.append(DocumentElement(element_type="text", text=combined.strip()))
+                text_buffer = []
+
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+            if tag == "Text" and elem.text and elem.text.strip():
+                if id(elem) not in table_element_ids:
+                    text_buffer.append(elem.text.strip())
+
+            elif tag == "TableBody":
+                # Flush accumulated text before the table
+                _flush_text()
+
+                # Extract table as structured element
+                rows_data = _extract_hwp_table_rows(elem)
+                if rows_data and len(rows_data) >= 2:
+                    table_idx += 1
+                    headers = tuple(rows_data[0])
+                    rows = tuple(tuple(r) for r in rows_data[1:] if any(r))
+                    label = f"HWP Table {table_idx}"
+                    text_repr = f"[{label}] {' | '.join(headers)}" if headers else f"[{label}]"
+                    elements.append(DocumentElement(
+                        element_type="table",
+                        text=text_repr,
+                        metadata={
+                            "headers": headers,
+                            "rows": rows,
+                            "sheet_name": label,
+                        },
+                    ))
+                elif rows_data:
+                    # Single-row table: add as text
+                    text_buffer.append(" | ".join(rows_data[0]))
+
+        _flush_text()
+
+        logger.info("HWP structured parse: %d elements (%d tables) from %s",
+                     len(elements), table_idx, path.name)
+        return elements
+
+    except Exception as exc:
+        logger.warning("HWP structured parse failed: %s", exc)
+        return []
+
+
+def _extract_hwp_table_rows(table_body) -> list[list[str]]:
+    """Extract rows from a TableBody element as list of cell lists."""
+    from lxml import etree
+
+    rows: list[list[str]] = []
+    for row_elem in table_body:
+        tag = row_elem.tag.split("}")[-1] if "}" in row_elem.tag else row_elem.tag
+        if tag != "TableRow":
+            continue
+        cells: list[str] = []
+        for cell_elem in row_elem:
+            cell_tag = cell_elem.tag.split("}")[-1] if "}" in cell_elem.tag else cell_elem.tag
+            if cell_tag != "TableCell":
+                continue
+            cell_text = etree.tostring(cell_elem, method="text", encoding="unicode").strip()
+            cell_text = " ".join(cell_text.split())
+            cells.append(cell_text)
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
 def _extract_hwp_table_body(table_body) -> str:
     """Extract rows from a TableBody element as pipe-delimited text."""
     from lxml import etree
@@ -1076,6 +1190,19 @@ class DocumentParser:
         if doc_type == "docx":
             elements = self._parse_docx_structured(p)
             return ParsedDocument(elements=tuple(elements), metadata=metadata)
+
+        # HWP (binary) → text + table elements via hwp5proc XML
+        if doc_type == "hwp":
+            elements = _parse_hwp_structured(p)
+            if elements:
+                return ParsedDocument(elements=tuple(elements), metadata=metadata)
+            text = self.parse(p)
+            if text.strip():
+                return ParsedDocument(
+                    elements=(DocumentElement(element_type="text", text=text),),
+                    metadata=metadata,
+                )
+            return ParsedDocument(elements=(), metadata=metadata)
 
         # HWPX → text + table elements
         if doc_type == "hwpx":
