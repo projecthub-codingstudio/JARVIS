@@ -186,22 +186,13 @@ def run_indexing(
     def _backfill_embeddings() -> None:
         from jarvis.app.bootstrap import init_database
         from jarvis.app.config import JarvisConfig
-        from jarvis.retrieval.vector_index import VectorIndex as BackgroundVectorIndex
-        from jarvis.runtime.embedding_runtime import EmbeddingRuntime as BackgroundEmbeddingRuntime
 
         bg_db = None
-        bg_embedding = None
         try:
             bg_db = init_database(JarvisConfig(data_dir=data_dir))
-            bg_embedding = BackgroundEmbeddingRuntime()
-            bg_vector_index = BackgroundVectorIndex(
-                db_path=(data_dir or Path.home() / ".jarvis") / "vectors.lance",
-                embedding_runtime=bg_embedding,
-                metrics=metrics,
-            )
             bg_pipeline = create_pipeline(
                 bg_db,
-                vector_index=bg_vector_index,
+                vector_index=vector_index,
                 metrics=metrics,
             )
             total_updated = 0
@@ -221,8 +212,6 @@ def run_indexing(
         except Exception as exc:
             logger.warning("Embedding backfill failed: %s", exc)
         finally:
-            if bg_embedding is not None:
-                bg_embedding.unload_model()
             if bg_db is not None:
                 bg_db.close()  # type: ignore[union-attr]
 
@@ -239,32 +228,32 @@ def ensure_vector_index_ready(
     chunk_count: int,
     reporter: Callable[[str], None] | None = None,
 ) -> None:
-    """Populate enough embeddings to materialize the LanceDB table.
+    """Start background embedding backfill without blocking startup.
 
-    Menu bar mode disables background embedding backfill to avoid noisy startup
-    failures. That leaves the vector DB uninitialized forever unless we do one
-    guarded synchronous pass.
+    Menu bar mode disables the standard background backfill. This function
+    starts a daemon thread that loads the embedding model and backfills all
+    missing embeddings. The server can start handling queries immediately
+    (FTS still works without vectors).
     """
     if pipeline is None or vector_index is None or chunk_count <= 0:
         return
 
-    try:
-        table = vector_index._get_table()  # type: ignore[attr-defined]
-    except Exception:
-        table = None
-    if table is not None:
-        return
+    import threading
 
-    try:
-        updated = pipeline.backfill_embeddings(batch_size=32)  # type: ignore[attr-defined]
-    except Exception as exc:
-        logger.warning("Synchronous vector backfill failed: %s", exc)
-        if reporter is not None:
-            reporter(f"   [embeddings] sync warmup failed ({exc})")
-        return
+    def _backfill_all() -> None:
+        total = 0
+        try:
+            while True:
+                batch = pipeline.backfill_embeddings(batch_size=64)  # type: ignore[attr-defined]
+                total += batch
+                if batch == 0:
+                    break
+        except Exception as exc:
+            logger.warning("Background embedding backfill failed: %s", exc)
+        if total > 0 and reporter is not None:
+            reporter(f"   [embeddings] background backfill complete ({total} chunks)")
 
-    if updated > 0 and reporter is not None:
-        reporter(f"   [embeddings] initialized LanceDB table ({updated} chunks)")
+    threading.Thread(target=_backfill_all, daemon=True, name="embedding-backfill").start()
 
 
 def start_file_watcher(
@@ -470,7 +459,7 @@ def create_llm_backend(
 
 def build_runtime_context(
     *,
-    model_id: str = "exaone3.5:7.8b",
+    model_id: str = "qwen3.5:9b",
     knowledge_base_path: Path = _DEFAULT_KB_PATH,
     start_watcher_enabled: bool = True,
     start_background_backfill: bool = True,
@@ -556,7 +545,7 @@ def build_runtime_context(
 
     from jarvis.core.planner import Planner
 
-    planner = Planner(model_id="exaone3.5:7.8b")
+    planner = Planner(model_id="qwen3.5:9b")
 
     # Cross-encoder reranker (lazy-loaded on first query)
     from jarvis.retrieval.reranker import Reranker

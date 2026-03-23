@@ -241,8 +241,8 @@ class Governor:
             )
 
         model_map: dict[RuntimeTier, str] = {
-            "fast": "exaone3.5:7.8b",
-            "balanced": "exaone3.5:7.8b",
+            "fast": "qwen3.5:9b",
+            "balanced": "qwen3.5:9b",
             "deep": "exaone4.0:32b",
             "unloaded": "",
         }
