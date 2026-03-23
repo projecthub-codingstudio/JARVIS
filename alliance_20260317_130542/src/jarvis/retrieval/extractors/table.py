@@ -1,8 +1,12 @@
 """TableExtractor — deterministic fact extraction from table-row evidence.
 
 Parses key=value pipe-delimited format produced by TableChunkStrategy.
-Produces facts with composite keys for row disambiguation:
-  "Day=5 > Breakfast" instead of just "Breakfast"
+Produces facts with composite keys for full disambiguation:
+  "[표 미리보기 이미지 정보] 오프셋=0 > 자료형" — table name + row ID + column
+
+The table name comes from:
+  1. The [SheetName] prefix in the text (e.g., "[표 글자 모양]")
+  2. This ensures facts from different tables are never confused
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ class TableExtractor:
         if not m:
             return []
 
+        table_name = m.group(1).strip()
         pairs_str = m.group(2)
         if "=" not in pairs_str:
             return []
@@ -41,13 +46,14 @@ class TableExtractor:
         if not raw_pairs:
             return []
 
-        # First column is the row identifier (e.g., Day=5)
+        # First column is the row identifier (e.g., Day=5, 오프셋=0)
         first_key, first_val = raw_pairs[0]
         row_id = f"{first_key}={first_val}"
 
         facts: list[ExtractedFact] = []
         for key, value in raw_pairs:
-            composite_key = f"{row_id} > {key}"
+            # Full composite key: [table] row_id > column
+            composite_key = f"[{table_name}] {row_id} > {key}"
             facts.append(ExtractedFact(
                 key=composite_key,
                 value=value,
