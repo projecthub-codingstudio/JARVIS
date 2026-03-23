@@ -28,6 +28,7 @@ from jarvis.contracts import (
     HybridFusionProtocol,
     LLMGeneratorProtocol,
     QueryDecomposerProtocol,
+    SearchHit,
     TaskLogEntry,
     TaskLogStoreProtocol,
     TaskStatus,
@@ -337,6 +338,33 @@ class Orchestrator:
         if targeted_hits:
             fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in
                                          {t.chunk_id for t in targeted_hits}]
+
+        # Row-ID supplemental search: when query references specific row
+        # identifiers (e.g., "3일차", "Day 5"), directly query the DB for
+        # matching chunks that FTS/vector may have missed.
+        # This is the row-level equivalent of _targeted_file_search.
+        _ROW_SUPP_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
+        query_row_ids = set(_ROW_SUPP_RE.findall(query))
+        if query_row_ids:
+            db = getattr(self._fts_retriever, "_db", None)
+            if db is not None:
+                existing_ids = {h.chunk_id for h in fts_hits} | {h.chunk_id for h in vector_hits}
+                for rid in query_row_ids:
+                    rows = db.execute(
+                        "SELECT chunk_id, document_id, text FROM chunks"
+                        " WHERE heading_path LIKE 'table-row-%'"
+                        " AND text LIKE ?",
+                        (f"%Day={rid} |%",),
+                    ).fetchall()
+                    for chunk_id, doc_id, text in rows:
+                        if chunk_id not in existing_ids:
+                            fts_hits.append(SearchHit(
+                                chunk_id=chunk_id,
+                                document_id=doc_id,
+                                score=1.0,
+                                snippet=text[:200],
+                            ))
+                            existing_ids.add(chunk_id)
 
         hybrid_results = self._hybrid_fusion.fuse(
             fts_hits,
