@@ -817,43 +817,131 @@ def _parse_sql(path: Path) -> str:
     return "\n\n".join(output_parts)
 
 
-def _parse_hwp(path: Path) -> str:
-    """Extract text from legacy binary HWP using pyhwp (hwp5txt).
-
-    Tier 3 experimental — formatting loss is expected.
-    Returns empty string if hwp5txt is not available (graceful degradation).
-    """
+def _resolve_hwp5_binary(name: str) -> str | None:
+    """Find a pyhwp binary (hwp5txt, hwp5proc) in PATH or venv."""
     import shutil
+    import sys
+    binary = shutil.which(name)
+    if binary is None:
+        venv_bin = Path(sys.executable).parent / name
+        if venv_bin.exists():
+            binary = str(venv_bin)
+    return binary
+
+
+def _parse_hwp(path: Path) -> str:
+    """Extract text + tables from legacy binary HWP.
+
+    Uses hwp5proc xml → lxml parsing to preserve table content.
+    Falls back to hwp5txt (text-only, tables lost) if XML parsing fails.
+    Returns empty string if pyhwp is not available (graceful degradation).
+    """
     import subprocess
 
-    # hwp5txt may live inside .venv/bin — check venv path as well as system PATH
-    hwp5txt_bin = shutil.which("hwp5txt")
+    # Prefer hwp5proc xml: preserves table content as structured XML
+    hwp5proc_bin = _resolve_hwp5_binary("hwp5proc")
+    if hwp5proc_bin is not None:
+        text = _parse_hwp_xml(hwp5proc_bin, path)
+        if text:
+            return text
+
+    # Fallback: hwp5txt (text only, tables become <표> placeholders)
+    hwp5txt_bin = _resolve_hwp5_binary("hwp5txt")
     if hwp5txt_bin is None:
-        import sys
-        venv_bin = Path(sys.executable).parent / "hwp5txt"
-        if venv_bin.exists():
-            hwp5txt_bin = str(venv_bin)
-    if hwp5txt_bin is None:
-        logger.warning("hwp5txt not installed — skipping HWP: %s", path.name)
+        logger.warning("pyhwp not installed — skipping HWP: %s", path.name)
         return ""
 
     result = subprocess.run(
         [hwp5txt_bin, str(path)],
-        capture_output=True,
-        text=True,
-        timeout=60,
+        capture_output=True, text=True, timeout=120, check=False,
     )
-
     if result.returncode != 0:
         raise RuntimeError(f"hwp5txt failed: {result.stderr[:200]}")
 
-    # Clean up: remove <그림> placeholders and excessive blank lines
     import re
-
     text = result.stdout
     text = re.sub(r"<그림>", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _parse_hwp_xml(hwp5proc_bin: str, path: Path) -> str:
+    """Parse HWP via hwp5proc xml → lxml, extracting text and table content.
+
+    Tables are rendered as pipe-delimited rows (same format as DOCX/XLSX tables)
+    so the existing chunking pipeline (TableChunkStrategy) can process them.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [hwp5proc_bin, "xml", str(path)],
+        capture_output=True, timeout=120, check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return ""
+
+    try:
+        from lxml import etree
+
+        root = etree.fromstring(result.stdout)
+        parts: list[str] = []
+
+        # Collect all TableBody/TableCell elements to skip their Text children
+        # (table content is extracted via _extract_hwp_table_body instead)
+        table_elements: set[int] = set()
+        for tbl in root.iter():
+            tbl_tag = tbl.tag.split("}")[-1] if "}" in tbl.tag else tbl.tag
+            if tbl_tag in ("TableBody", "TableCell", "TableRow", "TableControl"):
+                table_elements.add(id(tbl))
+                for descendant in tbl.iter():
+                    table_elements.add(id(descendant))
+
+        # Walk all elements, extracting text and table content
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+            if tag == "Text" and elem.text and elem.text.strip():
+                # Skip text inside tables (already extracted by TableBody handler)
+                if id(elem) not in table_elements:
+                    parts.append(elem.text.strip())
+
+            elif tag == "TableBody":
+                table_text = _extract_hwp_table_body(elem)
+                if table_text:
+                    parts.append(table_text)
+
+        import re
+        text = "\n\n".join(parts)
+        text = re.sub(r"<그림>", "", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    except Exception as exc:
+        logger.warning("HWP XML parsing failed: %s — falling back to hwp5txt", exc)
+        return ""
+
+
+def _extract_hwp_table_body(table_body) -> str:
+    """Extract rows from a TableBody element as pipe-delimited text."""
+    from lxml import etree
+
+    rows: list[str] = []
+    for row_elem in table_body:
+        tag = row_elem.tag.split("}")[-1] if "}" in row_elem.tag else row_elem.tag
+        if tag != "TableRow":
+            continue
+        cells: list[str] = []
+        for cell_elem in row_elem:
+            cell_tag = cell_elem.tag.split("}")[-1] if "}" in cell_elem.tag else cell_elem.tag
+            if cell_tag != "TableCell":
+                continue
+            cell_text = etree.tostring(cell_elem, method="text", encoding="unicode").strip()
+            cell_text = " ".join(cell_text.split())  # Normalize whitespace
+            cells.append(cell_text)
+        if any(cells):
+            rows.append(" | ".join(cells))
+
+    return "\n".join(rows) if rows else ""
 
 
 # --- Parser dispatch ---
