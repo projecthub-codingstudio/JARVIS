@@ -14,6 +14,7 @@ from jarvis.contracts.errors import (
 )
 from jarvis.contracts.models import (
     AnswerDraft,
+    AssembledContext,
     ChunkRecord,
     CitationRecord,
     ConversationTurn,
@@ -22,6 +23,7 @@ from jarvis.contracts.models import (
     DraftExportRequest,
     DraftExportResult,
     EvidenceItem,
+    ExtractedFact,
     HybridSearchResult,
     ParsedDocument,
     RuntimeDecision,
@@ -67,6 +69,8 @@ __all__ = [
     "CitationRecord",
     "EvidenceItem",
     "VerifiedEvidenceSet",
+    "ExtractedFact",
+    "AssembledContext",
     "AnswerDraft",
     "DraftExportRequest",
     "DraftExportResult",
