@@ -255,6 +255,9 @@ actor JarvisBridge {
         if let sttModel = configuration.defaultSTTModel {
             env["JARVIS_STT_MODEL"] = env["JARVIS_STT_MODEL"] ?? sttModel
         }
+        // Vocabulary hint for STT: domain-specific terms that whisper often misrecognizes.
+        // Passed as --prompt to whisper.cpp to bias the decoder toward correct transcription.
+        env["JARVIS_STT_VOCAB"] = env["JARVIS_STT_VOCAB"] ?? "JARVIS, OLE, API, SQL, JSON, YAML, MLX, EXAONE, Qwen, LLM, RAG, FTS, RRF, STT, TTS, VAD, MCP, BGE, LanceDB, PyMuPDF, 개체, 속성, 스키마, 인덱스, 벡터, 임베딩, 토큰, 프롬프트, 파이프라인"
 
         process.environment = env
         process.standardInput = stdinPipe

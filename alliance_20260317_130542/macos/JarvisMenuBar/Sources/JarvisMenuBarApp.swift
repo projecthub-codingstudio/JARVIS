@@ -473,7 +473,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
         // Detect language: Korean or English
         let koreanCount = stripped.unicodeScalars.filter { $0.value >= 0xAC00 && $0.value <= 0xD7A3 }.count
-        let voice = koreanCount > stripped.count / 5 ? "Jian (Premium)" : "Daniel"
+        let voice = koreanCount > stripped.count / 5 ? "Yuna (Premium)" : "Daniel"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
