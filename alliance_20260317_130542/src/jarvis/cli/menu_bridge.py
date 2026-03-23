@@ -22,7 +22,7 @@ from jarvis.contracts import (
     EvidenceItem,
     VerifiedEvidenceSet,
 )
-from jarvis.retrieval.evidence_builder import MIN_RELEVANCE_SCORE
+
 from jarvis.runtime.audio_recorder import AudioRecorder
 from jarvis.observability.health import check_health
 from jarvis.observability.logging import configure_logging
@@ -126,8 +126,9 @@ def build_menu_response(
     """Serialize a completed turn into a menu bar-friendly payload."""
     citations: list[MenuBarCitation] = []
     if answer is not None:
-        relevant_items = [i for i in answer.evidence.items if i.relevance_score >= MIN_RELEVANCE_SCORE]
-        for item in relevant_items[:5]:
+        # Evidence items already passed retrieval + reranking filters.
+        # No additional threshold — reranker scores use a different scale.
+        for item in answer.evidence.items[:5]:
             full_path = item.source_path or item.document_id
             display_name = Path(full_path).name if full_path else item.document_id
             citations.append(MenuBarCitation(
