@@ -36,6 +36,7 @@ from jarvis.contracts.models import (
 )
 from jarvis.contracts.protocols import (
     ApprovalGatewayProtocol,
+    ContextAssemblerProtocol,
     ConversationStoreProtocol,
     EmbeddingRuntimeProtocol,
     EvidenceBuilderProtocol,
@@ -108,6 +109,7 @@ __all__ = [
     "VectorRetrieverProtocol",
     "HybridFusionProtocol",
     "EvidenceBuilderProtocol",
+    "ContextAssemblerProtocol",
     "LLMBackendProtocol",
     "LLMGeneratorProtocol",
     "EmbeddingRuntimeProtocol",

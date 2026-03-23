@@ -12,6 +12,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 from jarvis.contracts.models import (
     AnswerDraft,
+    AssembledContext,
     ConversationTurn,
     DraftExportRequest,
     DraftExportResult,
@@ -86,6 +87,24 @@ class EvidenceBuilderProtocol(Protocol):
         Must reject items that cannot be resolved to a document/chunk source.
         Returns empty VerifiedEvidenceSet if no evidence qualifies.
         """
+        ...
+
+
+@runtime_checkable
+class ContextAssemblerProtocol(Protocol):
+    """Assembles pre-processed context from verified evidence (Pipeline Step 5).
+
+    Extracts structured facts deterministically from evidence items,
+    separating data extraction (deterministic) from answer composition (LLM).
+    Follows ChunkRouter pattern — type-aware strategy dispatch via heading_path.
+    """
+
+    def assemble(
+        self,
+        evidence: VerifiedEvidenceSet,
+        query: str,
+    ) -> "AssembledContext":
+        """Extract facts and assemble context from verified evidence."""
         ...
 
 
