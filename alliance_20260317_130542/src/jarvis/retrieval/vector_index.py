@@ -9,6 +9,7 @@ Falls back to empty results if lancedb is not installed.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Sequence
@@ -44,6 +45,7 @@ class VectorIndex:
         self._metrics = metrics
         self._db: object | None = None
         self._available: bool | None = None
+        self._lock = threading.Lock()
 
     def _check_available(self) -> bool:
         if self._available is not None:
@@ -86,7 +88,7 @@ class VectorIndex:
         document_ids: list[str],
         embeddings: list[list[float]],
     ) -> None:
-        """Add or update vectors in the index."""
+        """Add or update vectors in the index (thread-safe)."""
         db = self._ensure_db()
         if db is None or not embeddings or not chunk_ids:
             return
@@ -96,36 +98,38 @@ class VectorIndex:
             for cid, did, vec in zip(chunk_ids, document_ids, embeddings)
         ]
 
-        try:
-            table = self._get_table()
-            if table is not None:
-                # Validate and delete existing entries
-                safe_ids = [cid for cid in set(chunk_ids) if '"' not in cid]
-                if safe_ids:
-                    try:
-                        filter_expr = " OR ".join(f'chunk_id = "{cid}"' for cid in safe_ids)
-                        table.delete(filter_expr)  # type: ignore[union-attr]
-                    except Exception:
-                        pass
-                table.add(data)  # type: ignore[union-attr]
-            else:
-                db.create_table(self._table_name, data=data)  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning("Failed to add vectors to LanceDB: %s", e)
+        with self._lock:
+            try:
+                table = self._get_table()
+                if table is not None:
+                    # Validate and delete existing entries
+                    safe_ids = [cid for cid in set(chunk_ids) if '"' not in cid]
+                    if safe_ids:
+                        try:
+                            filter_expr = " OR ".join(f'chunk_id = "{cid}"' for cid in safe_ids)
+                            table.delete(filter_expr)  # type: ignore[union-attr]
+                        except Exception:
+                            pass
+                    table.add(data)  # type: ignore[union-attr]
+                else:
+                    db.create_table(self._table_name, data=data)  # type: ignore[union-attr]
+            except Exception as e:
+                logger.warning("Failed to add vectors to LanceDB: %s", e)
 
     def remove(self, chunk_ids: list[str]) -> None:
-        """Remove vectors by chunk_id."""
+        """Remove vectors by chunk_id (thread-safe)."""
         table = self._get_table()
         if table is None or not chunk_ids:
             return
-        try:
-            safe_ids = [cid for cid in chunk_ids if '"' not in cid]
-            if not safe_ids:
-                return
-            filter_expr = " OR ".join(f'chunk_id = "{cid}"' for cid in safe_ids)
-            table.delete(filter_expr)  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning("Failed to remove vectors: %s", e)
+        with self._lock:
+            try:
+                safe_ids = [cid for cid in chunk_ids if '"' not in cid]
+                if not safe_ids:
+                    return
+                filter_expr = " OR ".join(f'chunk_id = "{cid}"' for cid in safe_ids)
+                table.delete(filter_expr)  # type: ignore[union-attr]
+            except Exception as e:
+                logger.warning("Failed to remove vectors: %s", e)
 
     def search(
         self, fragments: Sequence[TypedQueryFragment], top_k: int = 10
@@ -162,16 +166,17 @@ class VectorIndex:
             logger.warning("Query embedding failed: %s", e)
             return []
 
-        # ANN search
-        try:
-            results = (
-                table.search(query_vec)  # type: ignore[union-attr]
-                .limit(top_k)
-                .to_list()
-            )
-        except Exception as e:
-            logger.warning("Vector search failed: %s", e)
-            return []
+        # ANN search (lock prevents concurrent write corruption)
+        with self._lock:
+            try:
+                results = (
+                    table.search(query_vec)  # type: ignore[union-attr]
+                    .limit(top_k)
+                    .to_list()
+                )
+            except Exception as e:
+                logger.warning("Vector search failed: %s", e)
+                return []
 
         hits: list[VectorHit] = []
         for row in results:

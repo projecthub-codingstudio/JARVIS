@@ -49,7 +49,8 @@ class TestCreateLLMBackend:
 
 
 class TestEnsureVectorIndexReady:
-    def test_backfills_one_batch_when_table_missing(self) -> None:
+    def test_starts_background_backfill(self) -> None:
+        import time
         events: list[str] = []
 
         class FakePipeline:
@@ -58,42 +59,38 @@ class TestEnsureVectorIndexReady:
 
             def backfill_embeddings(self, *, batch_size: int) -> int:
                 self.calls += 1
-                assert batch_size == 32
-                return 12
-
-        class FakeVectorIndex:
-            def _get_table(self) -> object | None:
-                return None
+                assert batch_size == 64
+                if self.calls <= 2:
+                    return 12
+                return 0
 
         pipeline = FakePipeline()
         ensure_vector_index_ready(
             pipeline=pipeline,
-            vector_index=FakeVectorIndex(),
+            vector_index=object(),
             chunk_count=24,
             reporter=events.append,
         )
 
-        assert pipeline.calls == 1
-        assert events == ["   [embeddings] initialized LanceDB table (12 chunks)"]
+        # Function returns immediately (no sync backfill)
+        # Background thread runs
+        time.sleep(0.2)
+        assert pipeline.calls >= 1
 
-    def test_skips_when_table_already_exists(self) -> None:
+    def test_skips_when_no_chunks(self) -> None:
         class FakePipeline:
             def __init__(self) -> None:
                 self.called = False
 
             def backfill_embeddings(self, *, batch_size: int) -> int:
                 self.called = True
-                return 99
-
-        class FakeVectorIndex:
-            def _get_table(self) -> object:
-                return object()
+                return 0
 
         pipeline = FakePipeline()
         ensure_vector_index_ready(
             pipeline=pipeline,
-            vector_index=FakeVectorIndex(),
-            chunk_count=24,
+            vector_index=object(),
+            chunk_count=0,
         )
 
         assert pipeline.called is False
