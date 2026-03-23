@@ -66,12 +66,16 @@ class WhisperCppSTT:
         language: str | None = None,
         model_router: ModelRouter | None = None,
         estimated_memory_gb: float = _DEFAULT_MEMORY_GB,
+        vocabulary_hint: str | None = None,
     ) -> None:
         self._binary_path = binary_path
         self._model_path = model_path
         self._language = language or os.getenv("JARVIS_STT_LANGUAGE", _DEFAULT_LANGUAGE)
         self._model_router = model_router
         self._estimated_memory_gb = estimated_memory_gb
+        # Vocabulary hint: domain-specific terms passed to whisper --prompt.
+        # Improves recognition of technical terms (e.g., "OLE 개체 속성").
+        self._vocabulary_hint = vocabulary_hint or os.getenv("JARVIS_STT_VOCAB", "")
 
     def transcribe(self, audio_path: Path) -> str:
         """Transcribe an audio file to text."""
@@ -134,7 +138,7 @@ class WhisperCppSTT:
         return text
 
     def _build_command(self, *, binary: str, model_path: Path, audio_path: Path) -> list[str]:
-        return [
+        cmd = [
             binary,
             "-m",
             str(model_path),
@@ -150,6 +154,12 @@ class WhisperCppSTT:
             "--entropy-thold",
             "2.2",
         ]
+        # Vocabulary hint: guides whisper to correctly recognize domain terms.
+        # whisper.cpp uses --prompt as initial context for the decoder,
+        # biasing it toward the provided vocabulary.
+        if self._vocabulary_hint:
+            cmd.extend(["--prompt", self._vocabulary_hint])
+        return cmd
 
     def _resolve_binary(self) -> str | None:
         explicit = self._binary_path or os.getenv("JARVIS_STT_BINARY")
