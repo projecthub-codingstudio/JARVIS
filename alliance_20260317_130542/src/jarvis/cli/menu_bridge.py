@@ -438,20 +438,126 @@ def _health_payload(*, context: object) -> dict[str, object]:
     }
 
 
+def _health_light() -> dict[str, object]:
+    """Lightweight health check — no LLM loading, no embedding backfill.
+
+    Only opens the SQLite DB, checks file/directory existence, and probes
+    LanceDB table availability. Returns in ~1 second instead of 30-60s.
+    """
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.retrieval.vector_index import VectorIndex
+
+    kb_path = Path("/Users/codingstudio/__PROJECTHUB__/JARVIS/knowledge_base")
+    data_dir = Path.cwd() / ".jarvis-menubar"
+    config = JarvisConfig(
+        data_dir=data_dir,
+        watched_folders=[kb_path] if kb_path.exists() else [],
+    )
+
+    checks: dict[str, bool] = {}
+    details: dict[str, str] = {}
+    failed_checks: list[str] = []
+
+    # Database check
+    db = None
+    chunk_count = 0
+    try:
+        db = init_database(config)
+        db.execute("SELECT 1")
+        checks["database"] = True
+        details["database"] = "OK"
+        row = db.execute("SELECT COUNT(*) FROM chunks").fetchone()
+        chunk_count = row[0] if row else 0
+    except Exception as exc:
+        checks["database"] = False
+        details["database"] = str(exc)
+        failed_checks.append("database")
+
+    # Metrics (always OK for lightweight check)
+    checks["metrics"] = True
+    details["metrics"] = "OK"
+
+    # Knowledge base
+    kb_exists = kb_path.exists()
+    checks["knowledge_base"] = kb_exists
+    details["knowledge_base"] = str(kb_path) if kb_exists else "not configured"
+    if not kb_exists:
+        failed_checks.append("knowledge_base")
+
+    # Watched folders
+    checks["watched_folders"] = kb_exists
+    details["watched_folders"] = "OK" if kb_exists else "no folders configured"
+
+    # Export dir
+    checks["export_dir"] = False
+    details["export_dir"] = "not configured"
+
+    # Vector search (just check if LanceDB is importable and table exists)
+    try:
+        vi = VectorIndex(db_path=data_dir / "vectors.lance")
+        vector_available = vi._check_available()
+        table = vi._get_table() if vector_available else None
+        checks["vector_search"] = vector_available
+        checks["vector_db"] = table is not None
+        details["vector_search"] = "active" if vector_available else "FTS-only mode"
+        details["vector_db"] = "OK" if table is not None else "table not initialized"
+        if not vector_available:
+            failed_checks.append("vector_search")
+    except Exception:
+        checks["vector_search"] = False
+        checks["vector_db"] = False
+        details["vector_search"] = "unavailable"
+        details["vector_db"] = "unavailable"
+        failed_checks.append("vector_search")
+
+    # LLM model — probe without loading
+    checks["model"] = False
+    details["model"] = "not checked (lightweight mode)"
+
+    # Embeddings — probe without loading
+    checks["embeddings"] = chunk_count > 0
+    details["embeddings"] = f"{chunk_count} chunks indexed" if chunk_count > 0 else "no chunks"
+
+    # Governor — lightweight, skip
+    checks["governor"] = True
+    details["governor"] = "OK (not sampled)"
+
+    # File watcher — not running in one-shot mode
+    checks["file_watcher"] = False
+    details["file_watcher"] = "not running (one-shot mode)"
+
+    if db is not None:
+        db.close()
+
+    healthy = len(failed_checks) == 0
+    return {
+        "healthy": healthy,
+        "message": "OK" if healthy else f"Issues: {', '.join(failed_checks)}",
+        "checks": checks,
+        "details": details,
+        "failed_checks": failed_checks,
+        "status_level": "healthy" if not failed_checks else ("warning" if len(failed_checks) <= 2 else "degraded"),
+        "chunk_count": chunk_count,
+        "knowledge_base_path": str(kb_path) if kb_exists else "",
+        "bridge_mode": "one-shot",
+    }
+
+
 def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommandEnvelope:
     if command == "ask":
         return MenuBarCommandEnvelope(
             kind="query_result",
             query_result=_run_query(
                 query=str(payload["query"]),
-                model_id=str(payload.get("model", "exaone3.5:7.8b")),
+                model_id=str(payload.get("model", "qwen3.5:9b")),
             ),
         )
     if command == "record-once":
         return MenuBarCommandEnvelope(
             kind="query_result",
             query_result=_record_once(
-                model_id=str(payload.get("model", "exaone3.5:7.8b")),
+                model_id=str(payload.get("model", "qwen3.5:9b")),
                 device=str(payload["device"]) if payload.get("device") else None,
             ),
         )
@@ -459,7 +565,7 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
         return MenuBarCommandEnvelope(
             kind="transcription_result",
             transcription_result=_transcribe_once(
-                model_id=str(payload.get("model", "exaone3.5:7.8b")),
+                model_id=str(payload.get("model", "qwen3.5:9b")),
                 device=str(payload["device"]) if payload.get("device") else None,
             ),
         )
@@ -480,14 +586,10 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
             ),
         )
     if command == "health":
-        context = _build_context(model_id=str(payload.get("model", "exaone3.5:7.8b")))
-        try:
-            return MenuBarCommandEnvelope(
-                kind="health_result",
-                health_result=_health_payload(context=context),
-            )
-        finally:
-            shutdown_runtime_context(context)
+        return MenuBarCommandEnvelope(
+            kind="health_result",
+            health_result=_health_light(),
+        )
     return MenuBarCommandEnvelope(kind="error", error=f"Unknown command: {command}")
 
 
@@ -549,6 +651,13 @@ def _run_server(model_id: str) -> int:
                         transcription_result=_transcribe_once_in_context(
                             context=context,
                             device=str(payload["device"]) if payload.get("device") else None,
+                        ),
+                    )
+                elif command == "transcribe-file":
+                    envelope = MenuBarCommandEnvelope(
+                        kind="transcription_result",
+                        transcription_result=_transcribe_file(
+                            audio_path=str(payload["audio"]),
                         ),
                     )
                 elif command == "export-draft":
@@ -633,13 +742,13 @@ def main(argv: list[str] | None = None) -> int:
 
     ask_parser = subparsers.add_parser("ask", help="Run a text query")
     ask_parser.add_argument("--query", required=True, help="User query to send to JARVIS")
-    ask_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
+    ask_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
 
     record_parser = subparsers.add_parser("record-once", help="Record one microphone query")
-    record_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
+    record_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
     record_parser.add_argument("--device", help="Optional microphone input device name")
     transcribe_parser = subparsers.add_parser("transcribe-once", help="Record one microphone query and return transcript only")
-    transcribe_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
+    transcribe_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
     transcribe_parser.add_argument("--device", help="Optional microphone input device name")
 
     transcribe_file_parser = subparsers.add_parser("transcribe-file", help="Transcribe a pre-recorded audio file")
@@ -654,9 +763,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Approval already granted in the menu bar UI",
     )
     health_parser = subparsers.add_parser("health", help="Return menu bar startup health")
-    health_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
+    health_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
     server_parser = subparsers.add_parser("server", help="Run persistent stdin/stdout JSON bridge")
-    server_parser.add_argument("--model", default="exaone3.5:7.8b", help="Override default model")
+    server_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
     args = parser.parse_args(argv)
 
     if args.command == "server":

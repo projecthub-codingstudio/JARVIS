@@ -92,6 +92,7 @@ enum BridgeError: LocalizedError {
     case processFailed(String)
     case emptyResponse
     case decodeFailed(String)
+    case serverNotReady
 
     var errorDescription: String? {
         switch self {
@@ -103,80 +104,132 @@ enum BridgeError: LocalizedError {
             return "JARVIS 브리지에서 응답이 비어 있습니다."
         case .decodeFailed(let payload):
             return "브리지 JSON 파싱 실패: \(payload)"
+        case .serverNotReady:
+            return "JARVIS 서버가 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
         }
     }
 }
 
+// MARK: - Persistent Server Session
+
+/// Manages a single persistent Python bridge server process.
+/// The process stays alive across multiple commands.
+final class ServerSession: @unchecked Sendable {
+    let process: Process
+    let stdinPipe: Pipe
+    let stdoutPipe: Pipe
+    let stderrPipe: Pipe
+    private let decoder = JSONDecoder()
+    private var readBuffer = Data()
+    private var stderrDrainThread: Thread?
+
+    init(process: Process, stdinPipe: Pipe, stdoutPipe: Pipe, stderrPipe: Pipe) {
+        self.process = process
+        self.stdinPipe = stdinPipe
+        self.stdoutPipe = stdoutPipe
+        self.stderrPipe = stderrPipe
+
+        // Drain stderr in background to prevent pipe buffer deadlock.
+        // Without this, Python blocks when stderr buffer (64KB) fills up.
+        let errHandle = stderrPipe.fileHandleForReading
+        let thread = Thread {
+            while true {
+                let data = errHandle.availableData
+                if data.isEmpty { break }  // EOF — process exited
+                if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                    for line in text.split(whereSeparator: \.isNewline) {
+                        bridgeLog("py: \(line)")
+                    }
+                }
+            }
+        }
+        thread.qualityOfService = .utility
+        thread.name = "jarvis-stderr-drain"
+        thread.start()
+        stderrDrainThread = thread
+    }
+
+    var isRunning: Bool { process.isRunning }
+
+    /// Send a JSON command to the server's stdin.
+    func sendJSON(_ payload: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        stdinPipe.fileHandleForWriting.write(data)
+        stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
+    }
+
+    /// Read the next complete JSON envelope from stdout (blocking).
+    func readEnvelope() -> CommandEnvelope? {
+        if let envelope = extractEnvelopeFromBuffer() {
+            return envelope
+        }
+        while true {
+            let data = stdoutPipe.fileHandleForReading.availableData
+            if data.isEmpty { return nil }
+            readBuffer.append(data)
+            if let envelope = extractEnvelopeFromBuffer() {
+                return envelope
+            }
+        }
+    }
+
+    private func extractEnvelopeFromBuffer() -> CommandEnvelope? {
+        while let newlineIndex = readBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+            let lineData = readBuffer[readBuffer.startIndex..<newlineIndex]
+            readBuffer = Data(readBuffer[readBuffer.index(after: newlineIndex)...])
+            guard !lineData.isEmpty else { continue }
+            if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)) {
+                return envelope
+            }
+        }
+        return nil
+    }
+
+    func shutdown() {
+        try? sendJSON(["command": "shutdown"])
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [process] in
+            if process.isRunning { process.terminate() }
+        }
+    }
+}
+
+// MARK: - JarvisBridge Actor
+
 actor JarvisBridge {
     private let configuration: BridgeConfiguration
+    private var session: ServerSession?
+    private(set) var isServerReady = false
+    private var startingUp = false
+    private var startupWaiters: [CheckedContinuation<ServerSession, Error>] = []
 
     init(configuration: BridgeConfiguration = .default()) {
         self.configuration = configuration
     }
 
-    func ask(_ query: String) async throws -> MenuResponse {
-        try await send(query, command: "ask")
-    }
+    // MARK: - Server Lifecycle
 
-    func recordOnce(device: String? = nil) async throws -> MenuResponse {
-        var payload: [String: Any] = ["command": "record-once"]
-        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            payload["device"] = device
+    /// Launch the persistent server if not already running.
+    /// Uses async continuation so the actor is NOT blocked during startup.
+    private func ensureServer() async throws -> ServerSession {
+        if let session, session.isRunning {
+            return session
         }
-        let envelope = try await send(payload)
-        guard let response = envelope.queryResult else {
-            throw BridgeError.decodeFailed("missing query_result")
-        }
-        return response
-    }
 
-    func transcribeOnce(device: String? = nil) async throws -> TranscriptionResponse {
-        var payload: [String: Any] = ["command": "transcribe-once"]
-        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            payload["device"] = device
+        // If another caller is already starting the server, wait for it
+        if startingUp {
+            return try await withCheckedThrowingContinuation { continuation in
+                startupWaiters.append(continuation)
+            }
         }
-        let envelope = try await send(payload)
-        guard let response = envelope.transcriptionResult else {
-            throw BridgeError.decodeFailed("missing transcription_result")
-        }
-        return response
-    }
 
-    func transcribeFile(audioPath: String) async throws -> TranscriptionResponse {
-        let envelope = try await send([
-            "command": "transcribe-file",
-            "audio": audioPath,
-        ])
-        guard let response = envelope.transcriptionResult else {
-            throw BridgeError.decodeFailed("missing transcription_result")
-        }
-        return response
-    }
+        // Clean up dead session
+        session = nil
+        isServerReady = false
+        startingUp = true
 
-    func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse {
-        let envelope = try await send([
-            "command": "export-draft",
-            "content": content,
-            "destination": destination,
-            "approved": approved,
-        ])
-        guard let response = envelope.exportResult else {
-            throw BridgeError.decodeFailed("missing export_result")
-        }
-        return response
-    }
-
-    func health() async throws -> HealthResponse {
-        let envelope = try await send(["command": "health"])
-        guard let response = envelope.healthResult else {
-            throw BridgeError.decodeFailed("missing health_result")
-        }
-        return response
-    }
-
-    private func runCommand(_ payload: [String: Any]) throws -> CommandEnvelope {
         let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
         guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+            finishStartup(error: BridgeError.missingPython(pythonURL.path))
             throw BridgeError.missingPython(pythonURL.path)
         }
 
@@ -184,104 +237,369 @@ actor JarvisBridge {
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+
         process.executableURL = pythonURL
         process.currentDirectoryURL = configuration.allianceRoot
-        process.arguments = [
-            "-u",
-            "-m", "jarvis.cli.menu_bridge",
-            String(payload["command"] as? String ?? "ask"),
-        ]
+        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PYTHONPATH"] = configuration.pythonPath
-        if environment["HF_HUB_DISABLE_PROGRESS_BARS"] == nil {
-            environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = configuration.pythonPath
+        env["HF_HUB_DISABLE_PROGRESS_BARS"] = env["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
+        env["TRANSFORMERS_VERBOSITY"] = env["TRANSFORMERS_VERBOSITY"] ?? "error"
+        env["TOKENIZERS_PARALLELISM"] = env["TOKENIZERS_PARALLELISM"] ?? "false"
+        env["HF_HUB_DISABLE_TELEMETRY"] = env["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
+        env["TRUST_REMOTE_CODE"] = env["TRUST_REMOTE_CODE"] ?? "1"
+        if let sttBinary = configuration.defaultSTTBinary {
+            env["JARVIS_STT_BINARY"] = env["JARVIS_STT_BINARY"] ?? sttBinary
         }
-        if environment["TRANSFORMERS_VERBOSITY"] == nil {
-            environment["TRANSFORMERS_VERBOSITY"] = "error"
+        if let sttModel = configuration.defaultSTTModel {
+            env["JARVIS_STT_MODEL"] = env["JARVIS_STT_MODEL"] ?? sttModel
         }
-        if environment["TOKENIZERS_PARALLELISM"] == nil {
-            environment["TOKENIZERS_PARALLELISM"] = "false"
-        }
-        // Suppress HuggingFace interactive prompts and tqdm output
-        if environment["HF_HUB_DISABLE_TELEMETRY"] == nil {
-            environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        }
-        if environment["TRUST_REMOTE_CODE"] == nil {
-            environment["TRUST_REMOTE_CODE"] = "1"
-        }
-        if environment["JARVIS_STT_BINARY"] == nil, let sttBinary = configuration.defaultSTTBinary {
-            environment["JARVIS_STT_BINARY"] = sttBinary
-        }
-        if environment["JARVIS_STT_MODEL"] == nil, let sttModel = configuration.defaultSTTModel {
-            environment["JARVIS_STT_MODEL"] = sttModel
-        }
-        bridgeLog("STT binary=\(environment["JARVIS_STT_BINARY"] ?? "nil") model=\(environment["JARVIS_STT_MODEL"] ?? "nil")")
-        bridgeLog("args=\(process.arguments ?? [])")
-        process.environment = environment
+
+        process.environment = env
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        for (key, value) in payload {
-            guard key != "command" else { continue }
-            if let boolValue = value as? Bool {
-                if boolValue {
-                    process.arguments?.append("--\(key)")
+
+        try process.run()
+        bridgeLog("Persistent server launched (pid=\(process.processIdentifier))")
+
+        let newSession = ServerSession(
+            process: process,
+            stdinPipe: stdinPipe,
+            stdoutPipe: stdoutPipe,
+            stderrPipe: stderrPipe
+        )
+
+        // Wait for "ready" WITHOUT blocking the actor — use continuation
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    while true {
+                        guard let envelope = newSession.readEnvelope() else {
+                            continuation.resume(throwing: BridgeError.processFailed("Server exited before ready"))
+                            return
+                        }
+                        if envelope.kind == "ready" {
+                            continuation.resume()
+                            return
+                        }
+                        if envelope.kind == "error" {
+                            continuation.resume(throwing: BridgeError.processFailed(envelope.error ?? "Startup error"))
+                            return
+                        }
+                    }
                 }
+            }
+        } catch {
+            finishStartup(error: error)
+            throw error
+        }
+
+        bridgeLog("Persistent server ready")
+        self.session = newSession
+        self.isServerReady = true
+        finishStartup(session: newSession)
+        return newSession
+    }
+
+    /// Resume any waiters after server startup completes or fails.
+    private func finishStartup(session: ServerSession? = nil, error: Error? = nil) {
+        startingUp = false
+        for waiter in startupWaiters {
+            if let session {
+                waiter.resume(returning: session)
+            } else if let error {
+                waiter.resume(throwing: error)
+            }
+        }
+        startupWaiters.removeAll()
+    }
+
+    /// Eagerly start the server in the background so the first query is fast.
+    func warmup() async {
+        do {
+            _ = try await ensureServer()
+        } catch {
+            bridgeLog("Warmup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Shut down the persistent server process.
+    func shutdown() {
+        session?.shutdown()
+        session = nil
+        isServerReady = false
+        bridgeLog("Server shutdown requested")
+    }
+
+    // MARK: - Commands via Persistent Server
+
+    func ask(_ query: String) async throws -> MenuResponse {
+        let server = try await ensureServer()
+        try server.sendJSON(["command": "ask", "query": query])
+        while let envelope = server.readEnvelope() {
+            switch envelope.kind {
+            case "query_result":
+                guard let response = envelope.queryResult else {
+                    throw BridgeError.decodeFailed("missing query_result")
+                }
+                return response
+            case "error":
+                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+            default:
                 continue
             }
-            process.arguments?.append("--\(key)=\(String(describing: value))")
         }
-        bridgeLog("launch command=\(payload["command"] as? String ?? "unknown") cwd=\(configuration.allianceRoot.path)")
-        bridgeLog("python=\(pythonURL.path)")
+        throw BridgeError.emptyResponse
+    }
+
+    func askStreaming(_ query: String) async -> AsyncStream<StreamEvent> {
+        // Actor-isolated setup: start server and send command
+        let server: ServerSession
+        do {
+            server = try await ensureServer()
+            try server.sendJSON(["command": "ask", "query": query, "stream": true])
+        } catch {
+            return AsyncStream { continuation in
+                continuation.yield(.error(error.localizedDescription))
+                continuation.finish()
+            }
+        }
+
+        // Streaming read runs on a detached task (ServerSession is Sendable)
+        return AsyncStream { continuation in
+            Task.detached {
+                while true {
+                    guard let envelope = server.readEnvelope() else {
+                        continuation.yield(.error("서버 연결이 끊어졌습니다."))
+                        break
+                    }
+                    switch envelope.kind {
+                    case "stream_chunk":
+                        if let token = envelope.token {
+                            continuation.yield(.token(token))
+                        }
+                    case "stream_done":
+                        continuation.yield(.done(envelope.queryResult))
+                        continuation.finish()
+                        return
+                    case "error":
+                        continuation.yield(.error(envelope.error ?? "unknown server error"))
+                        continuation.finish()
+                        return
+                    default:
+                        break
+                    }
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    func recordOnce(device: String? = nil) async throws -> MenuResponse {
+        let server = try await ensureServer()
+        var payload: [String: Any] = ["command": "record-once"]
+        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["device"] = device
+        }
+        try server.sendJSON(payload)
+        while let envelope = server.readEnvelope() {
+            switch envelope.kind {
+            case "query_result":
+                guard let response = envelope.queryResult else {
+                    throw BridgeError.decodeFailed("missing query_result")
+                }
+                return response
+            case "stream_chunk":
+                continue  // Ignore streaming chunks in non-streaming mode
+            case "stream_done":
+                guard let response = envelope.queryResult else {
+                    throw BridgeError.decodeFailed("missing query_result in stream_done")
+                }
+                return response
+            case "error":
+                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+            default:
+                continue
+            }
+        }
+        throw BridgeError.emptyResponse
+    }
+
+    func recordOnceStreaming(device: String? = nil) async -> AsyncStream<StreamEvent> {
+        let server: ServerSession
+        do {
+            server = try await ensureServer()
+            var payload: [String: Any] = ["command": "record-once", "stream": true]
+            if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                payload["device"] = device
+            }
+            try server.sendJSON(payload)
+        } catch {
+            return AsyncStream { continuation in
+                continuation.yield(.error(error.localizedDescription))
+                continuation.finish()
+            }
+        }
+
+        return AsyncStream { continuation in
+            Task.detached {
+                while true {
+                    guard let envelope = server.readEnvelope() else {
+                        continuation.yield(.error("서버 연결이 끊어졌습니다."))
+                        break
+                    }
+                    switch envelope.kind {
+                    case "stream_chunk":
+                        if let token = envelope.token {
+                            continuation.yield(.token(token))
+                        }
+                    case "stream_done":
+                        continuation.yield(.done(envelope.queryResult))
+                        continuation.finish()
+                        return
+                    case "query_result":
+                        continuation.yield(.done(envelope.queryResult))
+                        continuation.finish()
+                        return
+                    case "error":
+                        continuation.yield(.error(envelope.error ?? "unknown server error"))
+                        continuation.finish()
+                        return
+                    default:
+                        break
+                    }
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    func transcribeOnce(device: String? = nil) async throws -> TranscriptionResponse {
+        let server = try await ensureServer()
+        var payload: [String: Any] = ["command": "transcribe-once"]
+        if let device, !device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["device"] = device
+        }
+        try server.sendJSON(payload)
+        while let envelope = server.readEnvelope() {
+            switch envelope.kind {
+            case "transcription_result":
+                guard let response = envelope.transcriptionResult else {
+                    throw BridgeError.decodeFailed("missing transcription_result")
+                }
+                return response
+            case "error":
+                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+            default:
+                continue
+            }
+        }
+        throw BridgeError.emptyResponse
+    }
+
+    func transcribeFile(audioPath: String) async throws -> TranscriptionResponse {
+        let server = try await ensureServer()
+        try server.sendJSON(["command": "transcribe-file", "audio": audioPath])
+        while let envelope = server.readEnvelope() {
+            switch envelope.kind {
+            case "transcription_result":
+                guard let response = envelope.transcriptionResult else {
+                    throw BridgeError.decodeFailed("missing transcription_result")
+                }
+                return response
+            case "error":
+                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+            default:
+                continue
+            }
+        }
+        throw BridgeError.emptyResponse
+    }
+
+    func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse {
+        let server = try await ensureServer()
+        try server.sendJSON([
+            "command": "export-draft",
+            "content": content,
+            "destination": destination,
+            "approved": approved,
+        ])
+        while let envelope = server.readEnvelope() {
+            switch envelope.kind {
+            case "export_result":
+                guard let response = envelope.exportResult else {
+                    throw BridgeError.decodeFailed("missing export_result")
+                }
+                return response
+            case "error":
+                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+            default:
+                continue
+            }
+        }
+        throw BridgeError.emptyResponse
+    }
+
+    // MARK: - Health (lightweight one-shot, no server needed)
+
+    func health() async throws -> HealthResponse {
+        // Use persistent server if available (instant)
+        if let session, session.isRunning {
+            try session.sendJSON(["command": "health"])
+            while let envelope = session.readEnvelope() {
+                switch envelope.kind {
+                case "health_result":
+                    guard let response = envelope.healthResult else {
+                        throw BridgeError.decodeFailed("missing health_result")
+                    }
+                    return response
+                case "error":
+                    throw BridgeError.processFailed(envelope.error ?? "unknown server error")
+                default:
+                    continue
+                }
+            }
+            throw BridgeError.emptyResponse
+        }
+
+        // Fallback: lightweight one-shot health (fast, ~1s)
+        return try runOneShotHealth()
+    }
+
+    private func runOneShotHealth() throws -> HealthResponse {
+        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
+        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+            throw BridgeError.missingPython(pythonURL.path)
+        }
+
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        process.executableURL = pythonURL
+        process.currentDirectoryURL = configuration.allianceRoot
+        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "health"]
+
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = configuration.pythonPath
+        env["HF_HUB_DISABLE_PROGRESS_BARS"] = env["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
+        env["TRANSFORMERS_VERBOSITY"] = env["TRANSFORMERS_VERBOSITY"] ?? "error"
+        env["TOKENIZERS_PARALLELISM"] = env["TOKENIZERS_PARALLELISM"] ?? "false"
+        env["HF_HUB_DISABLE_TELEMETRY"] = env["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
+        env["TRUST_REMOTE_CODE"] = env["TRUST_REMOTE_CODE"] ?? "1"
+        process.environment = env
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
         try process.run()
         process.waitUntilExit()
 
         let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdoutText = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let stderrText = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !stderrText.isEmpty {
-            bridgeLog("stderr=\(stderrText)")
-        }
-        if process.terminationStatus != 0 {
-            bridgeLog("terminationStatus=\(process.terminationStatus)")
-            throw BridgeError.processFailed(stderrText.isEmpty ? "bridge process terminated" : stderrText)
-        }
-        guard !output.isEmpty else {
-            bridgeLog("empty stdout from bridge process")
-            throw BridgeError.emptyResponse
-        }
-        let envelope: CommandEnvelope
-        do {
-            envelope = try decodeEnvelope(from: output)
-        } catch {
-            bridgeLog("stdout=\(stdoutText)")
-            bridgeLog("decode error=\(error.localizedDescription)")
-            throw error
-        }
-        if envelope.kind == "error" {
-            bridgeLog("envelope error=\(envelope.error ?? "unknown bridge error")")
-            throw BridgeError.processFailed(envelope.error ?? "unknown bridge error")
-        }
-        if let health = envelope.healthResult, !health.failedChecks.isEmpty {
-            bridgeLog("health failed_checks=\(health.failedChecks.joined(separator: ","))")
-            if let modelDetail = health.details["model"] {
-                bridgeLog("health model detail=\(modelDetail)")
-            }
-            if let vectorDetail = health.details["vector_db"] {
-                bridgeLog("health vector_db detail=\(vectorDetail)")
-            }
-        }
-        return envelope
-    }
+        guard !output.isEmpty else { throw BridgeError.emptyResponse }
 
-    private func decodeEnvelope(from output: Data) throws -> CommandEnvelope {
         let decoder = JSONDecoder()
-        if let envelope = try? decoder.decode(CommandEnvelope.self, from: output) {
-            return envelope
-        }
-
         let outputText = String(decoding: output, as: UTF8.self)
         let lines = outputText
             .split(whereSeparator: \.isNewline)
@@ -289,140 +607,19 @@ actor JarvisBridge {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        if let candidate = lines.last,
-           let candidateData = candidate.data(using: .utf8),
-           let envelope = try? decoder.decode(CommandEnvelope.self, from: candidateData) {
-            return envelope
+        // Try last line first (may have stderr noise before JSON)
+        for line in lines.reversed() {
+            if let data = line.data(using: .utf8),
+               let envelope = try? decoder.decode(CommandEnvelope.self, from: data),
+               let health = envelope.healthResult {
+                return health
+            }
         }
-
         throw BridgeError.decodeFailed(outputText)
     }
 
-    // MARK: - Streaming
+    // MARK: - Wake Word (separate server process)
 
-    /// Ask a query with streaming token delivery via server mode.
-    ///
-    /// Launches the Python bridge in server mode (persistent stdin/stdout),
-    /// sends the query with `"stream": true`, and yields tokens as they
-    /// arrive. The final event contains the complete MenuResponse.
-    func askStreaming(_ query: String) -> AsyncStream<StreamEvent> {
-        AsyncStream { continuation in
-            Task.detached { [configuration] in
-                do {
-                    let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
-                    guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-                        continuation.yield(.error("Python not found"))
-                        continuation.finish()
-                        return
-                    }
-
-                    let process = Process()
-                    let stdinPipe = Pipe()
-                    let stdoutPipe = Pipe()
-                    let stderrPipe = Pipe()
-
-                    process.executableURL = pythonURL
-                    process.currentDirectoryURL = configuration.allianceRoot
-                    process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
-
-                    var environment = ProcessInfo.processInfo.environment
-                    environment["PYTHONPATH"] = configuration.pythonPath
-                    environment["HF_HUB_DISABLE_PROGRESS_BARS"] = environment["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
-                    environment["TRANSFORMERS_VERBOSITY"] = environment["TRANSFORMERS_VERBOSITY"] ?? "error"
-                    environment["TOKENIZERS_PARALLELISM"] = environment["TOKENIZERS_PARALLELISM"] ?? "false"
-                    environment["HF_HUB_DISABLE_TELEMETRY"] = environment["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
-                    environment["TRUST_REMOTE_CODE"] = environment["TRUST_REMOTE_CODE"] ?? "1"
-                    if let sttBinary = configuration.defaultSTTBinary {
-                        environment["JARVIS_STT_BINARY"] = environment["JARVIS_STT_BINARY"] ?? sttBinary
-                    }
-                    if let sttModel = configuration.defaultSTTModel {
-                        environment["JARVIS_STT_MODEL"] = environment["JARVIS_STT_MODEL"] ?? sttModel
-                    }
-                    process.environment = environment
-                    process.standardInput = stdinPipe
-                    process.standardOutput = stdoutPipe
-                    process.standardError = stderrPipe
-
-                    try process.run()
-                    bridgeLog("Server mode launched for streaming query")
-
-                    let decoder = JSONDecoder()
-                    let fileHandle = stdoutPipe.fileHandleForReading
-
-                    // Wait for "ready" signal
-                    var ready = false
-                    while !ready {
-                        guard let lineData = fileHandle.availableData.split(separator: UInt8(ascii: "\n")).first else {
-                            continue
-                        }
-                        if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)) {
-                            if envelope.kind == "ready" { ready = true }
-                        }
-                    }
-
-                    // Send streaming query
-                    let payload = try JSONSerialization.data(
-                        withJSONObject: ["command": "ask", "query": query, "stream": true]
-                    )
-                    stdinPipe.fileHandleForWriting.write(payload)
-                    stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
-
-                    // Read streaming responses line by line
-                    var buffer = Data()
-                    var done = false
-                    while !done {
-                        let chunk = fileHandle.availableData
-                        if chunk.isEmpty { break }
-                        buffer.append(chunk)
-
-                        // Process complete JSON lines
-                        while let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                            let lineData = buffer[buffer.startIndex..<newlineIndex]
-                            buffer = Data(buffer[buffer.index(after: newlineIndex)...])
-
-                            guard !lineData.isEmpty,
-                                  let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData))
-                            else { continue }
-
-                            switch envelope.kind {
-                            case "stream_chunk":
-                                if let token = envelope.token {
-                                    continuation.yield(.token(token))
-                                }
-                            case "stream_done":
-                                continuation.yield(.done(envelope.queryResult))
-                                done = true
-                            case "error":
-                                continuation.yield(.error(envelope.error ?? "unknown error"))
-                                done = true
-                            default:
-                                break
-                            }
-                        }
-                    }
-
-                    // Shutdown server
-                    let shutdownPayload = try JSONSerialization.data(
-                        withJSONObject: ["command": "shutdown"]
-                    )
-                    stdinPipe.fileHandleForWriting.write(shutdownPayload)
-                    stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
-                    process.waitUntilExit()
-
-                } catch {
-                    continuation.yield(.error(error.localizedDescription))
-                }
-                continuation.finish()
-            }
-        }
-    }
-
-    // MARK: - Wake Word via Server Bridge
-
-    /// Start a persistent wake word listening session.
-    ///
-    /// Returns a WakeWordSession that can send audio chunks and receive
-    /// detection events. Uses the Python bridge server with OpenWakeWord.
     func startWakeWordSession() async throws -> WakeWordSession {
         let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
         guard FileManager.default.fileExists(atPath: pythonURL.path) else {
@@ -438,20 +635,20 @@ actor JarvisBridge {
         process.currentDirectoryURL = configuration.allianceRoot
         process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PYTHONPATH"] = configuration.pythonPath
-        environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-        environment["TRANSFORMERS_VERBOSITY"] = "error"
-        environment["TOKENIZERS_PARALLELISM"] = "false"
-        environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        environment["TRUST_REMOTE_CODE"] = "1"
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = configuration.pythonPath
+        env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        env["TRANSFORMERS_VERBOSITY"] = "error"
+        env["TOKENIZERS_PARALLELISM"] = "false"
+        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        env["TRUST_REMOTE_CODE"] = "1"
         if let sttBinary = configuration.defaultSTTBinary {
-            environment["JARVIS_STT_BINARY"] = environment["JARVIS_STT_BINARY"] ?? sttBinary
+            env["JARVIS_STT_BINARY"] = env["JARVIS_STT_BINARY"] ?? sttBinary
         }
         if let sttModel = configuration.defaultSTTModel {
-            environment["JARVIS_STT_MODEL"] = environment["JARVIS_STT_MODEL"] ?? sttModel
+            env["JARVIS_STT_MODEL"] = env["JARVIS_STT_MODEL"] ?? sttModel
         }
-        process.environment = environment
+        process.environment = env
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -501,22 +698,9 @@ actor JarvisBridge {
             decoder: decoder
         )
     }
-
-    private func send(_ query: String, command: String) async throws -> MenuResponse {
-        let envelope = try runCommand([
-            "command": command,
-            "query": query,
-        ])
-        guard let response = envelope.queryResult else {
-            throw BridgeError.decodeFailed("missing query_result")
-        }
-        return response
-    }
-
-    private func send(_ payload: [String: Any]) async throws -> CommandEnvelope {
-        try runCommand(payload)
-    }
 }
+
+// MARK: - Wake Word Session
 
 /// Persistent session for sending audio chunks to Python wake word detector.
 final class WakeWordSession: @unchecked Sendable {

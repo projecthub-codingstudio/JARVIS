@@ -33,8 +33,8 @@ def main() -> None:
         json_logs=os.getenv("JARVIS_LOG_FORMAT", "").lower() == "json",
     )
 
-    # Model selection — default: exaone3.5:7.8b (fast response, switch to qwen3:14b if quality insufficient)
-    model_id = os.getenv("JARVIS_MODEL", "exaone3.5:7.8b")
+    # Model selection — default: qwen3.5:9b (fast response, switch to qwen3:14b if quality insufficient)
+    model_id = os.getenv("JARVIS_MODEL", "qwen3.5:9b")
     voice_file: Path | None = None
     voice_output: Path | None = None
     voice_device: str | None = os.getenv("JARVIS_PTT_DEVICE")

@@ -299,6 +299,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
         refreshAudioInputDevices()
         Task { await refreshHealth() }
 
+        // Eagerly start the persistent Python server so the first query is fast.
+        Task { await bridge.warmup() }
+
         // Pre-warm the audio engine so the first recording doesn't have
         // a cold-start delay. Runs on background to avoid blocking UI.
         Task.detached { [nativeRecorder, selectedInputDeviceID] in
@@ -372,6 +375,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
             if isStreaming { isStreaming = false }  // Safety
             exportMessage = nil
             isLoading = false
+
+            // TTS — speak the final response
+            if let finalText = response?.response ?? (streamingText.isEmpty ? nil : streamingText) {
+                speakResponse(finalText)
+            }
             if !voiceLoopEnabled {
                 cancelPhaseTransition()
                 voiceLoopPhase = .idle
@@ -524,10 +532,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
             if trimmed.isEmpty { continue }
             // Stop at first meta-commentary line
             if cutoffPhrases.contains(where: { trimmed.hasPrefix($0) }) { break }
-            // Skip bullet points that are just repeating the answer
-            if trimmed.hasPrefix("- ") && kept.count >= 3 { continue }
             kept.append(trimmed)
         }
+        // Convert newlines to periods for natural speech pauses
         result = kept.joined(separator: ". ")
 
         // Clean extra periods and whitespace
@@ -553,6 +560,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
         stopTTS()
         appLog("JARVIS mode stopped")
+    }
+
+    func shutdownBridge() async {
+        await bridge.shutdown()
     }
 
     func refreshHealth() async {
@@ -1595,6 +1606,7 @@ struct JarvisMenuContentView: View {
                 HStack {
                     Spacer()
                     Button("Quit JARVIS  ⌘Q") {
+                        Task { await viewModel.shutdownBridge() }
                         NSApplication.shared.terminate(nil)
                     }
                     .keyboardShortcut("q", modifiers: .command)

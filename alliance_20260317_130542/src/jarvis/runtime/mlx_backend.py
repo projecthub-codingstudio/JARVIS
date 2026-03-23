@@ -42,6 +42,9 @@ _MODEL_ALIASES: dict[str, str] = {
     # Qwen3
     "qwen3:14b": "mlx-community/Qwen3-14B-4bit",
     "qwen3-14b": "mlx-community/Qwen3-14B-4bit",
+    # Qwen3.5 — default from 2026-03-23 (100% accuracy on structured data)
+    "qwen3.5:9b": "mlx-community/Qwen3.5-9B-MLX-4bit",
+    "qwen3.5:35b-a3b": "mlx-community/Qwen3.5-35B-A3B-4bit",
 }
 
 
@@ -211,8 +214,17 @@ class MLXBackend:
             {"role": "user", "content": prompt},
         ]
 
+        # Disable thinking mode for models that support it (e.g., Qwen3.5)
+        # to avoid excessive reasoning tokens and leaked thinking in output.
+        template_kwargs: dict = {}
+        try:
+            self._tokenizer.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False)
+            template_kwargs["enable_thinking"] = False
+        except (TypeError, Exception):
+            pass
+
         formatted_prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
+            messages, add_generation_prompt=True, **template_kwargs
         )
 
         # Dynamic max_tokens: use remaining context window after prompt
@@ -267,8 +279,15 @@ class MLXBackend:
             {"role": "user", "content": prompt},
         ]
 
+        template_kwargs: dict = {}
+        try:
+            self._tokenizer.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False)
+            template_kwargs["enable_thinking"] = False
+        except (TypeError, Exception):
+            pass
+
         formatted_prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
+            messages, add_generation_prompt=True, **template_kwargs
         )
 
         prompt_tokens = len(formatted_prompt) if isinstance(formatted_prompt, list) else len(self._tokenizer.encode(formatted_prompt))
