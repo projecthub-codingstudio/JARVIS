@@ -970,6 +970,21 @@ def _parse_hwp_structured(path: Path) -> list:
                     elements.append(DocumentElement(element_type="text", text=combined.strip()))
                 text_buffer = []
 
+        def _get_table_caption(body_elem) -> str:
+            """Walk up to parent TableControl and find sibling TableCaption."""
+            parent = body_elem.getparent()
+            if parent is None:
+                return ""
+            ptag = parent.tag.split("}")[-1] if "}" in parent.tag else parent.tag
+            if ptag != "TableControl":
+                return ""
+            for sibling in parent:
+                stag = sibling.tag.split("}")[-1] if "}" in sibling.tag else sibling.tag
+                if stag == "TableCaption":
+                    cap = etree.tostring(sibling, method="text", encoding="unicode").strip()
+                    return " ".join(cap.split())
+            return ""
+
         for elem in root.iter():
             tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
 
@@ -978,16 +993,16 @@ def _parse_hwp_structured(path: Path) -> list:
                     text_buffer.append(elem.text.strip())
 
             elif tag == "TableBody":
-                # Flush accumulated text before the table
                 _flush_text()
 
-                # Extract table as structured element
                 rows_data = _extract_hwp_table_rows(elem)
                 if rows_data and len(rows_data) >= 2:
                     table_idx += 1
                     headers = tuple(rows_data[0])
                     rows = tuple(tuple(r) for r in rows_data[1:] if any(r))
-                    label = f"HWP Table {table_idx}"
+                    # Use document caption (e.g., "표 29 그러데이션 유형")
+                    caption = _get_table_caption(elem)
+                    label = caption if caption else f"HWP Table {table_idx}"
                     text_repr = f"[{label}] {' | '.join(headers)}" if headers else f"[{label}]"
                     elements.append(DocumentElement(
                         element_type="table",
@@ -999,7 +1014,6 @@ def _parse_hwp_structured(path: Path) -> list:
                         },
                     ))
                 elif rows_data:
-                    # Single-row table: add as text
                     text_buffer.append(" | ".join(rows_data[0]))
 
         _flush_text()
