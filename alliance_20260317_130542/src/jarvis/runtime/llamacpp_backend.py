@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
+from jarvis.runtime.model_router import ModelRouter
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,20 @@ class LlamaCppBackend:
     Uses Ollama's /api/generate endpoint for inference.
     """
 
-    def __init__(self, *, base_url: str = _OLLAMA_BASE) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str = _OLLAMA_BASE,
+        model_router: ModelRouter | None = None,
+        estimated_memory_gb: float = 8.0,
+    ) -> None:
         self._base_url = base_url
         self._model_id: str = ""
         self._context_window: int = 8192
         self._loaded: bool = False
         self._status_detail: str = "not loaded"
+        self._model_router = model_router
+        self._estimated_memory_gb = estimated_memory_gb
 
     @property
     def is_loaded(self) -> bool:
@@ -83,15 +92,24 @@ class LlamaCppBackend:
             logger.info("Model %s already loaded in Ollama.", model_tag)
             return
 
+        if self._model_router is not None:
+            granted = self._model_router.request_load(model_tag, self._estimated_memory_gb)
+            if not granted:
+                raise RuntimeError(f"ModelRouter denied loading Ollama model: {model_tag}")
+
         server_ready, detail = self._ensure_server_ready()
         if not server_ready:
             self._status_detail = detail
+            if self._model_router is not None:
+                self._model_router.release(model_tag)
             raise RuntimeError(detail)
         if not self._check_model_available(model_tag):
             self._status_detail = (
                 f"Ollama server is reachable, but model '{model_tag}' is not available. "
                 f"Run: ollama pull {model_tag}"
             )
+            if self._model_router is not None:
+                self._model_router.release(model_tag)
             raise RuntimeError(self._status_detail)
 
         self._model_id = model_tag
@@ -124,6 +142,8 @@ class LlamaCppBackend:
 
         self._model_id = ""
         self._loaded = False
+        if self._model_router is not None:
+            self._model_router.release(model_id)
         logger.info("Ollama model unloaded: %s", model_id)
 
     def generate(self, prompt: str, context: str, intent: str) -> str:

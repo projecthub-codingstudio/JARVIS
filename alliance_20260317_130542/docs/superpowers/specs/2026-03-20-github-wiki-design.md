@@ -1,5 +1,7 @@
 # GitHub Wiki Design Spec — JARVIS Project
 
+> **Status note (2026-03-25):** This document captures the original wiki design intent. The implemented wiki now documents the current runtime more conservatively: a hybrid planner (`heuristic baseline + lightweight enrichment`) instead of an EXAONE-backed dedicated AI planner, and evidence-gated factual answering instead of stub-backed retrieval behavior.
+
 **Date**: 2026-03-20
 **Purpose**: Create a comprehensive GitHub Wiki for the JARVIS project, targeting external developers and serving as a portfolio/showcase.
 **Language**: English primary + Korean (한국어) section per page

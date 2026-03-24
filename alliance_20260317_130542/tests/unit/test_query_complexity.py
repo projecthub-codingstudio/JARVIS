@@ -1,9 +1,11 @@
 """Tests for query complexity classification."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from jarvis.core.planner import Planner, _classify_query_complexity
+from jarvis.core.planner import Planner, QueryAnalysis, _classify_query_complexity
 
 
 class TestClassifyQueryComplexity:
@@ -53,3 +55,58 @@ class TestClassifyQueryComplexity:
         assert hasattr(planner, "classify_complexity")
         result = planner.classify_complexity("테스트 쿼리입니다")
         assert result in ("simple", "moderate", "complex")
+
+
+class TestPlannerAnalysis:
+    def test_planner_uses_heuristic_baseline(self) -> None:
+        planner = Planner(lightweight_backend=None)
+        analysis = planner.analyze("Reranker 구조 알려줘")
+        assert isinstance(analysis, QueryAnalysis)
+        assert analysis.source == "heuristic"
+        assert "reranker" in analysis.search_terms
+
+    def test_planner_enriches_bilingual_terms(self) -> None:
+        planner = Planner()
+        analysis = planner.analyze("검색 파이프라인 구조 알려줘")
+        assert "검색" in analysis.search_terms
+        assert "search" in analysis.search_terms
+        assert analysis.source == "lightweight"
+
+    def test_planner_preserves_filename_target(self) -> None:
+        planner = Planner()
+        analysis = planner.analyze("runtime_context.py 구조 설명해줘")
+        assert analysis.target_file == "runtime_context.py"
+        assert "runtime" in analysis.search_terms
+
+    def test_planner_falls_back_when_lightweight_fails(self) -> None:
+        class FailingBackend:
+            def analyze(self, raw_text: str, baseline: QueryAnalysis) -> QueryAnalysis | None:
+                raise RuntimeError("boom")
+
+        planner = Planner(lightweight_backend=FailingBackend())
+        analysis = planner.analyze("검색 구조 설명")
+        assert analysis.source == "heuristic"
+
+    def test_planner_restores_spoken_code_query_from_lexicon(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class Pipeline:\n    provider_result = 'ok'\n",
+            encoding="utf-8",
+        )
+        planner = Planner(knowledge_base_path=kb)
+        analysis = planner.analyze("파이프라인점 파이에 있는 프로바이더 리절트 설명해줘")
+        assert analysis.target_file == "pipeline.py"
+        assert "provider_result" in analysis.search_terms
+
+    def test_planner_restores_spoken_python_class_query_from_lexicon(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class Pipeline:\n    def run(self) -> None:\n        pass\n",
+            encoding="utf-8",
+        )
+        planner = Planner(knowledge_base_path=kb)
+        analysis = planner.analyze("다시 파이선 소스인 파이프라인에서 클래스 파이프라인에 대해 설명해 줘")
+        assert analysis.target_file == "pipeline.py"
+        assert "pipeline" in analysis.search_terms

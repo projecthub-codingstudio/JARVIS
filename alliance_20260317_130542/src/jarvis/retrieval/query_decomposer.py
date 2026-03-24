@@ -8,8 +8,10 @@ Extracts structured intent from natural language queries:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from jarvis.contracts import TypedQueryFragment
+from jarvis.query_normalization import normalize_spoken_code_query
 
 _KOREAN_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
 _CODE_RE = re.compile(
@@ -101,13 +103,20 @@ class QueryDecomposer:
     targeted fragments for more precise retrieval.
     """
 
+    def __init__(self, *, knowledge_base_path: Path | None = None) -> None:
+        self._knowledge_base_path = knowledge_base_path
+
     def decompose(self, query: str) -> list[TypedQueryFragment]:
         if not query.strip():
             return []
 
-        language = _detect_language(query)
-        filenames = _extract_filenames(query)
-        keywords = _extract_keywords(query, filenames)
+        normalized_query = normalize_spoken_code_query(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        language = _detect_language(normalized_query)
+        filenames = _extract_filenames(normalized_query)
+        keywords = _extract_keywords(normalized_query, filenames)
 
         fragments: list[TypedQueryFragment] = []
 
@@ -120,13 +129,13 @@ class QueryDecomposer:
 
         # Semantic fragment: full query for vector embedding (captures intent)
         fragments.append(TypedQueryFragment(
-            text=query, language=language, query_type="semantic", weight=0.7,
+            text=normalized_query, language=language, query_type="semantic", weight=0.7,
         ))
 
         # If no keywords were extracted, add full query as keyword too
         if not keywords.strip():
             fragments.append(TypedQueryFragment(
-                text=query, language=language, query_type="keyword", weight=1.0,
+                text=normalized_query, language=language, query_type="keyword", weight=1.0,
             ))
 
         return fragments

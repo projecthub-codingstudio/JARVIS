@@ -28,3 +28,11 @@ class TestLocalTTSRuntime:
         output = tmp_path / "tts.txt"
         runtime.synthesize("router tts", output)
         assert router.active_model is None
+
+    def test_prepare_text_for_say_expands_code_tokens(self) -> None:
+        runtime = LocalTTSRuntime()
+
+        prepared = runtime._prepare_text_for_say("파이프라인 클래스 Pipeline.py 와 ProviderResult 를 설명해줘")
+
+        assert "파이프라인 dot p y" in prepared
+        assert "Provider Result" in prepared

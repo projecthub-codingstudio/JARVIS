@@ -1,10 +1,17 @@
 """Tests for shared runtime context helpers."""
 from __future__ import annotations
 
-from jarvis.app.runtime_context import create_llm_backend, ensure_vector_index_ready
+from pathlib import Path
+
+from jarvis.app.runtime_context import (
+    create_llm_backend,
+    ensure_vector_index_ready,
+    resolve_knowledge_base_path,
+)
 from jarvis.contracts import RuntimeDecision
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricsCollector
+from jarvis.runtime.model_router import ModelRouter
 
 
 def _decision(*, backend: str = "mlx", model_id: str = "qwen3:14b") -> RuntimeDecision:
@@ -46,6 +53,43 @@ class TestCreateLLMBackend:
         assert runtime._model_id == "stub"
         assert "MLX preflight failed" in runtime.status_detail
         assert "Ollama fallback failed" in runtime.status_detail
+
+    def test_tracks_loaded_llm_in_model_router(self, monkeypatch) -> None:
+        class FakeBackend:
+            def __init__(self, *, model_router=None, estimated_memory_gb: float = 0.0) -> None:
+                self.model_id = ""
+                self._model_router = model_router
+                self._estimated_memory_gb = estimated_memory_gb
+
+            def load(self, decision) -> None:
+                assert self._model_router is not None
+                granted = self._model_router.request_load(decision.model_id, self._estimated_memory_gb)
+                assert granted is True
+                self.model_id = decision.model_id
+
+            def unload(self) -> None:
+                if self._model_router is not None and self.model_id:
+                    self._model_router.release(self.model_id)
+                    self.model_id = ""
+
+        monkeypatch.setattr(
+            "jarvis.runtime.mlx_backend.mlx_import_probe",
+            lambda: (True, ""),
+        )
+        monkeypatch.setattr("jarvis.runtime.mlx_backend.MLXBackend", FakeBackend)
+
+        router = ModelRouter(memory_limit_gb=16.0)
+        runtime = create_llm_backend(
+            _decision(model_id="qwen3.5:9b"),
+            model_router=router,
+            metrics=MetricsCollector(),
+            error_monitor=ErrorMonitor(),
+            allow_mlx=True,
+        )
+
+        assert router.active_model == "qwen3.5:9b"
+        runtime.unload()
+        assert router.active_model is None
 
 
 class TestEnsureVectorIndexReady:
@@ -94,3 +138,20 @@ class TestEnsureVectorIndexReady:
         )
 
         assert pipeline.called is False
+
+
+class TestResolveKnowledgeBasePath:
+    def test_prefers_explicit_candidate(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("JARVIS_KNOWLEDGE_BASE", str(tmp_path / "env-kb"))
+        explicit = tmp_path / "explicit-kb"
+        assert resolve_knowledge_base_path(explicit) == explicit.resolve()
+
+    def test_uses_env_override(self, tmp_path: Path, monkeypatch) -> None:
+        env_path = tmp_path / "env-kb"
+        monkeypatch.setenv("JARVIS_KNOWLEDGE_BASE", str(env_path))
+        assert resolve_knowledge_base_path() == env_path.resolve()
+
+    def test_defaults_to_cwd_knowledge_base(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("JARVIS_KNOWLEDGE_BASE", raising=False)
+        monkeypatch.chdir(tmp_path)
+        assert resolve_knowledge_base_path() == (tmp_path / "knowledge_base").resolve()

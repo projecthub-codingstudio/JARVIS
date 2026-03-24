@@ -5,19 +5,19 @@
 ### General
 
 **Q: Can I run JARVIS without Ollama?**
-Yes. MLX is the primary backend and doesn't require Ollama. Ollama is only needed as a fallback if MLX encounters issues with a specific model.
+Yes. MLX is the primary backend and doesn't require Ollama. Ollama is only needed as a fallback if MLX encounters issues with a specific model or format.
 
 **Q: Does JARVIS work completely offline?**
 Yes. All models run locally on Apple Silicon. No internet connection required after initial setup and model download.
 
 **Q: How much memory does JARVIS need?**
-JARVIS is designed for 16GB worst-case memory budget. Models are loaded sequentially (one at a time), so peak usage is ~8-10GB for the largest model (Qwen3-14B Q4). The Governor automatically downgrades to smaller models if memory pressure is detected.
+JARVIS is designed for a 16GB worst-case memory budget. Models are loaded sequentially (one at a time), and the default path uses `qwen3.5:9b`. The Governor automatically downgrades, keeps the balanced tier on the same model family, or escalates to `exaone4.0:32b` only when resources allow it.
 
 **Q: Can I use my own documents?**
-Yes. Place files in the `knowledge_base/` directory. JARVIS automatically indexes them on startup and watches for changes in real-time. Supported: PDF, DOCX, XLSX, HWP, Markdown, code files, and 80+ formats.
+Yes. By default JARVIS indexes `./knowledge_base/` under the current working directory. You can override this with `JARVIS_KNOWLEDGE_BASE=/path/to/kb`. It watches for changes in real-time. Supported: PDF, DOCX, XLSX, HWP, Markdown, code files, and 80+ formats.
 
 **Q: Is JARVIS Korean-only?**
-No. JARVIS is **Korean-first** (optimized for Korean documents and queries) but fully supports English. The AI Planner translates Korean keywords to English for broader search coverage.
+No. JARVIS is **Korean-first** (optimized for Korean documents and queries) but fully supports English. The planner uses a heuristic baseline and lightweight bilingual keyword enrichment for broader search coverage.
 
 **Q: Can I run JARVIS on Intel Mac?**
 No. JARVIS requires Apple Silicon (M1/M2/M3/M4) for MLX and Metal acceleration. Intel Macs are not supported.
@@ -28,15 +28,15 @@ Both use the same `RuntimeContext` and Orchestrator pipeline. The CLI is a termi
 ### Models
 
 **Q: Which model should I use?**
-- **Default (Qwen3-14B)**: Best quality, recommended for most use
-- **Fast (EXAONE-3.5-7.8B)**: Faster responses, lower memory, good for quick queries
-- The Governor automatically selects based on system resources
+- **Default / Fast / Balanced (`qwen3.5:9b`)**: Lowest friction, used by default and across constrained tiers
+- **Deep (`exaone4.0:32b`)**: Used for heavier reasoning only when the Governor allows it
+- The Governor automatically selects the tier based on system resources
 
 **Q: Can I use other models?**
 The `--model` flag accepts Ollama model identifiers. For MLX, models need to be in MLX format. The Governor's model map defines which models map to which tiers.
 
 **Q: How do I download models?**
-For Ollama: `ollama pull qwen3:14b` or `ollama pull exaone3.5:7.8b`. MLX models are loaded through the mlx-lm library.
+For Ollama: `ollama pull qwen3.5:9b` or `ollama pull exaone4.0:32b`. MLX models are loaded through the mlx-lm library.
 
 ### Voice
 
@@ -156,7 +156,7 @@ These are acknowledged limitations in the current release:
 | Voice | Live loop needs polish | Implemented, needs hardening |
 | Voice | Mic device not in menu bar UI | Planned |
 | Retrieval | Citation verification is conservative | Iterating |
-| Runtime | Reranker deferred | Not blocking beta |
+| Runtime | Reranker is optional and may be inactive | Not blocking beta |
 | Environment | Optional parser deps may be missing | Graceful degradation |
 
 For the full list, see [KNOWN_ISSUES_BETA_1.md](https://github.com/projecthub-codingstudio/JARVIS/blob/main/alliance_20260317_130542/docs/KNOWN_ISSUES_BETA_1.md).
