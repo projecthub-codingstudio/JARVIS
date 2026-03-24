@@ -46,10 +46,21 @@ _FILENAME_MATCH_BOOST = 0.20   # document path contains queried filename
 _FILENAME_STEM_BOOST = 0.15    # document stem matches without extension
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
 _ROW_NUMBER_MATCH_BOOST = 0.25  # chunk contains exact row number from query (e.g., Day=9)
+_CODE_SOURCE_BOOST = 0.28
+_NON_CODE_PENALTY = 0.14
+_CLASS_SIGNATURE_BOOST = 0.16
+_FUNCTION_SIGNATURE_BOOST = 0.12
 MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
 
 # Pattern to extract numbers referenced in queries (e.g., "9일차", "day 5", "13일")
 _QUERY_NUMBER_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
+_CLASS_QUERY_RE = re.compile(r"(클래스|class)", re.IGNORECASE)
+_FUNCTION_QUERY_RE = re.compile(r"(함수|메서드|메소드|function|method)", re.IGNORECASE)
+_CODE_QUERY_RE = re.compile(
+    r"(소스|코드|파이(?:썬|선)|python|class|클래스|function|함수|method|메서드|def\s|import\s|\.py\b|source)",
+    re.IGNORECASE,
+)
+_CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".java", ".kt", ".go", ".rs", ".cpp", ".c", ".h"}
 
 
 class EvidenceBuilder:
@@ -75,13 +86,16 @@ class EvidenceBuilder:
             return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
 
         if self._db is None:
-            return self._stub_build(results, fragments)
+            return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
 
         # Extract filename and identifier terms from query for boost scoring
         query_text = " ".join(f.text for f in fragments)
         query_filenames = {m.lower() for m in _FILENAME_RE.findall(query_text)}
         query_filename_stems = {m.lower() for m in _FILENAME_STEM_RE.findall(query_text)}
         query_identifiers = {m for m in _CODE_IDENT_RE.findall(query_text) if len(m) > 4}
+        prefers_code = _looks_like_code_query(query_text)
+        wants_class = bool(_CLASS_QUERY_RE.search(query_text))
+        wants_function = bool(_FUNCTION_QUERY_RE.search(query_text))
 
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
@@ -138,6 +152,11 @@ class EvidenceBuilder:
                     overlap = stem_tokens & query_words
                     if len(overlap) >= 2 and len(overlap) >= len(stem_tokens) * 0.5:
                         boost += _FILENAME_STEM_BOOST
+                if prefers_code:
+                    if _is_code_path(doc.path):
+                        boost += _CODE_SOURCE_BOOST
+                    else:
+                        boost -= _NON_CODE_PENALTY
 
             # Identifier match boost: chunk contains queried code identifier
             chunk_text = chunk_row[0] if chunk_row[0] else ""
@@ -146,6 +165,16 @@ class EvidenceBuilder:
                     if ident in chunk_text:
                         boost += _IDENTIFIER_MATCH_BOOST
                         break  # One boost per chunk
+            if chunk_text and wants_class and any(
+                re.search(rf"\bclass\s+{re.escape(ident)}\b", chunk_text)
+                for ident in query_identifiers
+            ):
+                boost += _CLASS_SIGNATURE_BOOST
+            if chunk_text and wants_function and any(
+                re.search(rf"\b(?:def|function)\s+{re.escape(ident)}\b", chunk_text)
+                for ident in query_identifiers
+            ):
+                boost += _FUNCTION_SIGNATURE_BOOST
 
             # Row number match boost: query mentions a specific number (e.g., "9일차")
             # and chunk contains that exact row (e.g., "Day=9 |")
@@ -207,26 +236,10 @@ class EvidenceBuilder:
             )
         return evidence
 
-    def _stub_build(
-        self,
-        results: Sequence[HybridSearchResult],
-        fragments: Sequence[TypedQueryFragment],
-    ) -> VerifiedEvidenceSet:
-        items: list[EvidenceItem] = []
-        for i, result in enumerate(results, 1):
-            citation = CitationRecord(
-                document_id=result.document_id,
-                chunk_id=result.chunk_id,
-                label=f"[{i}]",
-                state=CitationState.VALID,
-            )
-            items.append(EvidenceItem(
-                chunk_id=result.chunk_id,
-                document_id=result.document_id,
-                text=result.snippet or f"Evidence from {result.document_id}",
-                citation=citation,
-                relevance_score=result.rrf_score,
-            ))
-        return VerifiedEvidenceSet(
-            items=tuple(items), query_fragments=tuple(fragments)
-        )
+
+def _looks_like_code_query(query_text: str) -> bool:
+    return bool(_CODE_QUERY_RE.search(query_text))
+
+
+def _is_code_path(path: str) -> bool:
+    return Path(path).suffix.lower() in _CODE_EXTENSIONS

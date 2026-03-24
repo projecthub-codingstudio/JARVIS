@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from jarvis.contracts import LLMBackendProtocol, RuntimeDecision
+from jarvis.runtime.model_router import ModelRouter
 
 logger = logging.getLogger(__name__)
 _MLX_PROBE_CACHE = Path("/tmp/jarvis_mlx_probe_status.json")
@@ -115,11 +116,19 @@ class MLXBackend:
     Uses mlx-lm for model loading and text generation.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        model_router: ModelRouter | None = None,
+        estimated_memory_gb: float = 8.0,
+    ) -> None:
         self._model: object | None = None
         self._tokenizer: object | None = None
         self._model_id: str = ""
         self._context_window: int = 8192
+        self._model_router = model_router
+        self._estimated_memory_gb = estimated_memory_gb
+        self._router_model_id: str | None = None
 
     @property
     def is_loaded(self) -> bool:
@@ -143,6 +152,11 @@ class MLXBackend:
         if self._model is not None:
             self.unload()
 
+        if self._model_router is not None:
+            granted = self._model_router.request_load(repo_id, self._estimated_memory_gb)
+            if not granted:
+                raise RuntimeError(f"ModelRouter denied loading MLX model: {repo_id}")
+
         logger.info("Loading MLX model: %s", repo_id)
         t0 = time.perf_counter()
 
@@ -162,6 +176,7 @@ class MLXBackend:
 
         elapsed = time.perf_counter() - t0
         self._model_id = repo_id
+        self._router_model_id = repo_id
         self._context_window = decision.context_window
         logger.info("Model loaded in %.1fs: %s", elapsed, repo_id)
 
@@ -176,6 +191,9 @@ class MLXBackend:
         self._model = None
         self._tokenizer = None
         self._model_id = ""
+        if self._model_router is not None and self._router_model_id is not None:
+            self._model_router.release(self._router_model_id)
+        self._router_model_id = None
 
         # Force Metal memory reclaim
         try:

@@ -9,6 +9,7 @@ Backend selection: Qwen3-TTS preferred when available, macOS `say` fallback.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_GB = 2.0
 _QWEN3_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+_CODE_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9]+)?\b")
+_KOREAN_TTS_ALIASES = {
+    "pipeline": "파이프라인",
+}
 
 
 class LocalTTSRuntime:
@@ -103,7 +108,8 @@ class LocalTTSRuntime:
         if binary is None:
             raise RuntimeError("macOS `say` command not found")
 
-        voice = self._select_voice(text)
+        prepared_text = self._prepare_text_for_say(text)
+        voice = self._select_voice(prepared_text)
 
         if self._model_router is not None:
             granted = self._model_router.request_load("tts-local", self._estimated_memory_gb)
@@ -116,7 +122,7 @@ class LocalTTSRuntime:
                 "-v", voice,
                 "-r", str(self._persona.macos_rate),
                 "-o", str(output_path),
-                text,
+                prepared_text,
             ]
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=120, check=False,
@@ -130,6 +136,29 @@ class LocalTTSRuntime:
             raise RuntimeError(f"TTS synthesis failed: {stderr}")
 
         return output_path
+
+    def _prepare_text_for_say(self, text: str) -> str:
+        def replace_code_token(match: re.Match[str]) -> str:
+            token = match.group(0)
+            if any(char.isdigit() for char in token):
+                return token
+            if "." in token:
+                stem, suffix = token.rsplit(".", 1)
+                return f"{self._expand_identifier(stem)} dot {' '.join(suffix)}"
+            return self._expand_identifier(token)
+
+        return _CODE_TOKEN_RE.sub(replace_code_token, text)
+
+    @staticmethod
+    def _expand_identifier(token: str) -> str:
+        alias = _KOREAN_TTS_ALIASES.get(token.lower())
+        if alias is not None:
+            return alias
+        expanded = token.replace("_", " ")
+        expanded = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", expanded)
+        if token.isupper() and len(token) <= 5:
+            return " ".join(token)
+        return expanded
 
 
 # --- Qwen3-TTS Backend ---

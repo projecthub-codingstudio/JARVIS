@@ -7,7 +7,10 @@ import pytest
 
 from jarvis.contracts import (
     AnswerDraft,
+    CitationRecord,
+    CitationState,
     ConversationTurn,
+    EvidenceItem,
     VerifiedEvidenceSet,
 )
 from jarvis.core.governor import GovernorStub
@@ -15,8 +18,6 @@ from jarvis.core.orchestrator import Orchestrator
 from jarvis.core.tool_registry import ToolRegistry
 from jarvis.memory.conversation_store import ConversationStore
 from jarvis.memory.task_log import TaskLogStore
-from jarvis.retrieval.evidence_builder import EvidenceBuilder
-from jarvis.retrieval.fts_index import FTSIndex
 from jarvis.retrieval.hybrid_search import HybridSearch
 from jarvis.retrieval.query_decomposer import QueryDecomposer
 from jarvis.retrieval.vector_index import VectorIndex
@@ -53,6 +54,33 @@ class FakeStreamingWithThink:
         yield " thinking."
 
 
+def make_evidence() -> VerifiedEvidenceSet:
+    item = EvidenceItem(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        text="streaming evidence",
+        citation=CitationRecord(
+            document_id="doc-1",
+            chunk_id="chunk-1",
+            label="[1]",
+            state=CitationState.VALID,
+        ),
+        relevance_score=1.0,
+        source_path="/tmp/doc.md",
+    )
+    return VerifiedEvidenceSet(items=(item,), query_fragments=())
+
+
+class StaticEvidenceBuilder:
+    def build(self, results, fragments) -> VerifiedEvidenceSet:
+        return VerifiedEvidenceSet(items=make_evidence().items, query_fragments=tuple(fragments))
+
+
+class StaticFTSRetriever:
+    def search(self, fragments, top_k: int = 10):
+        return []
+
+
 class TestMLXRuntimeStream:
     def test_generate_stream_yields_tokens_then_answer(self) -> None:
         runtime = MLXRuntime(backend=FakeStreamingBackend())
@@ -63,18 +91,9 @@ class TestMLXRuntimeStream:
         assert len(items) == 1
         assert isinstance(items[0], AnswerDraft)
 
-    def test_generate_stream_with_stub_evidence(self) -> None:
-        """Stub FTSIndex provides evidence, streaming should yield tokens."""
+    def test_generate_stream_with_explicit_evidence(self) -> None:
         runtime = MLXRuntime(backend=FakeStreamingBackend())
-        fts = FTSIndex()  # stub mode
-        from jarvis.contracts import TypedQueryFragment
-        frags = [TypedQueryFragment(text="test", language="en", query_type="keyword")]
-        hits = fts.search(frags)
-
-        fusion = HybridSearch()
-        hybrid = fusion.fuse(hits, [])
-        evidence_builder = EvidenceBuilder()
-        evidence = evidence_builder.build(hybrid, frags)
+        evidence = make_evidence()
 
         tokens: list[str] = []
         answer: AnswerDraft | None = None
@@ -91,14 +110,7 @@ class TestMLXRuntimeStream:
     def test_generate_stream_filters_think_tags(self) -> None:
         """Think tags should be suppressed in streaming output."""
         runtime = MLXRuntime(backend=FakeStreamingWithThink())
-        fts = FTSIndex()
-        from jarvis.contracts import TypedQueryFragment
-        frags = [TypedQueryFragment(text="test", language="en", query_type="keyword")]
-        hits = fts.search(frags)
-        fusion = HybridSearch()
-        hybrid = fusion.fuse(hits, [])
-        evidence_builder = EvidenceBuilder()
-        evidence = evidence_builder.build(hybrid, frags)
+        evidence = make_evidence()
 
         tokens: list[str] = []
         for item in runtime.generate_stream("test", evidence):
@@ -117,10 +129,10 @@ class TestOrchestratorStream:
         return Orchestrator(
             governor=GovernorStub(),
             query_decomposer=QueryDecomposer(),
-            fts_retriever=FTSIndex(),
+            fts_retriever=StaticFTSRetriever(),
             vector_retriever=VectorIndex(),
             hybrid_fusion=HybridSearch(),
-            evidence_builder=EvidenceBuilder(),
+            evidence_builder=StaticEvidenceBuilder(),
             llm_generator=MLXRuntime(backend=FakeStreamingBackend()),
             tool_registry=ToolRegistry(),
             conversation_store=ConversationStore(),

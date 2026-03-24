@@ -42,6 +42,9 @@ final class NativeAudioRecorder: @unchecked Sendable {
     /// Set this to feed audio to the Python wake word detector.
     var onWakeWordAudioChunk: ((Data) -> Void)?
 
+    /// Callback for live partial speech recognition while recording.
+    var onLiveAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     /// Cached downsample ratio (native rate / 16000), set during activate()
     private var _wakeDownsampleRatio: Int = 3  // default 48kHz/16kHz
 
@@ -150,6 +153,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
         totalFramesWritten = 0
         onVadStateChanged = nil
         onGuidanceMessage = nil
+        onLiveAudioBuffer = nil
         audioFile = nil  // closes the WAV file
 
         guard let url = outputURL, let cont = recordingContinuation else { return }
@@ -261,6 +265,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
         // --- Recording mode ---
         guard isWriting, let file = audioFile else { return }
+        onLiveAudioBuffer?(buffer)
 
         // --- VAD ---
         var sumSquares: Float = 0

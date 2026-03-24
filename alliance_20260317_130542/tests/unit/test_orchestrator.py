@@ -1,20 +1,20 @@
 """Tests for Orchestrator."""
 from __future__ import annotations
 
+import sqlite3
 from typing import Sequence
 
 import pytest
 
 from jarvis.contracts import (
     AnswerDraft,
+    CitationRecord,
+    CitationState,
     ConversationTurn,
+    EvidenceItem,
     GovernorMode,
-    HybridSearchResult,
-    SearchHit,
     TaskLogEntry,
     TaskStatus,
-    TypedQueryFragment,
-    VectorHit,
     VerifiedEvidenceSet,
 )
 from jarvis.core.governor import GovernorStub
@@ -22,24 +22,55 @@ from jarvis.core.orchestrator import Orchestrator
 from jarvis.core.tool_registry import ToolRegistry
 from jarvis.memory.conversation_store import ConversationStore
 from jarvis.memory.task_log import TaskLogStore
-from jarvis.retrieval.evidence_builder import EvidenceBuilder
-from jarvis.retrieval.fts_index import FTSIndex
 from jarvis.retrieval.hybrid_search import HybridSearch
 from jarvis.retrieval.query_decomposer import QueryDecomposer
 from jarvis.retrieval.vector_index import VectorIndex
 from jarvis.runtime.mlx_runtime import MLXRuntime
 
 
+class StaticEvidenceBuilder:
+    def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
+        item = EvidenceItem(
+            chunk_id="chunk-1",
+            document_id="doc-1",
+            text="JARVIS architecture evidence",
+            citation=CitationRecord(
+                document_id="doc-1",
+                chunk_id="chunk-1",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=1.0,
+            source_path="/tmp/doc.md",
+        )
+        return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
+
+
+class EmptyEvidenceBuilder:
+    def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
+        return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
+
+
+class StaticFTSRetriever:
+    def search(self, fragments: Sequence[object], top_k: int = 10) -> list[object]:
+        return []
+
+
+class DbBackedFTSRetriever(StaticFTSRetriever):
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self._db = db
+
+
 @pytest.fixture
 def orchestrator() -> Orchestrator:
-    """Orchestrator with all stub/in-memory dependencies."""
+    """Orchestrator with explicit positive-path evidence dependencies."""
     return Orchestrator(
         governor=GovernorStub(),
         query_decomposer=QueryDecomposer(),
-        fts_retriever=FTSIndex(),
+        fts_retriever=StaticFTSRetriever(),
         vector_retriever=VectorIndex(),
         hybrid_fusion=HybridSearch(),
-        evidence_builder=EvidenceBuilder(),
+        evidence_builder=StaticEvidenceBuilder(),
         llm_generator=MLXRuntime(),
         tool_registry=ToolRegistry(),
         conversation_store=ConversationStore(),
@@ -56,7 +87,6 @@ class TestOrchestratorHandleTurn:
 
     def test_has_evidence_when_results_found(self, orchestrator: Orchestrator) -> None:
         turn = orchestrator.handle_turn("검색 테스트")
-        # Stubs always return results, so evidence should exist
         assert turn.has_evidence is True
 
     def test_answer_contains_citations(self, orchestrator: Orchestrator) -> None:
@@ -96,10 +126,10 @@ class TestOrchestratorGovernor:
         orch = Orchestrator(
             governor=DeniedGovernor(),
             query_decomposer=QueryDecomposer(),
-            fts_retriever=FTSIndex(),
+            fts_retriever=StaticFTSRetriever(),
             vector_retriever=VectorIndex(),
             hybrid_fusion=HybridSearch(),
-            evidence_builder=EvidenceBuilder(),
+            evidence_builder=StaticEvidenceBuilder(),
             llm_generator=MLXRuntime(),
             tool_registry=ToolRegistry(),
             conversation_store=ConversationStore(),
@@ -116,10 +146,10 @@ class TestOrchestratorEmptyEvidence:
         orch = Orchestrator(
             governor=GovernorStub(),
             query_decomposer=QueryDecomposer(),
-            fts_retriever=FTSIndex(),
+            fts_retriever=StaticFTSRetriever(),
             vector_retriever=VectorIndex(),
             hybrid_fusion=HybridSearch(),
-            evidence_builder=EvidenceBuilder(),
+            evidence_builder=EmptyEvidenceBuilder(),
             llm_generator=MLXRuntime(),
             tool_registry=ToolRegistry(),
             conversation_store=ConversationStore(),
@@ -134,10 +164,10 @@ class TestOrchestratorSafety:
         orch = Orchestrator(
             governor=GovernorStub(),
             query_decomposer=QueryDecomposer(),
-            fts_retriever=FTSIndex(),
+            fts_retriever=StaticFTSRetriever(),
             vector_retriever=VectorIndex(),
             hybrid_fusion=HybridSearch(),
-            evidence_builder=EvidenceBuilder(),
+            evidence_builder=StaticEvidenceBuilder(),
             llm_generator=MLXRuntime(),
             tool_registry=ToolRegistry(),
             conversation_store=ConversationStore(),
@@ -148,3 +178,127 @@ class TestOrchestratorSafety:
 
         assert turn.has_evidence is False
         assert "안전 정책" in turn.assistant_output or "파괴적" in turn.assistant_output
+
+
+class TestOrchestratorTargetedSearch:
+    def test_targeted_file_search_boosts_class_signature_hits(self) -> None:
+        db = sqlite3.connect(":memory:")
+        db.execute(
+            "CREATE TABLE documents (document_id TEXT PRIMARY KEY, path TEXT, indexing_status TEXT)"
+        )
+        db.execute(
+            "CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, document_id TEXT, text TEXT)"
+        )
+        db.execute(
+            "INSERT INTO documents (document_id, path, indexing_status) VALUES (?, ?, ?)",
+            ("doc-code", "/tmp/pipeline.py", "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO documents (document_id, path, indexing_status) VALUES (?, ?, ?)",
+            ("doc-pdf", "/tmp/csharp.pdf", "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text) VALUES (?, ?, ?)",
+            ("chunk-code", "doc-code", "class Pipeline:\n    def run(self):\n        pass\n"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text) VALUES (?, ?, ?)",
+            ("chunk-pdf", "doc-pdf", "Pipeline 클래스는 전체 처리 흐름을 설명하는 문서입니다."),
+        )
+        db.commit()
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=DbBackedFTSRetriever(db),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=StaticEvidenceBuilder(),
+            llm_generator=MLXRuntime(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        fragments = QueryDecomposer().decompose("PIPELINE.py 소스에서 PIPELINE CLASS에 대해 설명해 줘")
+        hits = orch._targeted_file_search("PIPELINE.py 소스에서 PIPELINE CLASS에 대해 설명해 줘", fragments)
+
+        assert hits
+        assert hits[0].document_id == "doc-code"
+        assert hits[0].chunk_id == "chunk-code"
+
+    def test_explicit_file_scoped_query_filters_non_target_documents(self) -> None:
+        db = sqlite3.connect(":memory:")
+        db.execute(
+            "CREATE TABLE documents (document_id TEXT PRIMARY KEY, path TEXT, indexing_status TEXT)"
+        )
+        db.execute(
+            "CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, document_id TEXT, text TEXT)"
+        )
+        db.execute(
+            "INSERT INTO documents (document_id, path, indexing_status) VALUES (?, ?, ?)",
+            ("doc-code", "/tmp/pipeline.py", "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO documents (document_id, path, indexing_status) VALUES (?, ?, ?)",
+            ("doc-pdf", "/tmp/csharp.pdf", "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text) VALUES (?, ?, ?)",
+            ("chunk-code", "doc-code", "class Pipeline:\n    def run(self):\n        pass\n"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text) VALUES (?, ?, ?)",
+            ("chunk-pdf", "doc-pdf", "Pipeline 클래스 설명 문서"),
+        )
+        db.commit()
+
+        class StaticVectorRetriever:
+            def search(self, fragments: Sequence[object], top_k: int = 10) -> list[object]:
+                from jarvis.contracts import SearchHit
+                return [SearchHit(
+                    chunk_id="chunk-pdf",
+                    document_id="doc-pdf",
+                    score=9.0,
+                    snippet="Pipeline 클래스 설명 문서",
+                )]
+
+        class CapturingEvidenceBuilder:
+            def __init__(self) -> None:
+                self.last_document_ids: list[str] = []
+
+            def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
+                self.last_document_ids = [getattr(item, "document_id", "") for item in results]
+                item = EvidenceItem(
+                    chunk_id="chunk-code",
+                    document_id="doc-code",
+                    text="class Pipeline:\n    pass",
+                    citation=CitationRecord(
+                        document_id="doc-code",
+                        chunk_id="chunk-code",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=1.0,
+                    source_path="/tmp/pipeline.py",
+                )
+                return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
+
+        evidence_builder = CapturingEvidenceBuilder()
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=DbBackedFTSRetriever(db),
+            vector_retriever=StaticVectorRetriever(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=evidence_builder,
+            llm_generator=MLXRuntime(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        orch.handle_turn("pipeline.py 소스에서 pipeline 클래스 설명해 줘")
+
+        assert evidence_builder.last_document_ids
+        assert set(evidence_builder.last_document_ids) == {"doc-code"}

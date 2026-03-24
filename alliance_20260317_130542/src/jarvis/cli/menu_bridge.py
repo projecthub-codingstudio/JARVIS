@@ -12,7 +12,11 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from jarvis.app.runtime_context import build_runtime_context, shutdown_runtime_context
+from jarvis.app.runtime_context import (
+    build_runtime_context,
+    resolve_knowledge_base_path,
+    shutdown_runtime_context,
+)
 from jarvis.cli.voice_session import VoiceSession
 from jarvis.contracts import (
     AnswerDraft,
@@ -22,10 +26,13 @@ from jarvis.contracts import (
     EvidenceItem,
     VerifiedEvidenceSet,
 )
+from jarvis.identifier_restoration import build_identifier_lexicon, score_identifier_candidates
+from jarvis.query_normalization import normalize_spoken_code_query
 
 from jarvis.runtime.audio_recorder import AudioRecorder
 from jarvis.observability.health import check_health
 from jarvis.observability.logging import configure_logging
+from jarvis.runtime.stt_biasing import build_vocabulary_hint
 from jarvis.runtime.stt_runtime import WhisperCppSTT
 from jarvis.runtime.tts_runtime import LocalTTSRuntime
 from jarvis.tools.draft_export import DraftExportTool
@@ -33,6 +40,7 @@ from jarvis.tools.draft_export import DraftExportTool
 _MAX_QUOTE_CHARS = 160
 _MAX_DISPLAY_CHARS = 500
 _RESPONSE_DIR = Path(tempfile.gettempdir()) / "jarvis_responses"
+_TTS_DIR = Path(tempfile.gettempdir()) / "jarvis_tts"
 
 
 def _detect_source_type(path: str) -> str:
@@ -81,12 +89,44 @@ class MenuBarStatus:
 
 
 @dataclass(frozen=True)
+class MenuBarRenderHints:
+    response_type: str
+    primary_source_type: str
+    source_profile: str
+    interaction_mode: str
+    citation_count: int
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class MenuBarExplorationItem:
+    label: str
+    kind: str
+    path: str
+    score: float
+    preview: str = ""
+
+
+@dataclass(frozen=True)
+class MenuBarExplorationState:
+    mode: str
+    target_file: str = ""
+    target_document: str = ""
+    file_candidates: list[MenuBarExplorationItem] = field(default_factory=list)
+    document_candidates: list[MenuBarExplorationItem] = field(default_factory=list)
+    class_candidates: list[MenuBarExplorationItem] = field(default_factory=list)
+    function_candidates: list[MenuBarExplorationItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class MenuBarResponse:
     query: str
     response: str
     has_evidence: bool
     citations: list[MenuBarCitation] = field(default_factory=list)
     status: MenuBarStatus | None = None
+    render_hints: MenuBarRenderHints | None = None
+    exploration: MenuBarExplorationState | None = None
     full_response_path: str = ""
 
 
@@ -104,11 +144,24 @@ class MenuBarTranscriptionResponse:
 
 
 @dataclass(frozen=True)
+class MenuBarSpeechResponse:
+    audio_path: str
+
+
+@dataclass(frozen=True)
+class MenuBarNormalizationResponse:
+    normalized_query: str
+
+
+@dataclass(frozen=True)
 class MenuBarCommandEnvelope:
     kind: str
     query_result: MenuBarResponse | None = None
+    navigation_result: MenuBarExplorationState | None = None
+    normalization_result: MenuBarNormalizationResponse | None = None
     export_result: MenuBarExportResponse | None = None
     transcription_result: MenuBarTranscriptionResponse | None = None
+    speech_result: MenuBarSpeechResponse | None = None
     health_result: dict[str, object] | None = None
     error: str = ""
 
@@ -122,6 +175,7 @@ def build_menu_response(
     generation_blocked: bool,
     write_blocked: bool,
     rebuild_index_required: bool,
+    knowledge_base_path: Path | None = None,
 ) -> MenuBarResponse:
     """Serialize a completed turn into a menu bar-friendly payload."""
     citations: list[MenuBarCitation] = []
@@ -154,6 +208,40 @@ def build_menu_response(
         full_response_path = str(response_file)
         display_text = full_text[:_MAX_DISPLAY_CHARS] + " ...more"
 
+    citation_count = len(citations)
+    source_types = {citation.source_type for citation in citations}
+    if not source_types:
+        primary_source_type = "none"
+        source_profile = "none"
+    elif len(source_types) == 1:
+        primary_source_type = next(iter(source_types))
+        source_profile = primary_source_type
+    else:
+        primary_source_type = "mixed"
+        source_profile = "mixed"
+
+    if mode in {"safe_mode", "degraded", "resource_blocked"}:
+        response_type = "runtime_status"
+    elif mode == "no_evidence":
+        response_type = "no_evidence"
+    elif citation_count > 0 and primary_source_type == "code":
+        response_type = "grounded_code_answer"
+    elif citation_count > 0:
+        response_type = "grounded_document_answer"
+    else:
+        response_type = "plain_answer"
+
+    interaction_mode = _detect_interaction_mode(
+        query=turn.user_input,
+        response_type=response_type,
+        primary_source_type=primary_source_type,
+    )
+    exploration = _build_exploration_state(
+        query=turn.user_input,
+        interaction_mode=interaction_mode,
+        knowledge_base_path=knowledge_base_path,
+    )
+
     return MenuBarResponse(
         query=turn.user_input,
         response=display_text,
@@ -167,8 +255,165 @@ def build_menu_response(
             write_blocked=write_blocked,
             rebuild_index_required=rebuild_index_required,
         ),
+        render_hints=MenuBarRenderHints(
+            response_type=response_type,
+            primary_source_type=primary_source_type,
+            source_profile=source_profile,
+            interaction_mode=interaction_mode,
+            citation_count=citation_count,
+            truncated=bool(full_response_path),
+        ),
+        exploration=exploration,
         full_response_path=full_response_path,
     )
+
+
+def _detect_interaction_mode(*, query: str, response_type: str, primary_source_type: str) -> str:
+    lowered = query.lower()
+    code_markers = (
+        "소스", "코드", "클래스", "함수", "메서드", "메소드", "python", "class", "function", "method",
+        ".py", ".ts", ".js", ".tsx", ".jsx", "import ", "def ",
+    )
+    document_markers = (
+        "문서", "pdf", "ppt", "pptx", "doc", "docx", "보고서", "매뉴얼", "가이드", "요약", "정리",
+    )
+    if primary_source_type == "code" or response_type == "grounded_code_answer":
+        return "source_exploration"
+    if any(marker in lowered for marker in code_markers):
+        return "source_exploration"
+    if primary_source_type == "document" or response_type == "grounded_document_answer":
+        return "document_exploration"
+    if any(marker in lowered for marker in document_markers):
+        return "document_exploration"
+    return "general_query"
+
+
+def _build_exploration_state(
+    *,
+    query: str,
+    interaction_mode: str,
+    knowledge_base_path: Path | None,
+) -> MenuBarExplorationState | None:
+    if interaction_mode == "document_exploration":
+        return _build_document_exploration_state(query=query, knowledge_base_path=knowledge_base_path)
+    if interaction_mode != "source_exploration":
+        return None
+    lexicon = build_identifier_lexicon(knowledge_base_path)
+    if not lexicon:
+        return MenuBarExplorationState(mode=interaction_mode)
+    entries_by_key = {(entry.canonical, entry.kind): entry for entry in lexicon}
+    scored = score_identifier_candidates(query, lexicon, limit=8)
+
+    files: list[MenuBarExplorationItem] = []
+    classes: list[MenuBarExplorationItem] = []
+    functions: list[MenuBarExplorationItem] = []
+    target_file = ""
+    for candidate in scored:
+        entry = entries_by_key.get((candidate.canonical, candidate.kind))
+        if entry is None:
+            continue
+        item = MenuBarExplorationItem(
+            label=entry.canonical,
+            kind=entry.kind,
+            path=entry.path,
+            score=round(candidate.score, 3),
+            preview=_preview_for_entry(entry, knowledge_base_path),
+        )
+        if entry.kind == "filename":
+            files.append(item)
+            if not target_file and entry.canonical.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".sql")):
+                target_file = entry.canonical
+        elif entry.kind == "class":
+            classes.append(item)
+        elif entry.kind == "function":
+            functions.append(item)
+    return MenuBarExplorationState(
+        mode=interaction_mode,
+        target_file=target_file,
+        file_candidates=files[:4],
+        class_candidates=classes[:4],
+        function_candidates=functions[:4],
+    )
+
+
+def _build_document_exploration_state(
+    *,
+    query: str,
+    knowledge_base_path: Path | None,
+) -> MenuBarExplorationState | None:
+    if knowledge_base_path is None or not knowledge_base_path.exists():
+        return MenuBarExplorationState(mode="document_exploration")
+
+    query_words = {
+        word.lower() for word in query.replace("/", " ").replace("-", " ").split()
+        if len(word) > 1
+    }
+    candidates: list[MenuBarExplorationItem] = []
+    document_exts = {".pdf", ".md", ".txt", ".docx", ".pptx", ".xlsx", ".hwp", ".hwpx"}
+    for path in sorted(knowledge_base_path.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in document_exts:
+            continue
+        score = 0.2
+        name = path.name.lower()
+        stem_words = set(path.stem.lower().replace("-", " ").replace("_", " ").split())
+        overlap = query_words & (stem_words | {name})
+        score += min(0.6, len(overlap) * 0.18)
+        preview = _preview_document(path)
+        candidates.append(MenuBarExplorationItem(
+            label=path.name,
+            kind="document",
+            path=path.relative_to(knowledge_base_path).as_posix(),
+            score=round(score, 3),
+            preview=preview,
+        ))
+    ranked = sorted(candidates, key=lambda item: (item.score, item.label), reverse=True)[:4]
+    target_document = ranked[0].label if ranked else ""
+    return MenuBarExplorationState(
+        mode="document_exploration",
+        target_document=target_document,
+        document_candidates=ranked,
+    )
+
+
+def _preview_for_entry(entry: object, knowledge_base_path: Path | None) -> str:
+    if knowledge_base_path is None or not getattr(entry, "path", ""):
+        return ""
+    file_path = knowledge_base_path / entry.path
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+    if getattr(entry, "kind", "") == "filename":
+        lines = text.splitlines()
+        return "\n".join(lines[:18]).strip()[:1200]
+
+    canonical = getattr(entry, "canonical", "")
+    if getattr(entry, "kind", "") == "class":
+        pattern = rf"^\s*class\s+{canonical}\b.*$"
+    elif getattr(entry, "kind", "") == "function":
+        pattern = rf"^\s*def\s+{canonical}\b.*$"
+    else:
+        pattern = rf"\b{canonical}\b"
+
+    match = __import__("re").search(pattern, text, __import__("re").MULTILINE)
+    if match is None:
+        return ""
+    before = text[:match.start()].splitlines()
+    after = text[match.start():].splitlines()
+    start_line = max(0, len(before))
+    lines = text.splitlines()
+    preview_lines = lines[start_line:start_line + 18]
+    return "\n".join(preview_lines).strip()[:1200]
+
+
+def _preview_document(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines[:18])[:1200]
 
 
 def _build_context(*, model_id: str):
@@ -181,6 +426,11 @@ def _build_context(*, model_id: str):
     )
 
 
+def _resolve_bridge_knowledge_base_path() -> Path | None:
+    path = resolve_knowledge_base_path(None)
+    return path if path.exists() else None
+
+
 def _response_from_context(*, context: object, turn: ConversationTurn) -> MenuBarResponse:
     answer = context.orchestrator.last_answer
     return build_menu_response(
@@ -191,6 +441,31 @@ def _response_from_context(*, context: object, turn: ConversationTurn) -> MenuBa
         generation_blocked=context.error_monitor.generation_blocked,
         write_blocked=context.error_monitor.write_blocked,
         rebuild_index_required=context.error_monitor.rebuild_index_required,
+        knowledge_base_path=context.knowledge_base_path,
+    )
+
+
+def _build_navigation_window(*, query: str, model_id: str) -> MenuBarExplorationState:
+    del model_id
+    interaction_mode = _detect_interaction_mode(
+        query=query,
+        response_type="plain_answer",
+        primary_source_type="none",
+    )
+    exploration = _build_exploration_state(
+        query=query,
+        interaction_mode=interaction_mode,
+        knowledge_base_path=_resolve_bridge_knowledge_base_path(),
+    )
+    return exploration or MenuBarExplorationState(mode=interaction_mode)
+
+
+def _normalize_query(*, query: str) -> MenuBarNormalizationResponse:
+    return MenuBarNormalizationResponse(
+        normalized_query=normalize_spoken_code_query(
+            query,
+            knowledge_base_path=_resolve_bridge_knowledge_base_path(),
+        )
     )
 
 
@@ -213,9 +488,10 @@ def _record_once(*, model_id: str, device: str | None = None) -> MenuBarResponse
                 else None
             ),
             model_router=context.model_router,
+            vocabulary_hint=build_vocabulary_hint(context.knowledge_base_path),
         )
         tts_runtime = LocalTTSRuntime(
-            voice=__import__("os").getenv("JARVIS_TTS_VOICE", "Sora"),
+            voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
             model_router=context.model_router,
         )
         recorder = AudioRecorder(
@@ -244,6 +520,7 @@ def _transcribe_once(*, model_id: str, device: str | None = None) -> MenuBarTran
                 else None
             ),
             model_router=context.model_router,
+            vocabulary_hint=build_vocabulary_hint(context.knowledge_base_path),
         )
         recorder = AudioRecorder(
             input_device=device,
@@ -278,6 +555,20 @@ def _transcribe_file(*, audio_path: str) -> MenuBarTranscriptionResponse:
     return MenuBarTranscriptionResponse(transcript=transcript)
 
 
+def _synthesize_speech(*, text: str) -> MenuBarSpeechResponse:
+    clean_text = text.strip()
+    if not clean_text:
+        raise RuntimeError("음성 합성할 텍스트가 비어 있습니다.")
+
+    tts_runtime = LocalTTSRuntime(
+        voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
+    )
+    _TTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = _TTS_DIR / f"speech_{int(time.time() * 1000)}.aiff"
+    result = tts_runtime.synthesize(clean_text, output_path)
+    return MenuBarSpeechResponse(audio_path=str(result))
+
+
 def _record_once_in_context(*, context: object, device: str | None = None) -> MenuBarResponse:
     stt_runtime = WhisperCppSTT(
         model_path=(
@@ -286,9 +577,10 @@ def _record_once_in_context(*, context: object, device: str | None = None) -> Me
             else None
         ),
         model_router=context.model_router,
+        vocabulary_hint=build_vocabulary_hint(context.knowledge_base_path),
     )
     tts_runtime = LocalTTSRuntime(
-        voice=__import__("os").getenv("JARVIS_TTS_VOICE", "Sora"),
+        voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
         model_router=context.model_router,
     )
     recorder = AudioRecorder(
@@ -314,6 +606,7 @@ def _record_once_stream_in_context(*, context: object, device: str | None = None
             else None
         ),
         model_router=context.model_router,
+        vocabulary_hint=build_vocabulary_hint(context.knowledge_base_path),
     )
     recorder = AudioRecorder(
         input_device=device,
@@ -407,6 +700,7 @@ def _health_payload(*, context: object) -> dict[str, object]:
         "llm_generator": context.orchestrator._llm_generator,
         "embedding_runtime": context.vector_index._embedding_runtime,
         "vector_index": context.vector_index,
+        "reranker": context.orchestrator._reranker,
         "file_watcher": context.watcher,
         "governor": context.governor,
     }
@@ -449,7 +743,7 @@ def _health_light() -> dict[str, object]:
     from jarvis.app.config import JarvisConfig
     from jarvis.retrieval.vector_index import VectorIndex
 
-    kb_path = Path("/Users/codingstudio/__PROJECTHUB__/JARVIS/knowledge_base")
+    kb_path = resolve_knowledge_base_path()
     data_dir = Path.cwd() / ".jarvis-menubar"
     config = JarvisConfig(
         data_dir=data_dir,
@@ -516,9 +810,30 @@ def _health_light() -> dict[str, object]:
     checks["model"] = False
     details["model"] = "not checked (lightweight mode)"
 
-    # Embeddings — probe without loading
-    checks["embeddings"] = chunk_count > 0
-    details["embeddings"] = f"{chunk_count} chunks indexed" if chunk_count > 0 else "no chunks"
+    # Embeddings / reranker — probe dependency availability without loading
+    try:
+        from jarvis.runtime.embedding_runtime import EmbeddingRuntime
+
+        emb = EmbeddingRuntime()
+        embedding_available = emb._check_available()
+        checks["embeddings"] = embedding_available
+        details["embeddings"] = (
+            f"ready ({chunk_count} chunks indexed)" if embedding_available else "disabled (sentence-transformers unavailable)"
+        )
+    except Exception:
+        checks["embeddings"] = False
+        details["embeddings"] = "disabled (embedding probe failed)"
+
+    try:
+        from jarvis.retrieval.reranker import Reranker
+
+        reranker = Reranker()
+        reranker_available = reranker._check_available()
+        checks["reranker"] = reranker_available
+        details["reranker"] = "ready (lazy-loaded)" if reranker_available else "disabled (cross-encoder unavailable)"
+    except Exception:
+        checks["reranker"] = False
+        details["reranker"] = "disabled (reranker probe failed)"
 
     # Governor — lightweight, skip
     checks["governor"] = True
@@ -575,6 +890,28 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
             kind="transcription_result",
             transcription_result=_transcribe_file(
                 audio_path=str(payload["audio"]),
+            ),
+        )
+    if command == "navigation-window":
+        return MenuBarCommandEnvelope(
+            kind="navigation_result",
+            navigation_result=_build_navigation_window(
+                query=str(payload["query"]),
+                model_id=str(payload.get("model", "qwen3.5:9b")),
+            ),
+        )
+    if command == "normalize-query":
+        return MenuBarCommandEnvelope(
+            kind="normalization_result",
+            normalization_result=_normalize_query(
+                query=str(payload["query"]),
+            ),
+        )
+    if command == "synthesize-speech":
+        return MenuBarCommandEnvelope(
+            kind="speech_result",
+            speech_result=_synthesize_speech(
+                text=str(payload["text"]),
             ),
         )
     if command == "export-draft":
@@ -659,6 +996,28 @@ def _run_server(model_id: str) -> int:
                         kind="transcription_result",
                         transcription_result=_transcribe_file(
                             audio_path=str(payload["audio"]),
+                        ),
+                    )
+                elif command == "navigation-window":
+                    envelope = MenuBarCommandEnvelope(
+                        kind="navigation_result",
+                        navigation_result=_build_navigation_window(
+                            query=str(payload["query"]),
+                            model_id=str(payload.get("model", model_id)),
+                        ),
+                    )
+                elif command == "normalize-query":
+                    envelope = MenuBarCommandEnvelope(
+                        kind="normalization_result",
+                        normalization_result=_normalize_query(
+                            query=str(payload["query"]),
+                        ),
+                    )
+                elif command == "synthesize-speech":
+                    envelope = MenuBarCommandEnvelope(
+                        kind="speech_result",
+                        speech_result=_synthesize_speech(
+                            text=str(payload["text"]),
                         ),
                     )
                 elif command == "export-draft":
@@ -754,6 +1113,11 @@ def main(argv: list[str] | None = None) -> int:
 
     transcribe_file_parser = subparsers.add_parser("transcribe-file", help="Transcribe a pre-recorded audio file")
     transcribe_file_parser.add_argument("--audio", required=True, help="Path to WAV audio file")
+    navigation_parser = subparsers.add_parser("navigation-window", help="Return exploration candidates for a query")
+    navigation_parser.add_argument("--query", required=True, help="Query to analyze for navigation assistance")
+    navigation_parser.add_argument("--model", default="qwen3.5:9b", help="Override default model")
+    normalize_parser = subparsers.add_parser("normalize-query", help="Normalize a spoken code query")
+    normalize_parser.add_argument("--query", required=True, help="Query to normalize")
 
     export_parser = subparsers.add_parser("export-draft", help="Export the current draft")
     export_parser.add_argument("--content", required=True, help="Draft content to export")
@@ -792,6 +1156,16 @@ def main(argv: list[str] | None = None) -> int:
             envelope = _execute_command(
                 "transcribe-file",
                 {"audio": args.audio},
+            )
+        elif args.command == "navigation-window":
+            envelope = _execute_command(
+                "navigation-window",
+                {"query": args.query, "model": args.model},
+            )
+        elif args.command == "normalize-query":
+            envelope = _execute_command(
+                "normalize-query",
+                {"query": args.query},
             )
         elif args.command == "health":
             envelope = _execute_command(

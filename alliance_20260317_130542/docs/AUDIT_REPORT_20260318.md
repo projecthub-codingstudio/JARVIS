@@ -14,7 +14,7 @@
 현재 기준선은 `JARVIS 0.1.0-beta1`이며, 본 보고서는 `Beta 1 기능 완료 + 후속 UI/voice 개선 분리` 상태를 반영한다.
 
 - 아키텍처 핵심 요구(하이브리드 검색, 승인형 내보내기, Governor, 최신성, 메뉴바 브리지)는 대부분 구현됐다.
-- 부분 구현으로 남는 축은 `ModelRouter의 Governor 결합 심화`, `정교한 claim-level 인용 검증`, `관측성 심화`, `운영 하드닝`이다.
+- 부분 구현으로 남는 축은 `정교한 claim-level 인용 검증`, `관측성 심화`, `운영 하드닝`이다.
 - 명세와 구현의 차이는 주로 `타입/이름 계약`, `Reranker/MeCab-ko의 명시적 유보`, `90% coverage 기준 미도달`에 남아 있다.
 
 ---
@@ -27,7 +27,7 @@
 | **인덱싱 파이프라인** | ✅ 프로덕션급 | PDF/DOCX/PPTX/XLSX/HWPX/HWP/SQL + 100개 확장자 + 텍스트 자동감지 |
 | **FTS5 + Kiwi 형태소** | ✅ | 한국어 형태소 확장 검색, 지연 큐 backfill |
 | **Governor 시스템 감지** | ✅ | psutil + pmset 실제 센서, swap/thermal/battery 임계값 |
-| **LLM 듀얼 백엔드** | ✅ | MLX primary + Ollama fallback + stub 3단 폴백 |
+| **LLM 듀얼 백엔드** | ✅ | MLX primary + Ollama fallback + ModelRouter 연계 순차 로딩 |
 | **Freshness 체계** | ✅ | STALE 자동감지(SHA-256 해시 비교), freshness boost, tombstone, 한국어 경고 |
 | **파일 워처** | ✅ | 생성/수정/삭제/이동/디렉토리이름변경 전부 처리, stale 자동 정리 |
 
@@ -40,7 +40,7 @@
 | Feature | Status | Implementation File | Notes |
 |---|---|---|---|
 | M1 Max 64GB 타겟 | ✅ | `app/config.py:32` | `memory_limit_gb = 16.0` (worst-case 기준) |
-| 순차 모델 로딩 (동시 금지) | 🔧 | `runtime/model_router.py` | 단일 활성 모델과 메모리 버짓 체크 구현, Governor 연동은 단순화됨 |
+| 순차 모델 로딩 (동시 금지) | ✅ | `runtime/model_router.py` | 단일 활성 모델과 메모리 버짓 체크 구현, LLM load/unload 경로에 실제 연계 |
 | 15-20GB 메모리 버짓 | ✅ | `core/governor.py:115`, `app/config.py:32` | Governor 16GB 제한 |
 | Swap/thermal/battery 정책 | ✅ | `core/governor.py:33-106` | psutil + pmset 실제 센서 |
 
@@ -70,7 +70,7 @@
 | Interface: 승인 패널 | ✅ | `cli/approval.py` | CLI 승인 흐름 및 export 연동 |
 | Interface: 메뉴바 브리지 | ✅ | `cli/menu_bridge.py`, `app/runtime_context.py` | JSON 응답/상태/출처 직렬화 |
 | Orchestration: Governor | ✅ | `core/governor.py` | 실제 psutil+pmset, tier 다운그레이드 |
-| Orchestration: Planner | ✅ | `core/planner.py` | Ollama 이중언어 키워드 추출, fallback |
+| Orchestration: Planner | ✅ | `core/planner.py` | heuristic baseline + optional lightweight enrichment + fallback |
 | Orchestration: ToolRegistry | ✅ | `core/tool_registry.py` | 3-tool 허용목록 + handler dispatch |
 | Orchestration: Orchestrator | ✅ | `core/orchestrator.py` | 7단계: governor→planner→검색→증거→생성→저장 |
 | Knowledge: Parser | ✅ | `indexing/parsers.py` | 10+ 포맷, CP949/EUC-KR/UTF-16 BOM |
@@ -82,7 +82,7 @@
 | Memory: 작업 로그 | ✅ | `memory/task_log.py` | task_logs 테이블 |
 | Runtime: MLX/llama.cpp | ✅ | `runtime/mlx_backend.py`, `runtime/llamacpp_backend.py` | 양쪽 구현 완료 |
 | Runtime: 임베딩 엔진 | ✅ | `runtime/embedding_runtime.py` | BGE-M3 임베딩 구현 |
-| Runtime: Reranker | ❌ | — | 명시적 유보 |
+| Runtime: Reranker | 🔧 | `retrieval/reranker.py` | optional 구성, 미가용 시 pass-through degradation |
 | Observability: Metrics | ✅ | `observability/metrics.py` | 11개 메트릭, measure() |
 | Observability: Health | ✅ | `observability/health.py` | 9개 체크 (core 4 + runtime 5: model/embedding/vector_db/watcher/governor) |
 | Observability: Tracing | 🔧 | `observability/tracing.py` | 경량 in-memory tracer 구현, 외부 export/전면 연동은 미완 |
@@ -95,7 +95,7 @@
 |---|---|---|---|
 | 1 | 한국어 질의 입력 | ✅ | REPL stdin |
 | 2 | 의도 분류 | ✅ | Planner.analyze() |
-| 3 | FTS + vector 병렬 검색 | 🔧 | 두 경로 모두 구현, 현재 호출 순서는 순차이며 병렬 실행 최적화는 미반영 |
+| 3 | FTS + vector 병렬 검색 | ✅ | `ThreadPoolExecutor` 기반 병렬 검색 후 RRF 융합 |
 | 4 | Freshness 검증 | ✅ | 해시 비교 STALE + boost |
 | 5 | 컨텍스트 조합 (증거 + 대화) | ✅ | 최근 3턴 슬라이딩 윈도우를 LLM 입력에 주입 |
 | 6 | Governor 모델 tier 선택 | ✅ | 다운그레이드 로직 |
@@ -109,7 +109,7 @@
 | Feature | Status | Notes |
 |---|---|---|
 | 14B 기본 + 상위 승격 | ✅ | qwen3:14b 기본, governor 승격 제어 |
-| 후보 모델 3종 (Qwen3-14B, EXAONE, Kanana) | ✅ | 양쪽 백엔드에 alias 등록 |
+| 후보 모델 3종 (qwen3.5:9b, exaone4.0:32b, Kanana 계열) | ✅ | 양쪽 백엔드에 alias 등록 |
 | 30B 상시 상주 금지 | ✅ | battery/pressure 시 deep 차단 |
 | MLX primary | ✅ | Metal cache clear 포함 |
 | llama.cpp fallback | ✅ | keep_alive=0 언로드 |
@@ -118,7 +118,7 @@
 
 | Feature | Status | Notes |
 |---|---|---|
-| 레벨 0 — 텍스트 전용 | ✅ | KB 없으면 stub 모드 |
+| 레벨 0 — 텍스트 전용 | ✅ | KB 미구성 시 retrieval은 빈 결과를 반환하고, 근거 기반 사실 응답은 생성하지 않음 |
 | 레벨 1 — 선택 폴더 읽기 | ✅ | watched_folders 제한 |
 | 레벨 2 — 승인형 쓰기 | ✅ | `draft_export`만 승인 후 실제 쓰기 허용 |
 | 레벨 3-4 (자동화) | ❌ | 명시적 제외 |

@@ -35,7 +35,7 @@ Building an AI assistant that handles personal and work documents — potentiall
 
 **Rationale**: For a personal assistant handling work documents (Korean government/corporate files including HWP), privacy is non-negotiable. The M1 Max 64GB provides enough compute for capable local models.
 
-**Trade-off accepted**: Smaller models (14B) vs cloud (70B+), but privacy > capability for this use case.
+**Trade-off accepted**: Smaller local models vs cloud-scale models (70B+), but privacy > capability for this use case.
 
 ---
 
@@ -75,7 +75,7 @@ How to search the knowledge base — full-text only, vector-only, or hybrid?
 
 **Rationale**: Single-method search has fundamental blind spots:
 - FTS5 can't find "AI model" when the document says "인공지능 엔진"
-- Vector search can't reliably match exact identifiers like "Qwen3-14B"
+- Vector search can't reliably match exact identifiers like `qwen3.5:9b`
 
 RRF fusion is simple (rank-based, no score normalization needed) and robust (handles missing results naturally).
 
@@ -163,12 +163,12 @@ Honest engineering means acknowledging what didn't work. These pivots improved t
 - **Resolution**: Use sentence-transformers with MPS (Metal Performance Shaders) acceleration instead
 - **Lesson**: Check framework compatibility early, have a fallback plan
 
-### EXAONE Model Name: Corrected
+### EXAONE Model Naming: Corrected
 
-- **What happened**: Initial documents referenced "Exaone-4.0-7.8B"
-- **Discovery**: This model doesn't exist — the correct name is EXAONE-3.5-7.8B (or EXAONE Deep 7.8B)
-- **Resolution**: Corrected across all documentation and code
-- **Lesson**: Verify exact model identifiers from official sources
+- **What happened**: Early documents mixed several EXAONE family names and used at least one nonexistent identifier
+- **Discovery**: The implemented runtime ultimately standardized on concrete IDs such as `exaone4.0:32b`, while older draft names needed correction or removal
+- **Resolution**: Current code and user-facing docs now use the implemented model IDs consistently
+- **Lesson**: Verify exact model identifiers from the runtime/backend mapping, not from draft notes
 
 ### Kanana-2-30B-A3B: Considered but Deferred
 
@@ -227,7 +227,7 @@ JARVIS의 핵심 엔지니어링 결정을 문서화합니다 — 무엇을 선�
 
 - **Kokoro-82M TTS 제거** — 한국어 미지원 발견
 - **BGE-M3 MLX 불가** — sentence-transformers + MPS로 대체
-- **EXAONE 모델명 수정** — "Exaone-4.0-7.8B"는 존재하지 않음, EXAONE-3.5-7.8B로 정정
+- **EXAONE 모델명 정리** — 초안 문서의 혼재된 모델명을 실제 런타임 식별자(`exaone4.0:32b` 등) 기준으로 정리
 - **메모리 예산 하향 조정** — 30-35GB → 15-20GB (실측 결과)
 
 ### Colligi2 분석 과정

@@ -6,8 +6,8 @@ JARVIS uses a **hybrid retrieval architecture** that combines full-text search w
 
 ```mermaid
 flowchart TD
-    Q[User Query] --> P[AI Planner<br/>EXAONE-3.5-7.8B]
-    P --> |"Intent + Keywords"| D[Query Decomposer]
+    Q[User Query] --> P[Hybrid Planner<br/>Heuristic + Lightweight Enrichment]
+    P --> |"Normalized Keywords"| D[Query Decomposer]
     D --> |"TypedQueryFragments"| FTS[FTS5 Search<br/>SQLite + Kiwi]
     D --> |"TypedQueryFragments"| VEC[Vector Search<br/>BGE-M3 + LanceDB]
     Q --> |"Filename detected?"| TGT[Targeted File Search<br/>Score Boost]
@@ -18,15 +18,15 @@ flowchart TD
     EB --> |"VerifiedEvidenceSet"| OUT[Citations + Quotes]
 ```
 
-## 1. AI Planner
+## 1. Hybrid Planner
 
-Before any search happens, the **AI Planner** (powered by EXAONE-3.5-7.8B) classifies the query:
+Before any search happens, the planner runs in two stages:
 
-- **Intent classification**: What kind of question is this?
-- **Korean → English keyword translation**: Extract search terms in both languages
-- **Search term extraction**: Identify the most relevant terms for retrieval
+- **Heuristic baseline**: Fast token extraction, filename detection, and complexity hints
+- **Lightweight enrichment**: Optional Korean → English keyword expansion and file-stem enrichment
+- **Fallback safety**: If the lightweight stage is unavailable or fails, the heuristic baseline is still used
 
-This lightweight model runs fast (~2-3s) and doesn't compete with the main LLM for memory.
+This means retrieval planning is always available without depending on a separate planning LLM.
 
 ## 2. FTS5 Full-Text Search
 
@@ -119,6 +119,8 @@ After RRF fusion, the Evidence Builder:
 3. Resolves source file metadata (filename, type, path)
 4. Checks citation freshness (SHA-256 hash comparison)
 5. Produces a `VerifiedEvidenceSet` with citations
+
+If no resolvable evidence qualifies, JARVIS returns an empty evidence set and does not generate a factual answer.
 
 ### Citation States
 

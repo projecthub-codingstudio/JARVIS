@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jarvis.contracts import (
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from jarvis.contracts import ConversationTurn
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*|<thought>.*?</thought>\s*", re.DOTALL)
+_CLASS_QUERY_RE = re.compile(r"(?:\bclass\b|클래스)\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
 
 
 def strip_think_tags(text: str) -> str:
@@ -51,6 +54,126 @@ _MAX_HISTORY_CHARS = _MAX_HISTORY_TOKENS * _CHARS_PER_TOKEN
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate for mixed Korean/English text."""
     return len(text) // _CHARS_PER_TOKEN
+
+
+def _extract_requested_identifier(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    direct_match = _CLASS_QUERY_RE.search(prompt)
+    if direct_match:
+        return direct_match.group(1)
+
+    identifiers = _IDENTIFIER_RE.findall(prompt)
+    evidence_text = " ".join(item.text for item in evidence.items[:3])
+    for identifier in identifiers:
+        if re.search(rf"\bclass\s+{re.escape(identifier)}\b", evidence_text, re.IGNORECASE):
+            return identifier
+    return ""
+
+
+def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    sources = [item.source_path or item.document_id for item in evidence.items[:3]]
+    unique_sources = [source for index, source in enumerate(sources) if source and source not in sources[:index]]
+    primary_source = unique_sources[0] if unique_sources else "확인된 소스"
+    citation_labels = ", ".join(item.citation.label for item in evidence.items[:3])
+    head = _extract_best_stub_snippet(prompt, evidence)
+    identifier = _extract_requested_identifier(prompt, evidence)
+
+    if re.search(r"(?:\bclass\b|클래스)", prompt, re.IGNORECASE):
+        if identifier:
+            intro = f"확인된 근거 기준으로 `{identifier}` 클래스는 [{primary_source}]에 정의되어 있습니다."
+        else:
+            intro = f"확인된 근거 기준으로 요청하신 클래스는 [{primary_source}]에서 확인됩니다."
+        body = (
+            "현재 모델 생성 경로가 비활성이라 코드 근거를 그대로 요약합니다. "
+            f"첫 번째 확인 구간은 다음과 같습니다: {head}"
+        )
+        return f"{intro}\n{body}\n근거: {citation_labels}"
+
+    intro = f"확인된 근거는 [{primary_source}]에 있습니다."
+    body = f"현재 모델 생성 경로가 비활성이라 검색 근거를 그대로 요약합니다: {head}"
+    return f"{intro}\n{body}\n근거: {citation_labels}"
+
+
+def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    if not evidence.items:
+        return ""
+    primary_source = evidence.items[0].source_path or ""
+    wants_class = bool(re.search(r"(?:\bclass\b|클래스)", prompt, re.IGNORECASE))
+    wants_function = bool(re.search(r"(?:\bfunction\b|\bmethod\b|\bdef\b|함수|메서드|메소드)", prompt, re.IGNORECASE))
+    identifier = _extract_requested_identifier(prompt, evidence)
+
+    if primary_source:
+        extracted = _extract_source_snippet(
+            source_path=primary_source,
+            identifier=identifier,
+            wants_class=wants_class,
+            wants_function=wants_function,
+        )
+        if extracted:
+            return extracted
+
+    head = evidence.items[0].text.strip()
+    head = re.sub(r"\s+", " ", head)
+    return head[:220].rstrip()
+
+
+def _extract_source_snippet(
+    *,
+    source_path: str,
+    identifier: str,
+    wants_class: bool,
+    wants_function: bool,
+) -> str:
+    path = Path(source_path)
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+    candidates: list[str] = []
+    if identifier:
+        candidates.append(identifier)
+    stem = path.stem
+    if stem:
+        candidates.append(stem)
+        candidates.append(stem.title())
+        candidates.append(stem.capitalize())
+
+    for candidate in dict.fromkeys(value for value in candidates if value):
+        if wants_class:
+            match = re.search(rf"^\s*class\s+{re.escape(candidate)}\b.*$", text, re.MULTILINE)
+            if match:
+                return _window_from_match(text, match.start())
+        if wants_function:
+            match = re.search(rf"^\s*def\s+{re.escape(candidate)}\b.*$", text, re.MULTILINE)
+            if match:
+                return _window_from_match(text, match.start())
+
+    if wants_class:
+        match = re.search(r"^\s*class\s+[A-Za-z_][A-Za-z0-9_]*\b.*$", text, re.MULTILINE)
+        if match:
+            return _window_from_match(text, match.start())
+    if wants_function:
+        match = re.search(r"^\s*def\s+[A-Za-z_][A-Za-z0-9_]*\b.*$", text, re.MULTILINE)
+        if match:
+            return _window_from_match(text, match.start())
+
+    return ""
+
+
+def _window_from_match(text: str, offset: int, *, max_lines: int = 18, max_chars: int = 320) -> str:
+    lines = text.splitlines()
+    consumed = 0
+    start_line = 0
+    for index, line in enumerate(lines):
+        consumed += len(line) + 1
+        if consumed > offset:
+            start_line = index
+            break
+    snippet = "\n".join(lines[start_line:start_line + max_lines]).strip()
+    snippet = re.sub(r"\s+", " ", snippet)
+    return snippet[:max_chars].rstrip()
 
 
 class MLXRuntime:
@@ -114,6 +237,14 @@ class MLXRuntime:
         if self._backend is not None and hasattr(self._backend, "status_detail"):
             return str(getattr(self._backend, "status_detail"))
         return self._status_detail
+
+    def unload(self) -> None:
+        """Unload the active backend model if the backend exposes lifecycle hooks."""
+        if self._backend is not None and hasattr(self._backend, "unload"):
+            try:
+                self._backend.unload()
+            except Exception:
+                pass
 
     def _assemble_history(self, recent_turns: list[ConversationTurn] | None) -> str:
         """Assemble recent conversation turns into a history string.
@@ -192,13 +323,8 @@ class MLXRuntime:
             )
 
         # Stub fallback
-        citations = ", ".join(item.citation.label for item in evidence.items)
         return AnswerDraft(
-            content=(
-                f"[stub:{self._model_id}] 질문 '{prompt}'에 대해 "
-                f"증거 {citations}을(를) 기반으로 답변합니다. "
-                f"(Phase 1에서 실제 LLM이 연결되면 자연어 답변이 생성됩니다)"
-            ),
+            content=_build_stub_grounded_response(prompt, evidence),
             evidence=evidence,
             model_id=self._model_id,
             generation_time_ms=1.0,
@@ -304,5 +430,7 @@ class MLXRuntime:
         else:
             # No streaming support — fall back to non-streaming generate
             answer = self.generate(prompt, evidence, recent_turns=recent_turns)
-            yield answer.content
+            for chunk in re.split(r"(\n+)", answer.content):
+                if chunk:
+                    yield chunk
             yield answer

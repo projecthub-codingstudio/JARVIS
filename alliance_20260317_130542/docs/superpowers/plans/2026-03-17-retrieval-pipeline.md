@@ -1,5 +1,7 @@
 # Retrieval Pipeline Implementation Plan
 
+> **Status note (2026-03-25):** This is a historical implementation plan. The current runtime no longer uses `db=None` stub evidence/search behavior; when retrieval state is unavailable it returns empty results, and evidence-gated factual answering stays disabled until indexed evidence exists.
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement the retrieval pipeline: QueryDecomposer (language detection), FTSIndex (real SQLite FTS5 queries), FreshnessChecker, enhanced EvidenceBuilder — enabling JARVIS to search indexed documents and build grounded evidence for answers.
