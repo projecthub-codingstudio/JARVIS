@@ -40,7 +40,7 @@ sequenceDiagram
     participant FFmpeg as ffmpeg
     participant Python as menu_bridge (Python)
     participant Whisper as whisper-cli
-    participant LLM as Qwen3-14B
+    participant LLM as qwen3.5:9b / exaone4.0:32b
 
     Note over Engine: Pre-warmed at app launch
 

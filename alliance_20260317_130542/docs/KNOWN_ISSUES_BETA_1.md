@@ -16,8 +16,9 @@
 ## Retrieval / Runtime
 
 - Claim-level citation verification is still conservative and not fully granular.
-- Reranker is deferred, so retrieval quality relies on FTS, vector search, Kiwi tokenization, and fusion.
-- Governor and ModelRouter coordination works, but deeper runtime shaping remains a follow-up.
+- Reranker is implemented as an optional layer; when its local dependencies are unavailable, retrieval falls back to FTS, vector search, Kiwi tokenization, and fusion.
+- Governor and ModelRouter coordination now covers runtime load admission, but deeper runtime shaping remains a follow-up.
+- The planner is heuristic-first with lightweight enrichment; it is not a full standalone LLM planning stage.
 - Citation display now filtered by MIN_RELEVANCE_SCORE (0.15) to suppress noise from irrelevant queries (e.g., greetings).
 - Dynamic max_tokens calculation replaces fixed 512-token limit for LLM generation.
 

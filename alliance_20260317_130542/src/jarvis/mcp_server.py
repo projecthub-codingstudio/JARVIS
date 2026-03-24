@@ -132,10 +132,13 @@ def _create_jarvis_server() -> Server:
                 from jarvis.tools.search_files import SearchFilesTool
 
                 ctx = _get_context()
-                tool = SearchFilesTool(db=ctx.bootstrap_result.db)
+                tool = SearchFilesTool(
+                    db=ctx.bootstrap_result.db,
+                    allowed_roots=[ctx.knowledge_base_path or Path.cwd()],
+                )
                 hits = tool.execute(query=query, top_k=top_k)
                 results = [
-                    {"path": h.path, "score": h.score, "snippet": h.snippet[:200]}
+                    {"path": h.document_id, "score": h.score, "snippet": h.snippet[:200]}
                     for h in hits
                 ]
                 return [TextContent(type="text", text=json.dumps(results, ensure_ascii=False, indent=2))]

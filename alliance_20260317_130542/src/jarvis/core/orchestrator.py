@@ -15,6 +15,7 @@ import time
 import logging
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ from jarvis.contracts import (
 )
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricName, MetricsCollector
+from jarvis.query_normalization import normalize_spoken_code_query
 
 _DESTRUCTIVE_REQUEST_PATTERNS = (
     re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
@@ -46,6 +48,10 @@ _DESTRUCTIVE_REQUEST_PATTERNS = (
     re.compile(r"(모두|전체).*(삭제|지워|제거)"),
     re.compile(r"(파일|폴더|디렉터리).*(전부|모두).*(삭제|제거)"),
 )
+_CLASS_HINT_RE = re.compile(r"(?:\bclass\b|클래스)", re.IGNORECASE)
+_FUNCTION_HINT_RE = re.compile(r"(?:\bfunction\b|\bmethod\b|\bdef\b|함수|메서드|메소드)", re.IGNORECASE)
+_IDENTIFIER_TOKEN_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+_CODE_SCOPE_HINT_RE = re.compile(r"(?:소스|코드|파일|\.(?:py|ts|tsx|js|jsx|sql))", re.IGNORECASE)
 
 
 class Orchestrator:
@@ -73,6 +79,7 @@ class Orchestrator:
         metrics: MetricsCollector | None = None,
         error_monitor: ErrorMonitor | None = None,
         user_knowledge_store: object | None = None,
+        knowledge_base_path: Path | None = None,
     ) -> None:
         self._governor = governor
         self._query_decomposer = query_decomposer
@@ -90,6 +97,7 @@ class Orchestrator:
         self._error_monitor = error_monitor
         self._query_complexity: str = "moderate"
         self._user_knowledge_store = user_knowledge_store
+        self._knowledge_base_path = knowledge_base_path
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
@@ -336,8 +344,16 @@ class Orchestrator:
         # also search within that specific document's chunks
         targeted_hits = self._targeted_file_search(query, fragments)
         if targeted_hits:
-            fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in
-                                         {t.chunk_id for t in targeted_hits}]
+            targeted_chunk_ids = {t.chunk_id for t in targeted_hits}
+            targeted_doc_ids = {t.document_id for t in targeted_hits}
+            if self._is_explicit_file_scoped_query(query):
+                fts_hits = targeted_hits + [
+                    h for h in fts_hits
+                    if h.chunk_id not in targeted_chunk_ids and h.document_id in targeted_doc_ids
+                ]
+                vector_hits = [h for h in vector_hits if h.document_id in targeted_doc_ids]
+            else:
+                fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in targeted_chunk_ids]
 
         # Row-ID supplemental search: when query references specific row
         # identifiers (e.g., "3일차", "Day 5"), directly query the DB for
@@ -442,9 +458,13 @@ class Orchestrator:
         """
         from jarvis.retrieval.query_decomposer import _extract_filenames
 
-        filenames = self._FILENAME_RE.findall(query)
+        normalized_query = normalize_spoken_code_query(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        filenames = self._FILENAME_RE.findall(normalized_query)
         # Also detect underscore-separated stems and space-separated variants
-        filenames.extend(_extract_filenames(query))
+        filenames.extend(_extract_filenames(normalized_query))
         # Deduplicate
         filenames = list(dict.fromkeys(filenames))
         if not filenames:
@@ -458,6 +478,12 @@ class Orchestrator:
         from jarvis.contracts import SearchHit
 
         targeted: list[SearchHit] = []
+        wants_class = bool(_CLASS_HINT_RE.search(normalized_query))
+        wants_function = bool(_FUNCTION_HINT_RE.search(normalized_query))
+        identifier_terms = {
+            token for token in _IDENTIFIER_TOKEN_RE.findall(normalized_query)
+            if "." not in token and len(token) > 2
+        }
         for filename in filenames:
             # Find documents matching this filename (exact path ending)
             rows = db.execute(
@@ -498,11 +524,22 @@ class Orchestrator:
                 for chunk_id, did, text in chunk_rows:
                     # Score by how many query terms appear in this chunk
                     matches = sum(1 for t in keyword_terms if t.lower() in text.lower())
-                    if matches > 0:
+                    signature_boost = 0.0
+                    if wants_class and any(
+                        re.search(rf"\bclass\s+{re.escape(term)}\b", text, re.IGNORECASE)
+                        for term in identifier_terms
+                    ):
+                        signature_boost += 12.0
+                    if wants_function and any(
+                        re.search(rf"\b(?:def|function)\s+{re.escape(term)}\b", text, re.IGNORECASE)
+                        for term in identifier_terms
+                    ):
+                        signature_boost += 10.0
+                    if matches > 0 or signature_boost > 0:
                         targeted.append(SearchHit(
                             chunk_id=chunk_id,
                             document_id=did,
-                            score=matches * 5.0 + 10.0,  # High base score for targeted results
+                            score=matches * 5.0 + 10.0 + signature_boost,  # Prefer exact file/signature hits
                             snippet=text[:200],
                         ))
 
@@ -600,3 +637,17 @@ class Orchestrator:
         if not text:
             return False
         return any(pattern.search(text) for pattern in _DESTRUCTIVE_REQUEST_PATTERNS)
+
+    def _is_explicit_file_scoped_query(self, query: str) -> bool:
+        normalized_query = normalize_spoken_code_query(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        has_filename = bool(self._FILENAME_RE.search(normalized_query))
+        if not has_filename:
+            return False
+        return bool(
+            _CODE_SCOPE_HINT_RE.search(normalized_query)
+            or _CLASS_HINT_RE.search(normalized_query)
+            or _FUNCTION_HINT_RE.search(normalized_query)
+        )

@@ -21,6 +21,7 @@ from jarvis.cli.repl import JarvisREPL
 from jarvis.cli.voice_session import VoiceSession
 from jarvis.observability.logging import configure_logging
 from jarvis.runtime.audio_recorder import AudioRecorder
+from jarvis.runtime.stt_biasing import build_vocabulary_hint
 from jarvis.runtime.stt_runtime import WhisperCppSTT
 from jarvis.runtime.tts_runtime import LocalTTSRuntime
 
@@ -86,6 +87,7 @@ def main() -> None:
                     else None
                 ),
                 model_router=context.model_router,
+                vocabulary_hint=build_vocabulary_hint(context.knowledge_base_path),
             )
             tts_runtime = LocalTTSRuntime(
                 voice=os.getenv("JARVIS_TTS_VOICE"),

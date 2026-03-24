@@ -1,0 +1,10 @@
+[
+  {
+    "query": "파이프라인점 파이에 있는 소스야 프로바이더 리절트에 대해서 다시 설명해줘",
+    "expected_identifiers": ["pipeline.py", "provider_result"]
+  },
+  {
+    "query": "다시 파이선 소스인 파이프라인에서 클래스 파이프라인에 대해 설명해 줘",
+    "expected_identifiers": ["pipeline.py", "Pipeline"]
+  }
+]

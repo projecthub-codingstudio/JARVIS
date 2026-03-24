@@ -1,8 +1,8 @@
-"""E2E smoke tests using actual package stub implementations.
+"""E2E smoke tests using the shipped wiring with explicit evidence fixtures.
 
-Phase 0 exit criterion: end-to-end smoke tests pass using the
-shipped stub implementations (not test-local dummies).
-These tests validate the full wiring from query to response.
+These tests validate the full wiring from query to response while keeping
+evidence explicit. This matches the runtime invariant that no factual
+answer should be produced from retrieval stubs alone.
 """
 
 from __future__ import annotations
@@ -16,9 +16,14 @@ from jarvis.app.config import JarvisConfig
 from jarvis.cli.approval import CLIApprovalGateway
 from jarvis.contracts.models import (
     AnswerDraft,
+    CitationRecord,
+    EvidenceItem,
     ConversationTurn,
     DraftExportRequest,
+    SearchHit,
     TaskLogEntry,
+    TypedQueryFragment,
+    VectorHit,
     VerifiedEvidenceSet,
 )
 from jarvis.contracts.protocols import (
@@ -44,6 +49,49 @@ from jarvis.retrieval.hybrid_search import HybridSearch
 from jarvis.retrieval.query_decomposer import QueryDecomposer
 from jarvis.retrieval.vector_index import VectorIndex
 from jarvis.runtime.mlx_runtime import MLXRuntime
+
+
+class StaticFTS:
+    def search(
+        self,
+        fragments: list[TypedQueryFragment],
+        top_k: int = 10,
+    ) -> list[SearchHit]:
+        return [
+            SearchHit(
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                score=1.0,
+                snippet="JARVIS architecture evidence",
+            )
+        ]
+
+
+class EmptyVector:
+    def search(
+        self,
+        fragments: list[TypedQueryFragment],
+        top_k: int = 10,
+    ) -> list[VectorHit]:
+        return []
+
+
+class StaticEvidenceBuilder:
+    def build(self, results, fragments) -> VerifiedEvidenceSet:
+        item = EvidenceItem(
+            chunk_id="chunk-1",
+            document_id="doc-1",
+            text="JARVIS architecture evidence",
+            citation=CitationRecord(
+                document_id="doc-1",
+                chunk_id="chunk-1",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=1.0,
+            source_path="/tmp/doc.md",
+        )
+        return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
 
 
 # ---- Smoke test orchestrator (simplified E2E flow) ----
@@ -123,10 +171,10 @@ def run_answer_flow(
 def smoke_deps() -> dict[str, object]:
     return {
         "decomposer": QueryDecomposer(),
-        "fts": FTSIndex(),
-        "vector": VectorIndex(),
+        "fts": StaticFTS(),
+        "vector": EmptyVector(),
         "fusion": HybridSearch(),
-        "evidence_builder": EvidenceBuilder(),
+        "evidence_builder": StaticEvidenceBuilder(),
         "generator": MLXRuntime(),
         "governor": GovernorStub(),
         "conversation_store": ConversationStore(),
@@ -137,7 +185,7 @@ def smoke_deps() -> dict[str, object]:
 
 @pytest.mark.e2e
 class TestSmokeAnswerFlow:
-    """Smoke test: full answer flow with shipped stub implementations."""
+    """Smoke test: full answer flow with explicit verified evidence."""
 
     def test_korean_query_produces_answer(self, smoke_deps: dict[str, object]) -> None:
         answer = run_answer_flow("프로젝트 아키텍처 설명해줘", **smoke_deps)  # type: ignore[arg-type]

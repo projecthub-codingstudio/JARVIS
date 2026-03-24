@@ -1,6 +1,7 @@
 """Tests for tool implementations and approval flow."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,13 @@ from jarvis.contracts import (
 from jarvis.tools.draft_export import DraftExportTool
 from jarvis.tools.read_file import ReadFileTool
 from jarvis.tools.search_files import SearchFilesTool
+
+
+def _create_search_db() -> sqlite3.Connection:
+    db = sqlite3.connect(":memory:")
+    schema = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
+    db.executescript(schema.read_text(encoding="utf-8"))
+    return db
 
 
 class TestReadFileTool:
@@ -41,6 +49,29 @@ class TestReadFileTool:
 
 
 class TestSearchFilesTool:
+    def test_prefers_indexed_db_results(self, tmp_path: Path) -> None:
+        db = _create_search_db()
+        indexed_file = tmp_path / "architecture.md"
+        indexed_file.write_text("hybrid search and vector index", encoding="utf-8")
+        db.execute(
+            "INSERT INTO documents (document_id, path, content_hash, size_bytes, indexing_status)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("doc-1", str(indexed_file), "hash", indexed_file.stat().st_size, "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text, lexical_morphs)"
+            " VALUES (?, ?, ?, ?)",
+            ("chunk-1", "doc-1", "hybrid search and vector index", "hybrid vector"),
+        )
+        db.commit()
+
+        tool = SearchFilesTool(db=db, allowed_roots=[tmp_path])
+        hits = tool.execute(query="architecture vector", top_k=5)
+
+        assert hits
+        assert hits[0].document_id.endswith("architecture.md")
+        assert "vector" in hits[0].snippet.lower()
+
     def test_finds_by_filename_and_content(self, tmp_path: Path) -> None:
         (tmp_path / "architecture.md").write_text("hybrid search and vector index", encoding="utf-8")
         (tmp_path / "notes.txt").write_text("unrelated", encoding="utf-8")

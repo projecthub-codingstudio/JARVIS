@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,13 +30,31 @@ from jarvis.runtime.model_router import ModelRouter
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_KB_PATH = Path("/Users/codingstudio/__PROJECTHUB__/JARVIS/knowledge_base")
+_DEFAULT_KB_DIRNAME = "knowledge_base"
 
 
 def _summarize_runtime_error(message: str) -> str:
     """Collapse multi-line runtime failures into a short health detail."""
     line = " ".join(part.strip() for part in message.splitlines() if part.strip())
     return line[:240]
+
+
+def resolve_knowledge_base_path(candidate: Path | None = None) -> Path:
+    """Resolve the effective knowledge base path.
+
+    Priority:
+      1. Explicit function argument
+      2. JARVIS_KNOWLEDGE_BASE env var
+      3. ./knowledge_base under the current working directory
+    """
+    if candidate is not None:
+        return candidate.expanduser().resolve()
+
+    env_value = os.getenv("JARVIS_KNOWLEDGE_BASE", "").strip()
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+
+    return (Path.cwd() / _DEFAULT_KB_DIRNAME).resolve()
 
 
 @dataclass
@@ -370,6 +389,7 @@ def _create_user_knowledge_store(db):
 def create_llm_backend(
     decision: RuntimeDecision,
     *,
+    model_router: ModelRouter | None = None,
     metrics: MetricsCollector | None = None,
     error_monitor: ErrorMonitor | None = None,
     reporter: Callable[[str], None] | None = None,
@@ -378,6 +398,7 @@ def create_llm_backend(
     """Create the LLM runtime with MLX primary and llama.cpp fallback."""
     max_context_chars = max(2048, (decision.context_window // 2) * 4)
     fallback_reasons: list[str] = []
+    estimated_memory_gb = _estimate_llm_memory_gb(decision)
     if decision.backend == "mlx" and allow_mlx:
         from jarvis.runtime.mlx_backend import mlx_import_probe
 
@@ -395,7 +416,10 @@ def create_llm_backend(
                 try:
                     from jarvis.runtime.mlx_backend import MLXBackend
 
-                    backend = MLXBackend()
+                    backend = MLXBackend(
+                        model_router=model_router,
+                        estimated_memory_gb=estimated_memory_gb,
+                    )
                     backend.load(decision)
                     if reporter is not None:
                         reporter(f"   Backend: MLX ({backend.model_id})")
@@ -419,7 +443,10 @@ def create_llm_backend(
     try:
         from jarvis.runtime.llamacpp_backend import LlamaCppBackend
 
-        backend = LlamaCppBackend()
+        backend = LlamaCppBackend(
+            model_router=model_router,
+            estimated_memory_gb=estimated_memory_gb,
+        )
         fallback_decision = RuntimeDecision(
             tier=decision.tier,
             backend="llamacpp",
@@ -460,7 +487,7 @@ def create_llm_backend(
 def build_runtime_context(
     *,
     model_id: str = "qwen3.5:9b",
-    knowledge_base_path: Path = _DEFAULT_KB_PATH,
+    knowledge_base_path: Path | None = None,
     start_watcher_enabled: bool = True,
     start_background_backfill: bool = True,
     reporter: Callable[[str], None] | None = None,
@@ -468,7 +495,8 @@ def build_runtime_context(
     data_dir: Path | None = None,
 ) -> RuntimeContext:
     """Build the shared runtime dependency graph."""
-    watched_folders = [knowledge_base_path] if knowledge_base_path.exists() else []
+    resolved_kb_path = resolve_knowledge_base_path(knowledge_base_path)
+    watched_folders = [resolved_kb_path] if resolved_kb_path.exists() else []
     config = JarvisConfig(
         data_dir=data_dir if data_dir is not None else Path.home() / ".jarvis",
         watched_folders=watched_folders,
@@ -488,10 +516,10 @@ def build_runtime_context(
 
     chunk_count = 0
     watcher = None
-    if knowledge_base_path.exists():
+    if resolved_kb_path.exists():
         chunk_count, pipeline = run_indexing(
             result.db,
-            knowledge_base_path,
+            resolved_kb_path,
             data_dir=result.config.data_dir,
             vector_index=vector_index,
             start_background_backfill=start_background_backfill,
@@ -509,7 +537,7 @@ def build_runtime_context(
             )
         if start_watcher_enabled:
             watcher = start_file_watcher(
-                knowledge_base_path,
+                resolved_kb_path,
                 data_dir=result.config.data_dir,
                 governor=governor,
                 metrics=result.metrics,
@@ -518,10 +546,11 @@ def build_runtime_context(
             )
             watcher_pending = getattr(watcher, "pending_event_count", watcher_pending)
     elif reporter is not None:
-        reporter(f"   Knowledge base: not found ({knowledge_base_path})")
+        reporter(f"   Knowledge base: not found ({resolved_kb_path})")
 
     retrieval_db = result.db if has_indexed_data(result.db) else None
 
+    model_router = ModelRouter(memory_limit_gb=16.0)
     decision = governor.select_runtime(requested_tier=governor.suggest_idle_requested_tier())
     if model_id != decision.model_id or not decision.model_id:
         decision = RuntimeDecision(
@@ -536,16 +565,16 @@ def build_runtime_context(
 
     llm_generator = create_llm_backend(
         decision,
+        model_router=model_router,
         metrics=result.metrics,
         error_monitor=error_monitor,
         reporter=reporter,
         allow_mlx=allow_mlx,
     )
-    model_router = ModelRouter(memory_limit_gb=16.0)
 
     from jarvis.core.planner import Planner
 
-    planner = Planner(model_id="qwen3.5:9b")
+    planner = Planner(model_id="qwen3.5:9b", knowledge_base_path=resolved_kb_path)
 
     # Cross-encoder reranker (lazy-loaded on first query)
     from jarvis.retrieval.reranker import Reranker
@@ -553,7 +582,7 @@ def build_runtime_context(
 
     orchestrator = Orchestrator(
         governor=governor,
-        query_decomposer=QueryDecomposer(),
+        query_decomposer=QueryDecomposer(knowledge_base_path=resolved_kb_path),
         fts_retriever=FTSIndex(db=retrieval_db, metrics=result.metrics),
         vector_retriever=vector_index,
         hybrid_fusion=HybridSearch(),
@@ -567,6 +596,7 @@ def build_runtime_context(
         metrics=result.metrics,
         error_monitor=error_monitor,
         user_knowledge_store=_create_user_knowledge_store(result.db),
+        knowledge_base_path=resolved_kb_path,
     )
 
     return RuntimeContext(
@@ -578,7 +608,7 @@ def build_runtime_context(
         vector_index=vector_index,
         watcher=watcher,
         chunk_count=chunk_count,
-        knowledge_base_path=knowledge_base_path if knowledge_base_path.exists() else None,
+        knowledge_base_path=resolved_kb_path if resolved_kb_path.exists() else None,
     )
 
 
@@ -587,7 +617,25 @@ def shutdown_runtime_context(context: RuntimeContext) -> None:
     if context.watcher is not None:
         context.watcher.stop()  # type: ignore[union-attr]
     try:
+        context.orchestrator._llm_generator.unload()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
         context.vector_index._embedding_runtime.unload_model()  # type: ignore[attr-defined]
     except Exception:
         pass
     context.bootstrap_result.db.close()
+
+
+def _estimate_llm_memory_gb(decision: RuntimeDecision) -> float:
+    """Rough memory estimate for model-router admission control."""
+    model_id = decision.model_id.lower()
+    if "32b" in model_id or decision.tier == "deep":
+        return 14.0
+    if "14b" in model_id:
+        return 10.0
+    if "9b" in model_id or "7.8b" in model_id:
+        return 8.0
+    if "1.2b" in model_id or "2.4b" in model_id:
+        return 4.0
+    return 8.0

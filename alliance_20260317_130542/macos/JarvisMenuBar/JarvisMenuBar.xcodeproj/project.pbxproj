@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		5870108E2F6EE1D200EC5CBC /* NativeAudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */; };
+		58834C892F730F1200D946F1 /* LiveSpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */; };
 		A1000001 /* JarvisMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001 /* JarvisMenuBarApp.swift */; };
 		A1000002 /* JarvisBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000002 /* JarvisBridge.swift */; };
 		A1000003 /* MenuModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000003 /* MenuModels.swift */; };
@@ -15,6 +16,7 @@
 
 /* Begin PBXFileReference section */
 		5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudioRecorder.swift; sourceTree = "<group>"; };
+		58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSpeechTranscriber.swift; sourceTree = "<group>"; };
 		B1000001 /* JarvisMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisMenuBarApp.swift; sourceTree = "<group>"; };
 		B1000002 /* JarvisBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisBridge.swift; sourceTree = "<group>"; };
 		B1000003 /* MenuModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuModels.swift; sourceTree = "<group>"; };
@@ -36,6 +38,7 @@
 		C1000002 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */,
 				5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */,
 				B1000001 /* JarvisMenuBarApp.swift */,
 				B1000002 /* JarvisBridge.swift */,
@@ -114,6 +117,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000001 /* JarvisMenuBarApp.swift in Sources */,
+				58834C892F730F1200D946F1 /* LiveSpeechTranscriber.swift in Sources */,
 				A1000002 /* JarvisBridge.swift in Sources */,
 				A1000003 /* MenuModels.swift in Sources */,
 				5870108E2F6EE1D200EC5CBC /* NativeAudioRecorder.swift in Sources */,

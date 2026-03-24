@@ -47,13 +47,12 @@ def indexed_setup(tmp_path: Path) -> tuple[sqlite3.Connection, str, str]:
 
 
 class TestEvidenceBuilderNoDb:
-    def test_stub_builds_evidence(self) -> None:
+    def test_returns_empty_without_db(self) -> None:
         builder = EvidenceBuilder()
         results = [HybridSearchResult(chunk_id="c1", document_id="d1", rrf_score=0.5, snippet="text")]
         fragments = [TypedQueryFragment(text="q", language="ko", query_type="keyword")]
         evidence = builder.build(results, fragments)
-        assert not evidence.is_empty
-        assert evidence.items[0].citation.label == "[1]"
+        assert evidence.is_empty
 
     def test_empty_results(self) -> None:
         builder = EvidenceBuilder()
@@ -97,3 +96,50 @@ class TestEvidenceBuilderWithDb:
         fragments = [TypedQueryFragment(text="q", language="en", query_type="keyword")]
         evidence = builder.build(results, fragments)
         assert evidence.is_empty
+
+    def test_prefers_code_sources_for_source_and_class_queries(self, tmp_path: Path) -> None:
+        config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
+        db = init_database(config)
+        pipeline = IndexPipeline(
+            db=db, parser=DocumentParser(),
+            chunker=Chunker(max_chunk_bytes=512, overlap_bytes=64),
+            tombstone_manager=TombstoneManager(db=db),
+            embedding_runtime=FakeEmbeddingRuntime(),
+        )
+        code_path = tmp_path / "pipeline.py"
+        code_path.write_text(
+            "class Pipeline:\n    def run(self) -> None:\n        pass\n",
+            encoding="utf-8",
+        )
+        doc_path = tmp_path / "guide.md"
+        doc_path.write_text(
+            "Pipeline 클래스는 전체 흐름을 설명하는 개념 문서입니다.\n",
+            encoding="utf-8",
+        )
+        code_record = pipeline.index_file(code_path)
+        doc_record = pipeline.index_file(doc_path)
+        code_chunk_id = db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (code_record.document_id,),
+        ).fetchone()[0]
+        doc_chunk_id = db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (doc_record.document_id,),
+        ).fetchone()[0]
+
+        builder = EvidenceBuilder(db=db)
+        results = [
+            HybridSearchResult(chunk_id=doc_chunk_id, document_id=doc_record.document_id, rrf_score=0.62),
+            HybridSearchResult(chunk_id=code_chunk_id, document_id=code_record.document_id, rrf_score=0.55),
+        ]
+        fragments = [
+            TypedQueryFragment(
+                text="파이선 소스 pipeline.py Pipeline class source",
+                language="mixed",
+                query_type="keyword",
+            )
+        ]
+
+        evidence = builder.build(results, fragments)
+
+        assert evidence.items[0].source_path.endswith("pipeline.py")

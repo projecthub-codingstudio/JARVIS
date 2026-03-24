@@ -1,6 +1,7 @@
 import AppKit
 import AudioToolbox
 import AVFoundation
+import Combine
 import SwiftUI
 
 func appLog(_ message: String) {
@@ -35,42 +36,67 @@ enum MenuBarIconFactory {
 }
 
 @MainActor
-final class StatusBarController: NSObject, NSPopoverDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let popover = NSPopover()
-    private let viewModel = JarvisMenuBarViewModel()
+final class NavigationPanelController {
+    private let panel: NSPanel
+    private let host: NSHostingController<NavigationAssistView>
+    private var cancellables: Set<AnyCancellable> = []
+    private unowned let viewModel: JarvisMenuBarViewModel
 
-    override init() {
-        super.init()
-
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self
-        popover.contentSize = NSSize(width: 420, height: 720)
-        popover.contentViewController = NSHostingController(
-            rootView: JarvisMenuContentView(viewModel: viewModel)
+    init(viewModel: JarvisMenuBarViewModel) {
+        self.viewModel = viewModel
+        self.host = NSHostingController(rootView: NavigationAssistView(viewModel: viewModel))
+        self.panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 520),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
         )
+        panel.isFloatingPanel = true
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.contentViewController = host
 
-        if let button = statusItem.button {
-            button.image = MenuBarIconFactory.image
-            button.imagePosition = .imageLeading
-            button.title = "JARVIS"
-            button.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-            button.action = #selector(togglePopover(_:))
-            button.target = self
-            button.toolTip = "JARVIS"
-        }
+        observeViewModel()
     }
 
-    @objc
-    private func togglePopover(_ sender: AnyObject?) {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(sender)
+    private func observeViewModel() {
+        viewModel.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                self?.refresh()
+            }
+            .store(in: &cancellables)
+    }
+
+    func refresh() {
+        host.rootView = NavigationAssistView(viewModel: viewModel)
+        guard viewModel.shouldShowNavigationPanel else {
+            panel.orderOut(nil)
             return
         }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+        positionPanel()
+        panel.orderFront(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
+    }
+
+    private func positionPanel() {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let visible = screen.visibleFrame
+        let size = panel.frame.size
+        let origin = NSPoint(
+            x: visible.maxX - size.width - 22,
+            y: visible.maxY - size.height - 52
+        )
+        panel.setFrameOrigin(origin)
     }
 }
 
@@ -134,6 +160,59 @@ enum MenuPanel: String, CaseIterable, Identifiable {
             return "Health"
         case .audio:
             return "Audio"
+        }
+    }
+}
+
+enum InteractionMode: String, CaseIterable, Identifiable {
+    case generalQuery = "general_query"
+    case sourceExploration = "source_exploration"
+    case documentExploration = "document_exploration"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .generalQuery:
+            return "일반 질의 모드"
+        case .sourceExploration:
+            return "소스 탐색 모드"
+        case .documentExploration:
+            return "문서 탐색 모드"
+        }
+    }
+}
+
+enum SourceExplorationFocus: String {
+    case files = "files"
+    case classes = "classes"
+    case functions = "functions"
+    case detail = "detail"
+
+    var title: String {
+        switch self {
+        case .files:
+            return "파일 후보"
+        case .classes:
+            return "클래스 후보"
+        case .functions:
+            return "함수 후보"
+        case .detail:
+            return "선택 상세"
+        }
+    }
+}
+
+enum DocumentExplorationFocus: String {
+    case documents = "documents"
+    case detail = "detail"
+
+    var title: String {
+        switch self {
+        case .documents:
+            return "문서 후보"
+        case .detail:
+            return "문서 상세"
         }
     }
 }
@@ -238,12 +317,24 @@ final class JarvisMenuBarViewModel: ObservableObject {
         .appendingPathComponent("diagnostics", isDirectory: true)
 
     @Published var query = ""
-    @Published var response: MenuResponse?
+    @Published var response: MenuResponse? {
+        didSet {
+            syncExplorationSelection()
+        }
+    }
+    @Published var navigationWindow: MenuExplorationState?
+    @Published var navigationPhaseLabel = ""
+    @Published var navigationSummaryText = ""
     @Published var isLoading = false
     @Published var streamingText = ""
     @Published var isStreaming = false
     @Published var errorMessage: String?
     @Published var exportMessage: String?
+    @Published var selectedExplorationItemID = ""
+    @Published var sourceExplorationSessionActive = false
+    @Published var sourceExplorationFocus: SourceExplorationFocus = .files
+    @Published var documentExplorationSessionActive = false
+    @Published var documentExplorationFocus: DocumentExplorationFocus = .documents
     @Published var showApprovalPanel = false
     @Published var exportFilename = "jarvis-draft.txt"
     @Published var exportFormat: ExportFormat = .txt
@@ -252,6 +343,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     @Published var wakeWordEnabled = false
     private var wakeWordSession: WakeWordSession?
     @Published var voiceLoopPhase: VoiceLoopPhase = .idle
+    @Published var isSpeaking = false
     @Published var lastTranscript = ""
     @Published var health: HealthResponse?
     @Published var healthMessage = "health pending"
@@ -281,13 +373,20 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     private let bridge: JarvisBridge
     private let bypassMonitor = AudioBypassMonitor()
+    private let liveTranscriber = LiveSpeechTranscriber()
     let nativeRecorder = NativeAudioRecorder()
     private var voiceLoopTask: Task<Void, Never>?
+    private var ttsPlaybackTask: Task<Void, Never>?
     private let successLoopDelay: Duration = .seconds(1.2)
     private let errorLoopDelay: Duration = .seconds(4)
     private let maxConsecutiveLoopErrors = 3
     private let pttDurationSeconds: Double
     private var phaseTransitionTask: Task<Void, Never>?
+    private var navigationUpdateTask: Task<Void, Never>?
+    private var navigationHideTask: Task<Void, Never>?
+    private var queryNormalizationTask: Task<Void, Never>?
+    private var partialTranscriptionActive = false
+    private var navigationPanelVisibleUntil: Date?
 
     @Published var microphoneReady = false
 
@@ -302,6 +401,16 @@ final class JarvisMenuBarViewModel: ObservableObject {
         // Eagerly start the persistent Python server so the first query is fast.
         Task { await bridge.warmup() }
 
+        liveTranscriber.onPartialTranscript = { [weak self] transcript in
+            Task { @MainActor [weak self] in
+                guard let self, self.partialTranscriptionActive else { return }
+                self.lastTranscript = transcript
+                self.query = transcript
+                self.normalizeLiveQuery(transcript)
+                self.refreshNavigationWindow(for: transcript, immediate: true)
+            }
+        }
+
         // Pre-warm the audio engine so the first recording doesn't have
         // a cold-start delay. Runs on background to avoid blocking UI.
         Task.detached { [nativeRecorder, selectedInputDeviceID] in
@@ -313,6 +422,169 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 appLog("Pre-warm failed (will retry on first recording): \(error)")
             }
         }
+    }
+
+    private func startLiveTranscription() {
+        partialTranscriptionActive = true
+        nativeRecorder.onLiveAudioBuffer = { [weak self] buffer in
+            self?.liveTranscriber.append(buffer)
+        }
+        Task { [liveTranscriber] in
+            await liveTranscriber.start()
+        }
+    }
+
+    private func stopLiveTranscription() {
+        partialTranscriptionActive = false
+        queryNormalizationTask?.cancel()
+        nativeRecorder.onLiveAudioBuffer = nil
+        liveTranscriber.stop()
+    }
+
+    private func normalizeLiveQuery(_ rawQuery: String) {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        queryNormalizationTask?.cancel()
+        guard !trimmed.isEmpty else { return }
+        queryNormalizationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let normalized = try await bridge.normalizeQuery(trimmed)
+                await MainActor.run {
+                    guard self.partialTranscriptionActive else { return }
+                    if self.lastTranscript == rawQuery {
+                        self.query = normalized
+                    }
+                }
+            } catch {
+                // Keep raw partial transcript if normalization fails.
+            }
+        }
+    }
+
+    private func extendNavigationPanelVisibility(for seconds: TimeInterval) {
+        let deadline = Date().addingTimeInterval(seconds)
+        navigationPanelVisibleUntil = deadline
+        navigationHideTask?.cancel()
+        navigationHideTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining > 0 {
+                try? await Task.sleep(for: .milliseconds(Int((remaining * 1000).rounded())))
+            }
+            guard !Task.isCancelled else { return }
+            if let currentDeadline = self.navigationPanelVisibleUntil,
+               currentDeadline <= Date(),
+               !self.partialTranscriptionActive,
+               !self.isLoading,
+               !self.voiceLoopEnabled,
+               !self.wakeWordEnabled,
+               !self.isStreaming {
+                self.navigationPanelVisibleUntil = nil
+                self.navigationWindow = nil
+            }
+        }
+    }
+
+    func refreshNavigationWindow(for rawQuery: String, immediate: Bool = false) {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        navigationUpdateTask?.cancel()
+        guard !trimmed.isEmpty else {
+            navigationPanelVisibleUntil = nil
+            navigationWindow = nil
+            navigationPhaseLabel = ""
+            navigationSummaryText = ""
+            return
+        }
+        if immediate, currentInteractionMode != .generalQuery {
+            navigationWindow = MenuExplorationState(
+                mode: currentInteractionMode.rawValue,
+                targetFile: "",
+                targetDocument: "",
+                fileCandidates: [],
+                documentCandidates: [],
+                classCandidates: [],
+                functionCandidates: []
+            )
+            navigationPhaseLabel = "실시간 추정"
+            navigationSummaryText = "음성 입력을 기준으로 후보를 추정하는 중입니다"
+            extendNavigationPanelVisibility(for: 1.2)
+        }
+        navigationUpdateTask = Task { [weak self] in
+            guard let self else { return }
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(220))
+            }
+            if Task.isCancelled { return }
+            do {
+                let nav = try await bridge.navigationWindow(query: trimmed)
+                await MainActor.run {
+                    self.navigationWindow = nav
+                    self.navigationPhaseLabel = immediate ? "실시간 후보" : "정리된 후보"
+                    self.navigationSummaryText = self.navigationSummary(for: nav, final: false)
+                    self.extendNavigationPanelVisibility(for: immediate ? 1.2 : 2.5)
+                    self.syncExplorationSelection()
+                }
+            } catch {
+                await MainActor.run {
+                    self.navigationPanelVisibleUntil = nil
+                    self.navigationWindow = nil
+                    self.navigationPhaseLabel = ""
+                    self.navigationSummaryText = ""
+                }
+            }
+        }
+    }
+
+    private func hasExplorationCandidates(_ exploration: MenuExplorationState?) -> Bool {
+        guard let exploration else { return false }
+        return !exploration.fileCandidates.isEmpty
+            || !exploration.documentCandidates.isEmpty
+            || !exploration.classCandidates.isEmpty
+            || !exploration.functionCandidates.isEmpty
+    }
+
+    private func keepBestExploration(_ exploration: MenuExplorationState?) {
+        if hasExplorationCandidates(exploration) {
+            navigationWindow = exploration
+            navigationPhaseLabel = "최종 확정"
+            navigationSummaryText = navigationSummary(for: exploration, final: true)
+            extendNavigationPanelVisibility(for: 12.0)
+            syncExplorationSelection()
+            return
+        }
+        if hasExplorationCandidates(navigationWindow) {
+            navigationPhaseLabel = "최종 확정"
+            navigationSummaryText = navigationSummary(for: navigationWindow, final: true)
+            extendNavigationPanelVisibility(for: 12.0)
+            syncExplorationSelection()
+            return
+        }
+        navigationWindow = exploration
+        navigationPhaseLabel = "응답 반영"
+        navigationSummaryText = "응답은 완료되었지만 확정 후보는 제한적입니다"
+        extendNavigationPanelVisibility(for: 3.0)
+        syncExplorationSelection()
+    }
+
+    private func navigationSummary(for exploration: MenuExplorationState?, final: Bool) -> String {
+        guard let exploration else { return "" }
+        let prefix = final ? "최종 기준" : "현재 기준"
+        if !exploration.targetFile.isEmpty, let firstClass = exploration.classCandidates.first?.label {
+            return "\(prefix) 파일 \(exploration.targetFile), 클래스 \(firstClass)"
+        }
+        if !exploration.targetDocument.isEmpty {
+            return "\(prefix) 문서 \(exploration.targetDocument)"
+        }
+        if let firstFile = exploration.fileCandidates.first?.label {
+            return "\(prefix) 파일 후보 \(firstFile)"
+        }
+        if let firstClass = exploration.classCandidates.first?.label {
+            return "\(prefix) 클래스 후보 \(firstClass)"
+        }
+        if let firstFunction = exploration.functionCandidates.first?.label {
+            return "\(prefix) 함수 후보 \(firstFunction)"
+        }
+        return final ? "최종 후보를 정리했습니다" : "후보를 찾는 중입니다"
     }
 
     func activateMicrophone() async {
@@ -338,6 +610,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
         guard !trimmed.isEmpty else {
             return
         }
+        guard let resolvedQuery = prepareQueryForSubmission(trimmed) else {
+            return
+        }
 
         isLoading = true
         isStreaming = true
@@ -346,7 +621,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         response = nil
         transitionToAnswering()
         Task {
-            let stream = await bridge.askStreaming(trimmed)
+            let stream = await bridge.askStreaming(resolvedQuery)
             for await event in stream {
                 switch event {
                 case .token(let token):
@@ -355,15 +630,17 @@ final class JarvisMenuBarViewModel: ObservableObject {
                     if let finalResponse {
                         response = finalResponse
                         lastTranscript = finalResponse.query
+                        keepBestExploration(finalResponse.exploration)
                     }
                     isStreaming = false
                 case .error(let message):
                     appLog("streaming ask failed: \(message)")
                     // Fallback to non-streaming
                     do {
-                        let payload = try await bridge.ask(trimmed)
+                        let payload = try await bridge.ask(resolvedQuery)
                         response = payload
                         lastTranscript = payload.query
+                        keepBestExploration(payload.exploration)
                     } catch {
                         errorMessage = error.localizedDescription
                         cancelPhaseTransition()
@@ -395,10 +672,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
             do {
                 // Step 1: Native recording via AVCaptureDevice (no ffmpeg)
                 let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+                startLiveTranscription()
                 let audioURL = try await nativeRecorder.record(
                     deviceID: deviceID,
                     duration: pttDurationSeconds
                 )
+                stopLiveTranscription()
                 appLog("Recording done: \(audioURL.path)")
 
                 cancelPhaseTransition()
@@ -408,16 +687,27 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
                 lastTranscript = transcript.transcript
                 query = transcript.transcript
+                refreshNavigationWindow(for: transcript.transcript)
+                guard let resolvedQuery = prepareQueryForSubmission(transcript.transcript) else {
+                    isLoading = false
+                    if !voiceLoopEnabled {
+                        cancelPhaseTransition()
+                        voiceLoopPhase = .idle
+                    }
+                    return
+                }
 
                 // Step 3: Search + Answer via Python LLM
                 voiceLoopPhase = .answering
-                let payload = try await bridge.ask(transcript.transcript)
+                let payload = try await bridge.ask(resolvedQuery)
                 response = payload
+                keepBestExploration(payload.exploration)
                 exportMessage = nil
 
                 // Step 4: TTS — speak the response
                 speakResponse(payload.response)
             } catch {
+                stopLiveTranscription()
                 appLog("recordOnce failed: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 cancelPhaseTransition()
@@ -462,34 +752,40 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     private var ttsProcess: Process?
 
-    /// Speak response text using macOS TTS with JARVIS persona voice.
-    /// Only reads the core answer — strips citations, sources, and technical content.
+    /// Speak response text via the Python bridge so menu bar playback uses the
+    /// same persona-aware TTS path as the core runtime.
     func speakResponse(_ text: String) {
         let stripped = Self.stripForTTS(text)
         guard !stripped.isEmpty else { return }
 
-        // Stop any previous TTS
-        ttsProcess?.terminate()
+        stopTTS()
+        isSpeaking = true
 
-        // Detect language: Korean or English
-        let koreanCount = stripped.unicodeScalars.filter { $0.value >= 0xAC00 && $0.value <= 0xD7A3 }.count
-        let voice = koreanCount > stripped.count / 5 ? "Yuna (Premium)" : "Daniel"
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", voice, "-r", "165", stripped]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        ttsProcess = process
-
-        DispatchQueue.global(qos: .userInitiated).async {
+        let playbackTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
             do {
+                let speech = try await self.bridge.synthesizeSpeech(text: stripped)
+                try Task.checkCancellation()
+
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+                process.arguments = [speech.audioPath]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                await MainActor.run {
+                    self.ttsProcess = process
+                }
                 try process.run()
                 process.waitUntilExit()
             } catch {
                 appLog("TTS failed: \(error.localizedDescription)")
             }
+            await MainActor.run {
+                self.isSpeaking = false
+                self.ttsProcess = nil
+            }
         }
+        ttsPlaybackTask = playbackTask
     }
 
     /// Strip markdown and meta-commentary for natural TTS reading.
@@ -549,8 +845,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     /// Stop any currently playing TTS.
     func stopTTS() {
+        ttsPlaybackTask?.cancel()
+        ttsPlaybackTask = nil
         ttsProcess?.terminate()
         ttsProcess = nil
+        isSpeaking = false
     }
 
     private func stopWakeWord() {
@@ -789,6 +1088,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
         voiceLoopEnabled = false
         voiceLoopTask?.cancel()
         voiceLoopTask = nil
+        stopLiveTranscription()
+        stopTTS()
+        navigationPanelVisibleUntil = nil
+        navigationWindow = nil
         cancelPhaseTransition()
         isLoading = false
         voiceLoopPhase = .stopped
@@ -801,10 +1104,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
         do {
             let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            startLiveTranscription()
             let audioURL = try await nativeRecorder.record(
                 deviceID: deviceID,
                 duration: pttDurationSeconds
             )
+            stopLiveTranscription()
             if Task.isCancelled {
                 return nil
             }
@@ -814,13 +1119,20 @@ final class JarvisMenuBarViewModel: ObservableObject {
             let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
             lastTranscript = transcript.transcript
             query = transcript.transcript
+            refreshNavigationWindow(for: transcript.transcript)
+            guard let resolvedQuery = prepareQueryForSubmission(transcript.transcript) else {
+                isLoading = false
+                voiceLoopPhase = .cooldown
+                return successLoopDelay
+            }
 
             voiceLoopPhase = .answering
-            let payload = try await bridge.ask(transcript.transcript)
+            let payload = try await bridge.ask(resolvedQuery)
             if Task.isCancelled {
                 return nil
             }
             response = payload
+            keepBestExploration(payload.exploration)
             exportMessage = nil
             errorMessage = nil
             consecutiveLoopErrors = 0
@@ -832,6 +1144,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
             voiceLoopPhase = .cooldown
             return successLoopDelay
         } catch {
+            stopLiveTranscription()
             if Task.isCancelled {
                 return nil
             }
@@ -860,6 +1173,422 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
         exportMessage = nil
         showApprovalPanel = true
+    }
+
+    func copyResponse() {
+        guard let response else {
+            return
+        }
+        let fullContent: String
+        if let path = response.fullResponsePath, !path.isEmpty,
+           let fileContent = try? String(contentsOfFile: path, encoding: .utf8) {
+            fullContent = fileContent
+        } else {
+            fullContent = response.response
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fullContent, forType: .string)
+        exportMessage = "응답을 클립보드에 복사했습니다."
+    }
+
+    var currentInteractionMode: InteractionMode {
+        if sourceExplorationSessionActive {
+            return .sourceExploration
+        }
+        if documentExplorationSessionActive {
+            return .documentExploration
+        }
+        if let raw = response?.renderHints?.interactionMode,
+           let mode = InteractionMode(rawValue: raw) {
+            return mode
+        }
+        let lowered = query.lowercased()
+        if lowered.contains("소스")
+            || lowered.contains("코드")
+            || lowered.contains("클래스")
+            || lowered.contains("함수")
+            || lowered.contains("메서드")
+            || lowered.contains("메소드")
+            || lowered.contains(".py")
+            || lowered.contains(".ts")
+            || lowered.contains(".js")
+            || lowered.contains("python")
+            || lowered.contains("class")
+            || lowered.contains("function")
+            || lowered.contains("method") {
+            return .sourceExploration
+        }
+        if lowered.contains("문서")
+            || lowered.contains("pdf")
+            || lowered.contains("ppt")
+            || lowered.contains("doc")
+            || lowered.contains("보고서")
+            || lowered.contains("가이드")
+            || lowered.contains("매뉴얼")
+            || lowered.contains("요약") {
+            return .documentExploration
+        }
+        return .generalQuery
+    }
+
+    var currentExplorationItems: [MenuExplorationItem] {
+        let exploration = navigationWindow ?? response?.exploration
+        guard let exploration else {
+            return []
+        }
+        return exploration.fileCandidates
+            + exploration.documentCandidates
+            + exploration.classCandidates
+            + exploration.functionCandidates
+    }
+
+    var currentSelectedExplorationItem: MenuExplorationItem? {
+        currentExplorationItems.first(where: { $0.id == selectedExplorationItemID })
+    }
+
+    var activeExplorationState: MenuExplorationState? {
+        navigationWindow ?? response?.exploration
+    }
+
+    var shouldShowNavigationPanel: Bool {
+        guard let exploration = activeExplorationState else {
+            return false
+        }
+        let hasCandidates =
+            !exploration.fileCandidates.isEmpty
+            || !exploration.documentCandidates.isEmpty
+            || !exploration.classCandidates.isEmpty
+            || !exploration.functionCandidates.isEmpty
+        let shouldShowLoadingState =
+            !hasCandidates
+            && currentInteractionMode != .generalQuery
+            && (partialTranscriptionActive || isLoading || isStreaming)
+        guard hasCandidates || shouldShowLoadingState else {
+            return false
+        }
+        if isLoading || voiceLoopEnabled || wakeWordEnabled || partialTranscriptionActive || isStreaming {
+            return true
+        }
+        if let deadline = navigationPanelVisibleUntil, deadline > Date() {
+            return true
+        }
+        return false
+    }
+
+    func candidateNumber(for item: MenuExplorationItem) -> Int? {
+        currentExplorationItems.firstIndex(where: { $0.id == item.id }).map { $0 + 1 }
+    }
+
+    func selectExplorationItem(_ item: MenuExplorationItem) {
+        selectedExplorationItemID = item.id
+        if item.kind == "document" {
+            documentExplorationSessionActive = true
+            documentExplorationFocus = .detail
+            sourceExplorationSessionActive = false
+        } else {
+            sourceExplorationSessionActive = true
+            sourceExplorationFocus = item.kind == "function" ? .detail : (item.kind == "class" ? .functions : .classes)
+            documentExplorationSessionActive = false
+        }
+        exportMessage = "\(modeLabel(for: item.kind)) 선택: \(item.label)"
+    }
+
+    func prepareQueryForSubmission(_ rawQuery: String) -> String? {
+        if processLocalVoiceCommand(rawQuery) {
+            return nil
+        }
+        return resolvedSubmissionQuery(rawQuery)
+    }
+
+    func resolvedSubmissionQuery(_ rawQuery: String) -> String {
+        let exploration = navigationWindow ?? response?.exploration
+        guard let exploration else {
+            return rawQuery
+        }
+        if currentInteractionMode == .documentExploration || documentExplorationSessionActive {
+            if let selected = resolveExplorationSelection(from: rawQuery), selected.kind == "document" {
+                let targetDocument = !exploration.targetDocument.isEmpty ? exploration.targetDocument : selected.label
+                let enriched = [
+                    rawQuery,
+                    "선택 대상 document \(selected.label)",
+                    "대상 문서 \(targetDocument)",
+                    documentExplorationIntentSuffix(for: rawQuery, selected: selected),
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                exportMessage = "문서 선택: \(selected.label)"
+                return enriched
+            }
+            return rawQuery
+        }
+        guard currentInteractionMode == .sourceExploration || sourceExplorationSessionActive else {
+            return rawQuery
+        }
+        guard let selected = resolveExplorationSelection(from: rawQuery) else {
+            return rawQuery
+        }
+
+        let targetFile = !exploration.targetFile.isEmpty ? exploration.targetFile : selected.path
+        let enriched = [
+            rawQuery,
+            "선택 대상 \(selected.kind) \(selected.label)",
+            targetFile.isEmpty ? "" : "대상 파일 \(targetFile)",
+            sourceExplorationFocus == .detail ? "소스 탐색 상세 모드" : "소스 탐색 진행 중",
+            sourceExplorationIntentSuffix(for: rawQuery, selected: selected),
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+        exportMessage = "\(modeLabel(for: selected.kind)) 선택: \(selected.label)"
+        return enriched
+    }
+
+    private func resolveExplorationSelection(from rawQuery: String) -> MenuExplorationItem? {
+        if let selected = currentSelectedExplorationItem {
+            let lowered = rawQuery.lowercased()
+            if lowered.contains("선택")
+                || lowered.contains("이거")
+                || lowered.contains("이 파일")
+                || lowered.contains("이 클래스")
+                || lowered.contains("이 함수") {
+                return selected
+            }
+        }
+
+        let items = currentExplorationItems
+        guard !items.isEmpty else {
+            return nil
+        }
+        if let ordinal = detectedOrdinal(in: rawQuery),
+           ordinal >= 1, ordinal <= items.count {
+            let item = items[ordinal - 1]
+            selectedExplorationItemID = item.id
+            return item
+        }
+
+        let lowered = rawQuery.lowercased()
+        if let item = items.first(where: { item in
+            lowered.contains(item.label.lowercased())
+                || (!item.path.isEmpty && lowered.contains((item.path as NSString).lastPathComponent.lowercased()))
+        }) {
+            selectedExplorationItemID = item.id
+            return item
+        }
+        return currentSelectedExplorationItem
+    }
+
+    private func processLocalVoiceCommand(_ rawQuery: String) -> Bool {
+        let lowered = rawQuery.lowercased()
+        if lowered.contains("소스코드 분석 시작")
+            || lowered.contains("소스 분석 시작")
+            || lowered.contains("소스 탐색 시작") {
+            sourceExplorationSessionActive = true
+            sourceExplorationFocus = .files
+            exportMessage = "소스 탐색 모드를 시작했습니다. 파일 이름이나 후보를 말해 주세요."
+            return true
+        }
+        if lowered.contains("소스 탐색 종료")
+            || lowered.contains("소스코드 분석 종료")
+            || lowered.contains("소스 분석 종료") {
+            sourceExplorationSessionActive = false
+            sourceExplorationFocus = .files
+            selectedExplorationItemID = ""
+            exportMessage = "소스 탐색 모드를 종료했습니다."
+            return true
+        }
+        if lowered.contains("문서 탐색 시작")
+            || lowered.contains("문서 분석 시작") {
+            documentExplorationSessionActive = true
+            documentExplorationFocus = .documents
+            sourceExplorationSessionActive = false
+            exportMessage = "문서 탐색 모드를 시작했습니다. 문서 이름이나 후보를 말해 주세요."
+            return true
+        }
+        if lowered.contains("문서 탐색 종료")
+            || lowered.contains("문서 분석 종료") {
+            documentExplorationSessionActive = false
+            documentExplorationFocus = .documents
+            if currentSelectedExplorationItem?.kind == "document" {
+                selectedExplorationItemID = ""
+            }
+            exportMessage = "문서 탐색 모드를 종료했습니다."
+            return true
+        }
+        if lowered.contains("이전으로") || lowered.contains("뒤로") {
+            if documentExplorationSessionActive {
+                moveDocumentExplorationBack()
+            } else {
+                moveSourceExplorationBack()
+            }
+            return true
+        }
+        if lowered.contains("파일 후보 보여줘") || lowered.contains("파일 목록 보여줘") {
+            sourceExplorationSessionActive = true
+            sourceExplorationFocus = .files
+            exportMessage = "파일 후보를 보고 있습니다. 번호나 파일명을 말해 주세요."
+            return true
+        }
+        if lowered.contains("클래스 후보 보여줘") || lowered.contains("클래스 목록 보여줘") {
+            sourceExplorationSessionActive = true
+            sourceExplorationFocus = .classes
+            exportMessage = "클래스 후보를 보고 있습니다. 번호나 클래스명을 말해 주세요."
+            return true
+        }
+        if lowered.contains("함수 후보 보여줘") || lowered.contains("함수 목록 보여줘") {
+            sourceExplorationSessionActive = true
+            sourceExplorationFocus = .functions
+            exportMessage = "함수 후보를 보고 있습니다. 번호나 함수명을 말해 주세요."
+            return true
+        }
+        if lowered.contains("문서 후보 보여줘") || lowered.contains("문서 목록 보여줘") {
+            documentExplorationSessionActive = true
+            documentExplorationFocus = .documents
+            exportMessage = "문서 후보를 보고 있습니다. 번호나 문서명을 말해 주세요."
+            return true
+        }
+        return false
+    }
+
+    private func moveSourceExplorationBack() {
+        sourceExplorationSessionActive = true
+        switch sourceExplorationFocus {
+        case .detail:
+            sourceExplorationFocus = .functions
+        case .functions:
+            sourceExplorationFocus = .classes
+        case .classes:
+            sourceExplorationFocus = .files
+        case .files:
+            sourceExplorationSessionActive = false
+        }
+        exportMessage = sourceExplorationSessionActive
+            ? "\(sourceExplorationFocus.title) 단계로 이동했습니다."
+            : "소스 탐색 모드를 종료했습니다."
+    }
+
+    private func moveDocumentExplorationBack() {
+        switch documentExplorationFocus {
+        case .detail:
+            documentExplorationFocus = .documents
+            exportMessage = "문서 후보 단계로 이동했습니다."
+        case .documents:
+            documentExplorationSessionActive = false
+            exportMessage = "문서 탐색 모드를 종료했습니다."
+        }
+    }
+
+    private func detectedOrdinal(in text: String) -> Int? {
+        let lowered = text.lowercased()
+        let mappings: [(String, Int)] = [
+            ("첫 번째", 1), ("첫번째", 1), ("1번", 1), ("first", 1), ("one", 1),
+            ("두 번째", 2), ("두번째", 2), ("2번", 2), ("second", 2), ("two", 2),
+            ("세 번째", 3), ("세번째", 3), ("3번", 3), ("third", 3), ("three", 3),
+            ("네 번째", 4), ("네번째", 4), ("4번", 4), ("fourth", 4), ("four", 4),
+        ]
+        for (token, value) in mappings where lowered.contains(token) {
+            return value
+        }
+        return nil
+    }
+
+    private func modeLabel(for kind: String) -> String {
+        switch kind {
+        case "filename":
+            return "파일"
+        case "document":
+            return "문서"
+        case "class":
+            return "클래스"
+        case "function":
+            return "함수"
+        default:
+            return "항목"
+        }
+    }
+
+    private func sourceExplorationIntentSuffix(
+        for rawQuery: String,
+        selected: MenuExplorationItem
+    ) -> String {
+        let lowered = rawQuery.lowercased()
+        let targetFile = (navigationWindow ?? response?.exploration)?.targetFile ?? ""
+
+        if lowered.contains("어디서 쓰")
+            || lowered.contains("사용처")
+            || lowered.contains("누가 부르")
+            || lowered.contains("참조")
+            || lowered.contains("reference")
+            || lowered.contains("usage") {
+            return "현재 선택된 \(modeLabel(for: selected.kind)) \(selected.label)의 usage, references, callers를 기준으로 분석해줘. \(targetFile.isEmpty ? "" : "파일은 \(targetFile).")"
+        }
+
+        if lowered.contains("호출 관계")
+            || lowered.contains("호출 흐름")
+            || lowered.contains("call graph")
+            || lowered.contains("caller")
+            || lowered.contains("callee") {
+            return "현재 선택된 \(modeLabel(for: selected.kind)) \(selected.label)의 call graph, callers, callees, invocation flow를 중심으로 설명해줘. \(targetFile.isEmpty ? "" : "파일은 \(targetFile).")"
+        }
+
+        if lowered.contains("정의")
+            || lowered.contains("역할")
+            || lowered.contains("무엇")
+            || lowered.contains("설명")
+            || lowered.contains("어떻게 작동")
+            || lowered.contains("what")
+            || lowered.contains("explain")
+            || lowered.contains("describe") {
+            return "현재 선택된 \(modeLabel(for: selected.kind)) \(selected.label)의 definition, responsibilities, key methods를 중심으로 설명해줘. \(targetFile.isEmpty ? "" : "파일은 \(targetFile).")"
+        }
+
+        if lowered.contains("보여줘")
+            || lowered.contains("열어줘")
+            || lowered.contains("show") {
+            return "현재 선택된 \(modeLabel(for: selected.kind)) \(selected.label)의 선언부와 핵심 구현을 중심으로 보여줘. \(targetFile.isEmpty ? "" : "파일은 \(targetFile).")"
+        }
+
+        return ""
+    }
+
+    private func syncExplorationSelection() {
+        let items = currentExplorationItems
+        guard !items.isEmpty else {
+            selectedExplorationItemID = ""
+            return
+        }
+        if items.contains(where: { $0.id == selectedExplorationItemID }) {
+            return
+        }
+        if let preferred = items.first(where: { $0.kind == "class" })
+            ?? items.first(where: { $0.kind == "document" })
+            ?? items.first(where: { $0.kind == "filename" })
+            ?? items.first {
+            selectedExplorationItemID = preferred.id
+            if preferred.kind == "document" {
+                documentExplorationSessionActive = true
+            } else {
+                sourceExplorationSessionActive = true
+            }
+        }
+    }
+
+    private func documentExplorationIntentSuffix(
+        for rawQuery: String,
+        selected: MenuExplorationItem
+    ) -> String {
+        let lowered = rawQuery.lowercased()
+        if lowered.contains("요약") || lowered.contains("summary") {
+            return "현재 선택된 문서 \(selected.label)의 핵심 내용을 요약해줘."
+        }
+        if lowered.contains("섹션") || lowered.contains("section") || lowered.contains("부분") {
+            return "현재 선택된 문서 \(selected.label)의 관련 섹션과 핵심 문장을 중심으로 설명해줘."
+        }
+        if lowered.contains("근거") || lowered.contains("출처") || lowered.contains("citation") {
+            return "현재 선택된 문서 \(selected.label)의 근거 문장과 출처 중심으로 설명해줘."
+        }
+        if lowered.contains("보여줘") || lowered.contains("열어줘") {
+            return "현재 선택된 문서 \(selected.label)의 관련 부분을 보여줘."
+        }
+        return "현재 선택된 문서 \(selected.label)을 기준으로 답변해줘."
     }
 
     func approveExport() {
@@ -1151,7 +1880,7 @@ struct ActivityDots: View {
         HStack(spacing: 5) {
             ForEach(0..<4, id: \.self) { index in
                 Circle()
-                    .fill(active ? activeColor.opacity(0.35 + (Double(index) * 0.15)) : Color.gray.opacity(0.18))
+                .fill(active ? activeColor.opacity(0.35 + (Double(index) * 0.15)) : Color.gray.opacity(0.18))
                     .frame(width: 7, height: 7)
             }
         }
@@ -1243,20 +1972,186 @@ struct HealthCheckRow: View {
     let ok: Bool
     let detail: String
 
+    private var toneColor: Color {
+        let lowered = detail.lowercased()
+        if ok {
+            if lowered.contains("ready") || lowered.contains("lazy-loaded") {
+                return .yellow
+            }
+            return .green
+        }
+        if lowered.contains("disabled") || lowered.contains("fts-only") || lowered.contains("not configured") {
+            return .orange
+        }
+        return .red
+    }
+
+    private var stateLabel: String {
+        let lowered = detail.lowercased()
+        if lowered.contains("active") || lowered == "ok" || lowered.hasPrefix("ok ") || lowered.hasPrefix("ok(") {
+            return "active"
+        }
+        if lowered.contains("ready") || lowered.contains("lazy-loaded") {
+            return "ready"
+        }
+        if lowered.contains("disabled") || lowered.contains("fts-only") {
+            return "disabled"
+        }
+        if lowered.contains("not configured") {
+            return "optional"
+        }
+        return ok ? "ok" : "issue"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Circle()
-                .fill(ok ? Color.green : Color.orange)
+                .fill(toneColor)
                 .frame(width: 8, height: 8)
                 .padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.caption.weight(.semibold))
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(.caption.weight(.semibold))
+                    ToneBadge(title: stateLabel, color: toneColor)
+                }
                 Text(detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+        }
+    }
+}
+
+struct NavigationAssistView: View {
+    @ObservedObject var viewModel: JarvisMenuBarViewModel
+
+    private var exploration: MenuExplorationState? {
+        viewModel.activeExplorationState
+    }
+
+    var body: some View {
+        Group {
+            if let exploration {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Text(viewModel.currentInteractionMode == .documentExploration ? "Document Navigator" : "Navigation Window")
+                            .font(.headline)
+                        Spacer()
+                        if !viewModel.navigationPhaseLabel.isEmpty {
+                            ToneBadge(title: viewModel.navigationPhaseLabel, color: .blue)
+                        }
+                        ToneBadge(
+                            title: viewModel.currentInteractionMode.title,
+                            color: viewModel.currentInteractionMode == .documentExploration ? .orange : .mint
+                        )
+                    }
+
+                    if !exploration.targetFile.isEmpty {
+                        Text("대상 파일: \(exploration.targetFile)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !exploration.targetDocument.isEmpty {
+                        Text("대상 문서: \(exploration.targetDocument)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !viewModel.navigationSummaryText.isEmpty {
+                        Text(viewModel.navigationSummaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if viewModel.currentExplorationItems.isEmpty {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("실시간 후보를 찾는 중입니다")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 20)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if !exploration.documentCandidates.isEmpty {
+                                    navigationSection("문서 후보", items: exploration.documentCandidates, tint: .orange)
+                                }
+                                if !exploration.fileCandidates.isEmpty {
+                                    navigationSection("파일 후보", items: exploration.fileCandidates, tint: .mint)
+                                }
+                                if !exploration.classCandidates.isEmpty {
+                                    navigationSection("클래스 후보", items: exploration.classCandidates, tint: .mint)
+                                }
+                                if !exploration.functionCandidates.isEmpty {
+                                    navigationSection("함수 후보", items: exploration.functionCandidates, tint: .mint)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 260)
+                    }
+
+                    if let selected = viewModel.currentSelectedExplorationItem,
+                       !selected.preview.isEmpty {
+                        Divider()
+                        Text(selected.label)
+                            .font(.caption.weight(.semibold))
+                        ScrollView {
+                            Text(selected.preview)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 150)
+                    }
+
+                    Text(viewModel.currentInteractionMode == .documentExploration ? "예: 첫 번째, guide.pdf 문서, 이 문서 요약해줘" : "예: 첫 번째, Pipeline 클래스, 이 클래스 설명해줘")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .frame(width: 420)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.22), radius: 16, x: 0, y: 12)
+            }
+        }
+        .padding(10)
+        .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private func navigationSection(_ title: String, items: [MenuExplorationItem], tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+            ForEach(items) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(viewModel.candidateNumber(for: item) ?? 0).")
+                        .font(.caption.monospacedDigit())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.label)
+                            .font(.caption.weight(.semibold))
+                        if !item.path.isEmpty {
+                            Text(item.path)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(viewModel.currentSelectedExplorationItem?.id == item.id ? tint.opacity(0.18) : Color.black.opacity(0.08))
+                )
+            }
         }
     }
 }
@@ -1300,7 +2195,107 @@ struct JarvisMenuContentView: View {
         if health.failedChecks.isEmpty {
             return "모든 런타임 상태가 정상입니다."
         }
-        return "확인이 필요한 항목: \(health.failedChecks.joined(separator: ", "))"
+        var messages: [String] = []
+
+        if health.failedChecks.contains("knowledge_base") {
+            messages.append("지식 베이스 폴더가 아직 준비되지 않았습니다.")
+        }
+        if health.failedChecks.contains("database") {
+            messages.append("로컬 데이터베이스 점검이 필요합니다.")
+        }
+        if health.failedChecks.contains("model") {
+            messages.append("생성 모델을 바로 사용할 수 없는 상태입니다.")
+        }
+        if health.failedChecks.contains("vector_search") || health.failedChecks.contains("vector_db") {
+            messages.append("현재는 FTS-only 검색 경로로 동작 중입니다.")
+        }
+        if health.failedChecks.contains("embeddings") {
+            messages.append("임베딩 런타임이 비활성 상태입니다.")
+        }
+        if health.failedChecks.contains("reranker") {
+            messages.append("reranker가 비활성이라 기본 순위로 응답합니다.")
+        }
+
+        if messages.isEmpty {
+            return "확인이 필요한 항목: \(health.failedChecks.joined(separator: ", "))"
+        }
+        return messages.joined(separator: " ")
+    }
+
+    private func runtimeDetail(_ key: String) -> String {
+        viewModel.health?.details[key] ?? "unavailable"
+    }
+
+    private func runtimeTone(_ detail: String) -> Color {
+        let lowered = detail.lowercased()
+        if lowered.contains("active") || lowered == "ok" || lowered.hasPrefix("ok ") || lowered.hasPrefix("ok(") {
+            return .green
+        }
+        if lowered.contains("ready") || lowered.contains("lazy-loaded") {
+            return .yellow
+        }
+        if lowered.contains("disabled") || lowered.contains("fts-only") || lowered.contains("unavailable") {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private func runtimeSummaryLabel(_ detail: String) -> String {
+        let lowered = detail.lowercased()
+        if lowered.contains("active") || lowered == "ok" || lowered.hasPrefix("ok ") || lowered.hasPrefix("ok(") {
+            return "active"
+        }
+        if lowered.contains("ready") || lowered.contains("lazy-loaded") {
+            return "ready"
+        }
+        if lowered.contains("disabled") || lowered.contains("fts-only") || lowered.contains("unavailable") {
+            return "disabled"
+        }
+        return "issue"
+    }
+
+    private func humanizedHealthDetail(for key: String, detail: String) -> String {
+        switch key {
+        case "vector_search":
+            if detail.lowercased().contains("fts-only") {
+                return "벡터 검색 비활성. 현재는 FTS-only 모드입니다."
+            }
+        case "embeddings":
+            if detail.lowercased().contains("ready") || detail.lowercased().contains("lazy-loaded") {
+                return "임베딩 런타임 준비 완료. 첫 질의에서 로드됩니다."
+            }
+            if detail.lowercased().contains("disabled") {
+                return "임베딩 런타임 비활성. semantic 검색이 제한됩니다."
+            }
+        case "reranker":
+            if detail.lowercased().contains("ready") || detail.lowercased().contains("lazy-loaded") {
+                return "reranker 준비 완료. 필요 시 지연 로드됩니다."
+            }
+            if detail.lowercased().contains("disabled") {
+                return "reranker 비활성. 기본 검색 순위를 그대로 사용합니다."
+            }
+        case "knowledge_base":
+            if detail == "not configured" {
+                return "지식 베이스 경로가 설정되지 않았습니다."
+            }
+        default:
+            break
+        }
+        return detail
+    }
+
+    private func interactionModeColor(_ mode: InteractionMode) -> Color {
+        if viewModel.currentInteractionMode == mode {
+            switch mode {
+            case .generalQuery:
+                return .blue
+            case .sourceExploration:
+                return .mint
+            case .documentExploration:
+                return .orange
+            }
+        }
+        return .gray
     }
 
     var body: some View {
@@ -1314,6 +2309,14 @@ struct JarvisMenuContentView: View {
                             Text(viewModel.phaseStatusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                ForEach(InteractionMode.allCases) { mode in
+                                    ToneBadge(
+                                        title: mode.title,
+                                        color: interactionModeColor(mode)
+                                    )
+                                }
+                            }
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 8) {
@@ -1351,6 +2354,9 @@ struct JarvisMenuContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("질문을 입력하세요", text: $viewModel.query)
                                 .textFieldStyle(.roundedBorder)
+                                .onChange(of: viewModel.query) { _, newValue in
+                                    viewModel.refreshNavigationWindow(for: newValue)
+                                }
                                 .onSubmit {
                                     viewModel.submit()
                                 }
@@ -1375,6 +2381,12 @@ struct JarvisMenuContentView: View {
                                     viewModel.submit()
                                 }
                                 .keyboardShortcut(.return, modifiers: [.command])
+
+                                if viewModel.isSpeaking {
+                                    Button("Stop Voice") {
+                                        viewModel.stopTTS()
+                                    }
+                                }
 
                                 Spacer()
                             }
@@ -1441,6 +2453,7 @@ struct JarvisMenuContentView: View {
                                     ToneBadge(title: "safe", color: status.safeMode ? .orange : .gray)
                                     ToneBadge(title: "degraded", color: status.degradedMode ? .orange : .gray)
                                     ToneBadge(title: "write-block", color: status.writeBlocked ? .red : .gray)
+                                    ToneBadge(title: viewModel.currentInteractionMode.title, color: interactionModeColor(viewModel.currentInteractionMode))
                                 }
                             }
 
@@ -1451,8 +2464,16 @@ struct JarvisMenuContentView: View {
                                         .textSelection(.enabled)
 
                                     HStack(spacing: 8) {
+                                        Button("Copy Response") {
+                                            viewModel.copyResponse()
+                                        }
                                         Button("Export Draft") {
                                             viewModel.requestExport()
+                                        }
+                                        if viewModel.isSpeaking {
+                                            Button("Stop Voice") {
+                                                viewModel.stopTTS()
+                                            }
                                         }
                                         if let path = response.fullResponsePath, !path.isEmpty {
                                             Button("...more") {
@@ -1537,6 +2558,12 @@ struct JarvisMenuContentView: View {
                                     ToneBadge(title: "\(health.chunkCount) chunks", color: .secondary)
                                 }
 
+                                HStack(spacing: 6) {
+                                    ToneBadge(title: "embed \(runtimeSummaryLabel(runtimeDetail("embeddings")))", color: runtimeTone(runtimeDetail("embeddings")))
+                                    ToneBadge(title: "vector \(runtimeSummaryLabel(runtimeDetail("vector_search")))", color: runtimeTone(runtimeDetail("vector_search")))
+                                    ToneBadge(title: "reranker \(runtimeSummaryLabel(runtimeDetail("reranker")))", color: runtimeTone(runtimeDetail("reranker")))
+                                }
+
                                 if !health.failedChecks.isEmpty {
                                     Text("Issues: \(health.failedChecks.joined(separator: ", "))")
                                         .font(.caption)
@@ -1556,7 +2583,10 @@ struct JarvisMenuContentView: View {
                                         HealthCheckRow(
                                             name: key,
                                             ok: health.checks[key] ?? false,
-                                            detail: health.details[key] ?? ""
+                                            detail: humanizedHealthDetail(
+                                                for: key,
+                                                detail: health.details[key] ?? ""
+                                            )
                                         )
                                     }
                                 }
@@ -1690,9 +2720,12 @@ struct JarvisMenuContentView: View {
 @main
 struct JarvisMenuBarApp: App {
     @StateObject private var viewModel: JarvisMenuBarViewModel
+    private let navigationPanelController: NavigationPanelController
 
     init() {
-        _viewModel = StateObject(wrappedValue: JarvisMenuBarViewModel())
+        let model = JarvisMenuBarViewModel()
+        _viewModel = StateObject(wrappedValue: model)
+        navigationPanelController = NavigationPanelController(viewModel: model)
     }
 
     var body: some Scene {
@@ -1700,5 +2733,12 @@ struct JarvisMenuBarApp: App {
             JarvisMenuContentView(viewModel: viewModel)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Refresh Navigation Window") {
+                    navigationPanelController.refresh()
+                }
+            }
+        }
     }
 }

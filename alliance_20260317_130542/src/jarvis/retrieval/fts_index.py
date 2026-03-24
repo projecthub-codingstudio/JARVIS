@@ -50,7 +50,7 @@ class FTSIndex:
         self, fragments: Sequence[TypedQueryFragment], top_k: int = 20
     ) -> list[SearchHit]:
         if self._db is None:
-            return self._stub_search()
+            return []
 
         terms: list[str] = []
         kiwi = _get_kiwi()
@@ -132,13 +132,3 @@ class FTSIndex:
                 tags={"stage": "fts_search", "result_count": str(len(hits))},
             )
         return hits
-
-    def _stub_search(self) -> list[SearchHit]:
-        return [
-            SearchHit(
-                chunk_id="stub-chunk-1",
-                document_id="stub-doc-1",
-                score=0.95,
-                snippet="stub FTS result",
-            ),
-        ]
