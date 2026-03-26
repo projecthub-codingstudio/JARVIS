@@ -361,10 +361,13 @@ class Orchestrator:
         # This is the row-level equivalent of _targeted_file_search.
         _ROW_SUPP_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
         query_row_ids = set(_ROW_SUPP_RE.findall(query))
-        if query_row_ids:
+        meal_fields = self._table_field_hints(query)
+        use_structured_row_lookup = self._should_use_structured_row_lookup(query, meal_fields)
+        if query_row_ids and use_structured_row_lookup:
             db = getattr(self._fts_retriever, "_db", None)
             if db is not None:
                 existing_ids = {h.chunk_id for h in fts_hits} | {h.chunk_id for h in vector_hits}
+                supplemental_hits: list[SearchHit] = []
                 for rid in query_row_ids:
                     rows = db.execute(
                         "SELECT chunk_id, document_id, text FROM chunks"
@@ -374,13 +377,43 @@ class Orchestrator:
                     ).fetchall()
                     for chunk_id, doc_id, text in rows:
                         if chunk_id not in existing_ids:
-                            fts_hits.append(SearchHit(
+                            supplemental_hits.append(SearchHit(
                                 chunk_id=chunk_id,
                                 document_id=doc_id,
-                                score=1.0,
+                                score=50.0,
                                 snippet=text[:200],
                             ))
                             existing_ids.add(chunk_id)
+                if supplemental_hits:
+                    fts_hits = supplemental_hits + [h for h in fts_hits if h.chunk_id not in existing_ids]
+
+        # Table field supplemental search: when query asks for a specific
+        # meal/column inside a numbered plan row, directly surface that row.
+        if query_row_ids and meal_fields:
+            db = getattr(self._fts_retriever, "_db", None)
+            if db is not None:
+                existing_ids = {h.chunk_id for h in fts_hits} | {h.chunk_id for h in vector_hits}
+                table_hits: list[SearchHit] = []
+                for rid in query_row_ids:
+                    for meal_field in meal_fields:
+                        rows = db.execute(
+                            "SELECT chunk_id, document_id, text FROM chunks"
+                            " WHERE heading_path LIKE 'table-row-%'"
+                            " AND text LIKE ?"
+                            " AND text LIKE ?",
+                            (f"%Day={rid} |%", f"%{meal_field}=%"),
+                        ).fetchall()
+                        for chunk_id, doc_id, text in rows:
+                            if chunk_id not in existing_ids:
+                                table_hits.append(SearchHit(
+                                    chunk_id=chunk_id,
+                                    document_id=doc_id,
+                                    score=100.0,
+                                    snippet=text[:200],
+                                ))
+                                existing_ids.add(chunk_id)
+                if table_hits:
+                    fts_hits = table_hits + [h for h in fts_hits if h.chunk_id not in existing_ids]
 
         hybrid_results = self._hybrid_fusion.fuse(
             fts_hits,
@@ -546,6 +579,47 @@ class Orchestrator:
         # Sort by score descending, limit to top 5
         targeted.sort(key=lambda h: h.score, reverse=True)
         return targeted[:5]
+
+    @staticmethod
+    def _table_field_hints(query: str) -> list[str] | None:
+        lowered = query.lower()
+        field_aliases = {
+            "Breakfast": ("아침", "조식", "breakfast"),
+            "Lunch": ("점심", "중식", "lunch"),
+            "Dinner": ("저녁", "석식", "dinner"),
+            "Drinks": ("음료", "drink", "drinks"),
+            "Morning Supplements": ("아침 보충제", "morning supplement"),
+            "Lunch Supplements": ("점심 보충제", "lunch supplement"),
+            "Evening Supplements": ("저녁 보충제", "evening supplement"),
+        }
+        matched_fields: list[str] = []
+        for field, aliases in field_aliases.items():
+            if any(alias in lowered for alias in aliases):
+                matched_fields.append(field)
+        return matched_fields or None
+
+    @staticmethod
+    def _should_use_structured_row_lookup(query: str, meal_fields: list[str] | None) -> bool:
+        lowered = query.lower()
+        if meal_fields:
+            return True
+
+        table_context_terms = (
+            "식단표",
+            "식단",
+            "메뉴",
+            "표",
+            "행",
+            "열",
+            "row",
+            "column",
+            "day ",
+            "day=",
+        )
+        if any(term in lowered for term in table_context_terms):
+            return True
+
+        return False
 
     def _extract_user_knowledge(self, turn: ConversationTurn) -> None:
         """Extract and store user knowledge from a completed turn (Tier 3 memory)."""

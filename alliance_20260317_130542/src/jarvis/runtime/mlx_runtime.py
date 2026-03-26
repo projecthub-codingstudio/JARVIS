@@ -31,6 +31,53 @@ if TYPE_CHECKING:
 _THINK_RE = re.compile(r"<think>.*?</think>\s*|<thought>.*?</thought>\s*", re.DOTALL)
 _CLASS_QUERY_RE = re.compile(r"(?:\bclass\b|클래스)\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+_TABLE_KEY_VALUE_RE = re.compile(r"([A-Za-z][A-Za-z ]+)=([^|]+)")
+_DAY_QUERY_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|day|번)", re.IGNORECASE)
+_TABLE_VALUE_TOKEN_RE = re.compile(r"^(.+?)(\d+)(장|개|알|잔|봉|봉지|팩|캡슐|정|스푼|큰술|작은술|g|kg|ml|l)?$")
+_FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+_QUERY_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}|[가-힣]{2,}")
+_SEGMENT_SPLIT_RE = re.compile(r"[\n\r]+|(?<=[.!?])\s+|\s+\|\s+")
+_BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
+_NOISE_TOKEN_RE = re.compile(r"^(?:오프셋|자료형|의미|설명|길이|바이트|입력시|table|columns?)$", re.IGNORECASE)
+_EXPLANATORY_PHRASE_RE = re.compile(r"(?:이다|있다|된다|한다|의미|설명|구조로 저장|때문에|가능하다|존재한다)")
+
+_KOREAN_NUMBER_WORDS = {
+    0: "영",
+    1: "한",
+    2: "두",
+    3: "세",
+    4: "네",
+    5: "다섯",
+    6: "여섯",
+    7: "일곱",
+    8: "여덟",
+    9: "아홉",
+    10: "열",
+}
+_SINO_KOREAN_NUMBER_WORDS = {
+    0: "영",
+    1: "일",
+    2: "이",
+    3: "삼",
+    4: "사",
+    5: "오",
+    6: "육",
+    7: "칠",
+    8: "팔",
+    9: "구",
+    10: "십",
+}
+_KOREAN_UNIT_LABELS = {
+    "g": "그램",
+    "kg": "킬로그램",
+    "ml": "밀리리터",
+    "l": "리터",
+}
+_QUERY_STOPWORDS = {
+    "알려줘", "알려주세요", "설명", "설명해", "설명해줘", "설명해주세요", "대해", "대해서",
+    "그리고", "에서", "형식", "문서", "자료", "구조", "기본", "개체", "중에", "해주세요",
+    "요약", "정리", "좀", "관련", "반갑습니다", "안녕하세요", "만나서",
+}
 
 
 def strip_think_tags(text: str) -> str:
@@ -69,11 +116,19 @@ def _extract_requested_identifier(prompt: str, evidence: VerifiedEvidenceSet) ->
     return ""
 
 
+def build_stub_spoken_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    if table_response := _build_table_stub_response(prompt, evidence, spoken=True):
+        return table_response
+    return ""
+
+
 def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
     sources = [item.source_path or item.document_id for item in evidence.items[:3]]
     unique_sources = [source for index, source in enumerate(sources) if source and source not in sources[:index]]
     primary_source = unique_sources[0] if unique_sources else "확인된 소스"
     citation_labels = ", ".join(item.citation.label for item in evidence.items[:3])
+    if table_response := _build_table_stub_response(prompt, evidence, spoken=False):
+        return f"확인된 근거는 [{primary_source}]에 있습니다.\n{table_response}\n근거: {citation_labels}"
     head = _extract_best_stub_snippet(prompt, evidence)
     identifier = _extract_requested_identifier(prompt, evidence)
 
@@ -91,6 +146,186 @@ def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) ->
     intro = f"확인된 근거는 [{primary_source}]에 있습니다."
     body = f"현재 모델 생성 경로가 비활성이라 검색 근거를 그대로 요약합니다: {head}"
     return f"{intro}\n{body}\n근거: {citation_labels}"
+
+
+def _build_table_stub_response(
+    prompt: str,
+    evidence: VerifiedEvidenceSet,
+    *,
+    spoken: bool = False,
+) -> str:
+    table_items = [item for item in evidence.items if item.heading_path and "table-row" in item.heading_path]
+    if not table_items:
+        return ""
+
+    requested_days = [int(day) for day in _DAY_QUERY_RE.findall(prompt)]
+    requested_fields = _requested_table_fields(prompt)
+    rendered_rows: list[str] = []
+
+    for item in table_items:
+        parsed = _parse_table_row(item.text)
+        if not parsed:
+            continue
+        day = parsed.get("Day", "").strip()
+        if requested_days and day.isdigit() and int(day) not in requested_days:
+            continue
+        rendered = _render_table_row(parsed, requested_fields=requested_fields, spoken=spoken)
+        if rendered and rendered not in rendered_rows:
+            rendered_rows.append(rendered)
+
+    if not rendered_rows:
+        return ""
+
+    if requested_fields:
+        return " / ".join(rendered_rows[:3])
+    return " ".join(rendered_rows[:3])
+
+
+def _requested_table_fields(prompt: str) -> list[str] | None:
+    lowered = prompt.lower()
+    field_aliases = {
+        "Breakfast": ("아침", "조식", "breakfast"),
+        "Lunch": ("점심", "중식", "lunch"),
+        "Dinner": ("저녁", "석식", "dinner"),
+        "Drinks": ("음료", "drink", "drinks"),
+    }
+    matched_fields: list[str] = []
+    for field, aliases in field_aliases.items():
+        if any(alias in lowered for alias in aliases):
+            matched_fields.append(field)
+    if matched_fields:
+        return matched_fields
+    if "메뉴" in prompt:
+        return ["Breakfast", "Lunch", "Dinner"]
+    return None
+
+
+def _parse_table_row(text: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for key, value in _TABLE_KEY_VALUE_RE.findall(text):
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def _render_table_row(
+    parsed: dict[str, str],
+    *,
+    requested_fields: list[str] | None,
+    spoken: bool = False,
+) -> str:
+    day = parsed.get("Day", "").strip()
+    field_labels = {
+        "Breakfast": "아침",
+        "Lunch": "점심",
+        "Dinner": "저녁",
+        "Drinks": "음료",
+    }
+
+    if requested_fields:
+        parts = []
+        for field in requested_fields:
+            value = parsed.get(field, "").strip()
+            if value:
+                rendered_value = _render_table_value(value, spoken=spoken)
+                parts.append(f"{field_labels.get(field, field)}은 {rendered_value}")
+        if day and parts:
+            if len(parts) == 1:
+                return f"{day}일차 {parts[0]}입니다."
+            return f"{day}일차 메뉴는 " + ", ".join(parts) + "입니다."
+        return ""
+
+    value_parts = []
+    for key in ("Breakfast", "Lunch", "Dinner"):
+        value = parsed.get(key, "").strip()
+        if value:
+            value_parts.append(_render_table_value(value, spoken=spoken))
+    if day and value_parts:
+        return f"{day}일차 식단은 " + ", ".join(value_parts) + "입니다."
+    return ""
+
+
+def _render_table_value(value: str, *, spoken: bool) -> str:
+    normalized = " ".join(value.split())
+    if not spoken:
+        return normalized
+    return _naturalize_table_value(normalized)
+
+
+def _naturalize_table_value(value: str) -> str:
+    parts = [part.strip() for part in re.split(r"\s*\+\s*", value) if part.strip()]
+    if len(parts) > 1:
+        rendered_parts = [_naturalize_table_atom(part) for part in parts]
+        return _join_with_korean_and(rendered_parts)
+    return _naturalize_table_atom(value)
+
+
+def _naturalize_table_atom(atom: str) -> str:
+    atom = atom.strip()
+    if not atom:
+        return atom
+
+    atom = _FRACTION_RE.sub(lambda match: _render_fraction(match.group(1), match.group(2)), atom)
+    atom = re.sub(
+        r"(?<=[가-힣A-Za-z])(?=(?:영|일|이|삼|사|오|육|칠|팔|구|십) 분의)",
+        " ",
+        atom,
+    )
+
+    match = _TABLE_VALUE_TOKEN_RE.match(atom)
+    if match:
+        name, number, unit = match.groups()
+        spoken_number = _render_counter_number(number, unit)
+        spoken_unit = _KOREAN_UNIT_LABELS.get((unit or "").lower(), unit or "개")
+        name = name.strip()
+        if spoken_unit:
+            return f"{name} {spoken_number} {spoken_unit}".strip()
+        return f"{name} {spoken_number}".strip()
+
+    atom = atom.replace("~", "에서 ")
+    atom = atom.replace(",", ", ")
+    atom = re.sub(r"\s+", " ", atom)
+    return atom.strip()
+
+
+def _render_fraction(numerator: str, denominator: str) -> str:
+    return f"{_sino_korean_number(int(denominator))} 분의 {_sino_korean_number(int(numerator))}"
+
+
+def _join_with_korean_and(parts: list[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    result = parts[0]
+    for part in parts[1:]:
+        particle = _korean_and_particle(result)
+        result = f"{result}{particle} {part}"
+    return result
+
+
+def _korean_and_particle(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "와"
+    last = stripped[-1]
+    if not ("\uac00" <= last <= "\ud7a3"):
+        return "와"
+    return "과" if (ord(last) - 0xAC00) % 28 else "와"
+
+
+def _render_counter_number(number: str, unit: str | None) -> str:
+    value = int(number)
+    if unit and unit.lower() in {"g", "kg", "ml", "l"}:
+        return _sino_korean_number(value)
+    return _korean_counter_number(value)
+
+
+def _korean_counter_number(value: int) -> str:
+    return _KOREAN_NUMBER_WORDS.get(value, str(value))
+
+
+def _sino_korean_number(value: int) -> str:
+    return _SINO_KOREAN_NUMBER_WORDS.get(value, str(value))
 
 
 def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> str:
@@ -111,9 +346,96 @@ def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> st
         if extracted:
             return extracted
 
+    document_excerpt = _extract_relevant_document_excerpt(prompt, evidence)
+    if document_excerpt:
+        return document_excerpt
+
     head = evidence.items[0].text.strip()
     head = re.sub(r"\s+", " ", head)
     return head[:220].rstrip()
+
+
+def _extract_relevant_document_excerpt(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    query_terms = _extract_query_terms(prompt)
+    if not query_terms:
+        return ""
+
+    best_segment = ""
+    best_score = -1.0
+    for item_index, item in enumerate(evidence.items[:5]):
+        for segment_index, segment in enumerate(_split_document_segments(item.text)):
+            score = _score_document_segment(segment, query_terms)
+            if score <= 0:
+                continue
+            # Favor earlier high-ranking evidence items but still let content relevance dominate.
+            score += max(0.0, 1.0 - (item_index * 0.1) - (segment_index * 0.02))
+            if score > best_score:
+                best_score = score
+                best_segment = segment
+
+    return best_segment
+
+
+def _extract_query_terms(prompt: str) -> list[str]:
+    terms: list[str] = []
+    for token in _QUERY_TERM_RE.findall(prompt):
+        normalized = token.strip().lower()
+        if len(normalized) < 2:
+            continue
+        if normalized in _QUERY_STOPWORDS:
+            continue
+        if _NOISE_TOKEN_RE.match(normalized):
+            continue
+        if normalized not in terms:
+            terms.append(normalized)
+    return terms
+
+
+def _split_document_segments(text: str) -> list[str]:
+    normalized = _BRACKET_PREFIX_RE.sub("", text.strip())
+    raw_segments = [segment.strip() for segment in _SEGMENT_SPLIT_RE.split(normalized) if segment.strip()]
+    cleaned_segments: list[str] = []
+    for segment in raw_segments:
+        collapsed = re.sub(r"\s+", " ", segment).strip(" -:")
+        if len(collapsed) < 12:
+            continue
+        cleaned_segments.append(collapsed[:260])
+    return cleaned_segments[:20]
+
+
+def _is_heading_like_segment(segment: str) -> bool:
+    compact = segment.strip()
+    if len(compact) <= 18:
+        return True
+    if len(compact) <= 32 and not _EXPLANATORY_PHRASE_RE.search(compact):
+        return True
+    return False
+
+
+def _score_document_segment(segment: str, query_terms: list[str]) -> float:
+    if _is_heading_like_segment(segment):
+        return 0.0
+
+    lowered = segment.lower()
+    overlap_terms = [term for term in query_terms if term in lowered]
+    if not overlap_terms:
+        return 0.0
+
+    score = float(len(overlap_terms) * 12)
+    if len(segment) <= 180:
+        score += 3.0
+
+    alnum_or_korean = sum(char.isalnum() or ("\uac00" <= char <= "\ud7a3") for char in segment)
+    punctuation_ratio = 1.0 - (alnum_or_korean / max(1, len(segment)))
+    score -= punctuation_ratio * 8.0
+
+    noise_hits = sum(1 for token in re.findall(r"[A-Za-z가-힣]+", lowered) if _NOISE_TOKEN_RE.match(token))
+    score -= noise_hits * 1.5
+
+    if _EXPLANATORY_PHRASE_RE.search(segment):
+        score += 4.0
+
+    return score
 
 
 def _extract_source_snippet(

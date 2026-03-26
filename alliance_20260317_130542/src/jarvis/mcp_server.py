@@ -121,7 +121,7 @@ def _create_jarvis_server() -> Server:
 
                 ctx = _get_context()
                 tool = ReadFileTool(
-                    knowledge_base_path=ctx.knowledge_base_path or Path.cwd(),
+                    allowed_roots=[ctx.knowledge_base_path or Path.cwd()],
                 )
                 result = tool.execute(path=path)
                 return [TextContent(type="text", text=result)]

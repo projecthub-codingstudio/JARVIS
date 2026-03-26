@@ -14,6 +14,7 @@ lightweight stage is unavailable.
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,19 @@ _STOPWORDS = {
     "알려줘", "알려주세요", "보여줘", "보여주세요", "찾아줘", "찾아주세요",
     "설명해줘", "설명해주세요", "무엇", "뭐", "어디", "누구", "언제", "몇", "얼마",
 }
+_SMALLTALK_GREETING_RE = re.compile(
+    r"(안녕(?:하세요|하세여|하십니까)?|하이|hello|hi|nice\s+to\s+meet\s+you|"
+    r"만나서\s*반갑(?:습니다|네요|고요)?|반갑(?:습니다|네|고요)?)",
+    re.IGNORECASE,
+)
+_SMALLTALK_POLITE_RE = re.compile(
+    r"(고마워|감사(?:합니다|해요)?|좋은\s*(아침|저녁|하루)|잘\s*지냈|오랜만)",
+    re.IGNORECASE,
+)
+_WEATHER_RE = re.compile(
+    r"(오늘|지금|내일|이번\s*주)?\s*(날씨|기온|비\s*오|눈\s*오|weather|forecast|temperature)",
+    re.IGNORECASE,
+)
 _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "아키텍처": ("architecture",),
     "구조": ("architecture", "structure"),
@@ -59,6 +73,7 @@ _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "fts": ("search", "full-text"),
     "vector": ("embedding", "semantic"),
 }
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
 
 
 @dataclass(frozen=True)
@@ -66,11 +81,66 @@ class QueryAnalysis:
     """Structured analysis of a user query."""
 
     intent: str = "qa"
+    sub_intents: list[str] = field(default_factory=list)
+    entities: dict[str, object] = field(default_factory=dict)
     search_terms: list[str] = field(default_factory=list)
     target_file: str = ""
     language: str = "ko"
     confidence: float = 0.0
     source: str = "heuristic"
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "intent": self.intent,
+            "sub_intents": list(self.sub_intents),
+            "entities": dict(self.entities),
+            "search_terms": list(self.search_terms),
+            "target_file": self.target_file,
+            "language": self.language,
+            "confidence": self.confidence,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, object],
+        *,
+        fallback: "QueryAnalysis | None" = None,
+    ) -> "QueryAnalysis":
+        base = fallback or cls()
+        intent = str(payload.get("intent", base.intent) or base.intent)
+        sub_intents_raw = payload.get("sub_intents", base.sub_intents)
+        entities_raw = payload.get("entities", base.entities)
+        search_terms_raw = payload.get("search_terms", base.search_terms)
+
+        sub_intents = [
+            str(value).strip()
+            for value in sub_intents_raw
+            if str(value).strip()
+        ] if isinstance(sub_intents_raw, list) else list(base.sub_intents)
+        entities = dict(entities_raw) if isinstance(entities_raw, dict) else dict(base.entities)
+        search_terms = [
+            str(value).strip()
+            for value in search_terms_raw
+            if str(value).strip()
+        ] if isinstance(search_terms_raw, list) else list(base.search_terms)
+
+        confidence_raw = payload.get("confidence", base.confidence)
+        confidence = base.confidence
+        if isinstance(confidence_raw, (int, float)):
+            confidence = max(0.0, min(float(confidence_raw), 1.0))
+
+        return cls(
+            intent=intent,
+            sub_intents=sub_intents,
+            entities=entities,
+            search_terms=search_terms,
+            target_file=str(payload.get("target_file", base.target_file) or base.target_file),
+            language=str(payload.get("language", base.language) or base.language),
+            confidence=confidence,
+            source=str(payload.get("source", base.source) or base.source),
+        )
 
 
 class LightweightPlannerBackend(Protocol):
@@ -118,6 +188,7 @@ class HeuristicPlanner:
 
         tokens = _extract_tokens(raw_text)
         language = _detect_language(raw_text)
+        intent = _classify_intent(raw_text, tokens=tokens, target_file=target_file)
         confidence = 0.45
         if target_file:
             confidence += 0.35
@@ -125,9 +196,11 @@ class HeuristicPlanner:
             confidence += 0.15
         if language == "mixed":
             confidence -= 0.1
+        if intent != "qa":
+            confidence = max(confidence, 0.85)
 
         return QueryAnalysis(
-            intent="qa",
+            intent=intent,
             search_terms=tokens,
             target_file=target_file,
             language="ko" if language == "mixed" else language,
@@ -172,6 +245,60 @@ class LightweightKeywordExpander:
             confidence=min(1.0, baseline.confidence + 0.15),
             source="lightweight",
         )
+
+
+class LLMIntentJSONBackend:
+    """Model-backed planner enrichment that returns structured intent JSON.
+
+    This is a best-effort layer. If the backend fails or returns invalid JSON,
+    the planner must keep the heuristic baseline.
+    """
+
+    def __init__(self, *, llm_backend: object) -> None:
+        self._llm_backend = llm_backend
+
+    def analyze(self, raw_text: str, baseline: QueryAnalysis) -> QueryAnalysis | None:
+        if self._llm_backend is None or not hasattr(self._llm_backend, "generate"):
+            return None
+
+        prompt = self._build_prompt(raw_text, baseline)
+        try:
+            raw = self._llm_backend.generate(prompt, "", "planner_intent_json")
+        except Exception as exc:
+            logger.warning("LLM intent planner failed, keeping baseline: %s", exc)
+            return None
+
+        payload = self._extract_json_payload(raw)
+        if payload is None:
+            return None
+        return QueryAnalysis.from_payload(payload, fallback=baseline)
+
+    @staticmethod
+    def _build_prompt(raw_text: str, baseline: QueryAnalysis) -> str:
+        return (
+            "다음 사용자 질의를 intent JSON으로만 분류하세요. 설명문 없이 JSON만 출력하세요.\n"
+            "필수 필드: intent, sub_intents, entities, search_terms, target_file, language, confidence, source.\n"
+            "intent는 하나의 주 의도만 넣고, 인사말 등 보조 의도는 sub_intents에 넣으세요.\n"
+            "entities에는 day_numbers, meal_slots 같은 구조화 슬롯이 있으면 포함하세요.\n"
+            f"baseline={json.dumps(baseline.to_payload(), ensure_ascii=False)}\n"
+            f"query={raw_text}"
+        )
+
+    @staticmethod
+    def _extract_json_payload(raw: str) -> dict[str, object] | None:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if "\n" in text:
+                text = text.split("\n", 1)[1]
+        match = _JSON_BLOCK_RE.search(text)
+        if match is None:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
 
 
 class Planner:
@@ -252,6 +379,8 @@ class Planner:
 
         return QueryAnalysis(
             intent=enriched.intent or baseline.intent,
+            sub_intents=list(dict.fromkeys([*baseline.sub_intents, *enriched.sub_intents])),
+            entities={**baseline.entities, **enriched.entities},
             search_terms=search_terms,
             target_file=enriched.target_file or baseline.target_file,
             language=enriched.language or baseline.language,
@@ -309,3 +438,24 @@ def _classify_query_complexity(query: str) -> QueryComplexity:
     if len(q) > 60:
         return "moderate"
     return "simple"
+
+
+def _classify_intent(raw_text: str, *, tokens: list[str], target_file: str) -> str:
+    normalized = raw_text.strip()
+    lowered = normalized.lower()
+    informational_markers = (
+        "파일", "문서", "코드", ".py", ".ts", ".js",
+        "검색", "찾아", "요약", "정리", "설명", "알려",
+        "메뉴", "식단", "날씨", "기온", "비", "눈",
+        "지하철", "버스", "경로", "길찾기", "가는 길", "가는길",
+    )
+    if target_file:
+        return "qa"
+    if _SMALLTALK_GREETING_RE.search(normalized) or _SMALLTALK_POLITE_RE.search(normalized):
+        if not any(marker in lowered for marker in informational_markers):
+            return "smalltalk"
+    if _WEATHER_RE.search(normalized):
+        return "weather"
+    if any(token in lowered for token in ("지하철", "버스", "경로", "길찾기", "가는 길", "가는길")):
+        return "route_guidance"
+    return "qa"

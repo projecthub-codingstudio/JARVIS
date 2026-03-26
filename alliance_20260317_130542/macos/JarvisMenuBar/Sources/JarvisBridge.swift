@@ -4,142 +4,41 @@ private func bridgeLog(_ message: String) {
     fputs("[JarvisBridge] \(message)\n", stderr)
 }
 
-struct BridgeConfiguration {
-    let allianceRoot: URL
-    let pythonExecutable: String
+private struct OneShotCommandResult {
+    let output: Data
+    let stderr: Data
+    let terminationStatus: Int32
+}
 
-    var pythonPath: String {
-        allianceRoot.appendingPathComponent("src").path
+private final class OneShotPipeBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func set(_ newData: Data) {
+        lock.lock()
+        data = newData
+        lock.unlock()
     }
 
-    var knowledgeBasePath: String? {
-        let fileManager = FileManager.default
-        let candidates = [
-            allianceRoot.appendingPathComponent("knowledge_base").path,
-            allianceRoot.deletingLastPathComponent().appendingPathComponent("knowledge_base").path,
-        ]
-        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
-    }
-
-    var defaultSTTBinary: String? {
-        let fileManager = FileManager.default
-        let candidates = [
-            allianceRoot.appendingPathComponent(".venv/bin/whisper-cli").path,
-            allianceRoot.appendingPathComponent(".venv/bin/main").path,
-            "/opt/homebrew/bin/whisper-cli",
-            "/opt/homebrew/bin/main",
-            "/usr/local/bin/whisper-cli",
-            "/usr/local/bin/main",
-            "/usr/bin/whisper-cli",
-            "/usr/bin/main",
-        ]
-        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
-    }
-
-    var defaultSTTModel: String? {
-        let fileManager = FileManager.default
-        let candidates = [
-            allianceRoot.appendingPathComponent("models/ggml-small.bin").path,
-            allianceRoot.appendingPathComponent("models/ggml-base.bin").path,
-            allianceRoot.appendingPathComponent("models/ggml-medium.bin").path,
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-small.bin").path,
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-base.bin").path,
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarvis/models/ggml-medium.bin").path,
-        ]
-        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
-    }
-
-    static func `default`() -> BridgeConfiguration {
-        if let explicitRoot = ProcessInfo.processInfo.environment["JARVIS_ALLIANCE_ROOT"] {
-            let rootURL = URL(fileURLWithPath: explicitRoot, isDirectory: true)
-            return BridgeConfiguration(
-                allianceRoot: rootURL,
-                pythonExecutable: resolvePythonExecutable(
-                    preferred: ProcessInfo.processInfo.environment["JARVIS_PYTHON"],
-                    allianceRoot: rootURL
-                )
-            )
-        }
-
-        var rootURL = URL(fileURLWithPath: #filePath, isDirectory: false)
-        for _ in 0..<4 {
-            rootURL.deleteLastPathComponent()
-        }
-        return BridgeConfiguration(
-            allianceRoot: rootURL,
-            pythonExecutable: resolvePythonExecutable(
-                preferred: ProcessInfo.processInfo.environment["JARVIS_PYTHON"],
-                allianceRoot: rootURL
-            )
-        )
-    }
-
-    private static func resolvePythonExecutable(preferred: String?, allianceRoot: URL) -> String {
-        let fileManager = FileManager.default
-
-        if let preferred, fileManager.fileExists(atPath: preferred) {
-            return preferred
-        }
-
-        let candidates = [
-            allianceRoot.appendingPathComponent(".venv/bin/python3").path,
-            allianceRoot.appendingPathComponent(".venv/bin/python").path,
-            "/opt/homebrew/opt/python@3.12/bin/python3.12",
-            "/usr/bin/python3",
-        ]
-
-        for candidate in candidates where fileManager.fileExists(atPath: candidate) {
-            return candidate
-        }
-
-        return allianceRoot.appendingPathComponent(".venv/bin/python3").path
+    func get() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 
-private func configuredBridgeEnvironment(
-    from base: [String: String],
-    configuration: BridgeConfiguration
-) -> [String: String] {
-    var env = base
-    env["PYTHONPATH"] = configuration.pythonPath
-    env["HF_HUB_DISABLE_PROGRESS_BARS"] = env["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
-    env["TRANSFORMERS_VERBOSITY"] = env["TRANSFORMERS_VERBOSITY"] ?? "error"
-    env["TOKENIZERS_PARALLELISM"] = env["TOKENIZERS_PARALLELISM"] ?? "false"
-    env["HF_HUB_DISABLE_TELEMETRY"] = env["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
-    env["TRUST_REMOTE_CODE"] = env["TRUST_REMOTE_CODE"] ?? "1"
-    if let knowledgeBasePath = configuration.knowledgeBasePath {
-        env["JARVIS_KNOWLEDGE_BASE"] = env["JARVIS_KNOWLEDGE_BASE"] ?? knowledgeBasePath
+private func summarizeOneShotFailure(_ result: OneShotCommandResult, label: String) -> String {
+    let stderrText = String(decoding: result.stderr, as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !stderrText.isEmpty {
+        return "\(label) failed (status=\(result.terminationStatus)): \(stderrText)"
     }
-    if let sttBinary = configuration.defaultSTTBinary {
-        env["JARVIS_STT_BINARY"] = env["JARVIS_STT_BINARY"] ?? sttBinary
-    }
-    if let sttModel = configuration.defaultSTTModel {
-        env["JARVIS_STT_MODEL"] = env["JARVIS_STT_MODEL"] ?? sttModel
-    }
-    return env
+    return "\(label) failed (status=\(result.terminationStatus), stdout=\(result.output.count)B, stderr=\(result.stderr.count)B)"
 }
 
-enum BridgeError: LocalizedError {
-    case missingPython(String)
-    case processFailed(String)
-    case emptyResponse
-    case decodeFailed(String)
-    case serverNotReady
-
-    var errorDescription: String? {
-        switch self {
-        case .missingPython(let path):
-            return "Python 실행 파일을 찾을 수 없습니다: \(path)"
-        case .processFailed(let message):
-            return "JARVIS 브리지 실행 실패: \(message)"
-        case .emptyResponse:
-            return "JARVIS 브리지에서 응답이 비어 있습니다."
-        case .decodeFailed(let payload):
-            return "브리지 JSON 파싱 실패: \(payload)"
-        case .serverNotReady:
-            return "JARVIS 서버가 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
-        }
-    }
+private func legacyAskResponse(_ response: MenuResponse?) -> ServiceAskResponse? {
+    guard let response else { return nil }
+    return ServiceAskResponse(response: response, answer: nil, guide: nil)
 }
 
 // MARK: - Persistent Server Session
@@ -154,6 +53,8 @@ final class ServerSession: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private var readBuffer = Data()
     private var stderrDrainThread: Thread?
+    private let stderrLock = NSLock()
+    private var recentStderrLines: [String] = []
 
     init(process: Process, stdinPipe: Pipe, stdoutPipe: Pipe, stderrPipe: Pipe) {
         self.process = process
@@ -170,7 +71,14 @@ final class ServerSession: @unchecked Sendable {
                 if data.isEmpty { break }  // EOF — process exited
                 if let text = String(data: data, encoding: .utf8), !text.isEmpty {
                     for line in text.split(whereSeparator: \.isNewline) {
-                        bridgeLog("py: \(line)")
+                        let lineString = String(line)
+                        self.stderrLock.lock()
+                        self.recentStderrLines.append(lineString)
+                        if self.recentStderrLines.count > 20 {
+                            self.recentStderrLines.removeFirst(self.recentStderrLines.count - 20)
+                        }
+                        self.stderrLock.unlock()
+                        bridgeLog("py: \(lineString)")
                     }
                 }
             }
@@ -210,8 +118,13 @@ final class ServerSession: @unchecked Sendable {
             let lineData = readBuffer[readBuffer.startIndex..<newlineIndex]
             readBuffer = Data(readBuffer[readBuffer.index(after: newlineIndex)...])
             guard !lineData.isEmpty else { continue }
-            if let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)) {
+            let data = Data(lineData)
+            do {
+                let envelope = try decoder.decode(CommandEnvelope.self, from: data)
                 return envelope
+            } catch {
+                let preview = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
+                bridgeLog("⚠️ envelope decode failed: \(error.localizedDescription) — raw: \(preview)")
             }
         }
         return nil
@@ -223,19 +136,68 @@ final class ServerSession: @unchecked Sendable {
             if process.isRunning { process.terminate() }
         }
     }
+
+    func stderrSummary() -> String {
+        stderrLock.lock()
+        defer { stderrLock.unlock() }
+        return recentStderrLines.suffix(5).joined(separator: " | ")
+    }
 }
 
 // MARK: - JarvisBridge Actor
 
 actor JarvisBridge {
+    private let maxStartupAttempts = 3
     private let configuration: BridgeConfiguration
+    private var knowledgeBaseOverridePath: String?
     private var session: ServerSession?
     private(set) var isServerReady = false
     private var startingUp = false
+    private var startupProgressMessage = ""
     private var startupWaiters: [CheckedContinuation<ServerSession, Error>] = []
 
-    init(configuration: BridgeConfiguration = .default()) {
+    init(configuration: BridgeConfiguration = .default(), knowledgeBaseOverridePath: String? = nil) {
         self.configuration = configuration
+        self.knowledgeBaseOverridePath = Self.normalizedKnowledgeBasePath(knowledgeBaseOverridePath)
+    }
+
+    private static func normalizedKnowledgeBasePath(_ path: String?) -> String? {
+        guard let path else { return nil }
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL.path
+    }
+
+    private func bridgeEnvironment() -> [String: String] {
+        configuredBridgeEnvironment(
+            from: ProcessInfo.processInfo.environment,
+            configuration: configuration,
+            knowledgeBaseOverridePath: knowledgeBaseOverridePath
+        )
+    }
+
+    func effectiveKnowledgeBasePath() -> String {
+        knowledgeBaseOverridePath ?? configuration.defaultKnowledgeBasePath
+    }
+
+    func currentStartupProgress() -> String {
+        startupProgressMessage
+    }
+
+    func startupInProgress() -> Bool {
+        startingUp
+    }
+
+    func updateKnowledgeBasePath(_ path: String?) {
+        let normalized = Self.normalizedKnowledgeBasePath(path)
+        guard normalized != knowledgeBaseOverridePath else { return }
+        session?.shutdown()
+        session = nil
+        isServerReady = false
+        knowledgeBaseOverridePath = normalized
+        startupProgressMessage = ""
+        bridgeLog("Knowledge base path updated: \(effectiveKnowledgeBasePath())")
     }
 
     // MARK: - Server Lifecycle
@@ -258,6 +220,7 @@ actor JarvisBridge {
         session = nil
         isServerReady = false
         startingUp = true
+        startupProgressMessage = "지식기반과 런타임을 준비하는 중입니다."
 
         let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
         guard FileManager.default.fileExists(atPath: pythonURL.path) else {
@@ -265,6 +228,32 @@ actor JarvisBridge {
             throw BridgeError.missingPython(pythonURL.path)
         }
 
+        for attempt in 1...maxStartupAttempts {
+            let newSession = try launchServerProcess(pythonURL: pythonURL)
+            do {
+                try await waitForServerReady(newSession)
+                bridgeLog("Persistent server ready")
+                self.session = newSession
+                self.isServerReady = true
+                finishStartup(session: newSession)
+                return newSession
+            } catch {
+                let isRetriableStartupFailure = error.localizedDescription.contains("Server exited before ready")
+                if isRetriableStartupFailure && attempt < maxStartupAttempts {
+                    bridgeLog("Retrying persistent server startup (attempt \(attempt + 1)/\(maxStartupAttempts))")
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+                finishStartup(error: error)
+                throw error
+            }
+        }
+        let fallbackError = BridgeError.processFailed("Server exited before ready after \(maxStartupAttempts) attempts")
+        finishStartup(error: fallbackError)
+        throw fallbackError
+    }
+
+    private func launchServerProcess(pythonURL: URL) throws -> ServerSession {
         let process = Process()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -274,10 +263,7 @@ actor JarvisBridge {
         process.currentDirectoryURL = configuration.allianceRoot
         process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
 
-        var env = configuredBridgeEnvironment(
-            from: ProcessInfo.processInfo.environment,
-            configuration: configuration
-        )
+        var env = bridgeEnvironment()
         // Vocabulary hint for STT: domain-specific terms that whisper often misrecognizes.
         // Passed as --prompt to whisper.cpp to bias the decoder toward correct transcription.
         env["JARVIS_STT_VOCAB"] = env["JARVIS_STT_VOCAB"] ?? "JARVIS, OLE, API, SQL, JSON, YAML, MLX, EXAONE, Qwen, LLM, RAG, FTS, RRF, STT, TTS, VAD, MCP, BGE, LanceDB, PyMuPDF, 개체, 속성, 스키마, 인덱스, 벡터, 임베딩, 토큰, 프롬프트, 파이프라인"
@@ -290,48 +276,69 @@ actor JarvisBridge {
         try process.run()
         bridgeLog("Persistent server launched (pid=\(process.processIdentifier))")
 
-        let newSession = ServerSession(
+        return ServerSession(
             process: process,
             stdinPipe: stdinPipe,
             stdoutPipe: stdoutPipe,
             stderrPipe: stderrPipe
         )
+    }
 
-        // Wait for "ready" WITHOUT blocking the actor — use continuation
-        do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    while true {
-                        guard let envelope = newSession.readEnvelope() else {
-                            continuation.resume(throwing: BridgeError.processFailed("Server exited before ready"))
-                            return
+    private func waitForServerReady(_ newSession: ServerSession) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                while true {
+                    guard let envelope = newSession.readEnvelope() else {
+                        if newSession.process.isRunning {
+                            newSession.process.waitUntilExit()
                         }
-                        if envelope.kind == "ready" {
-                            continuation.resume()
-                            return
-                        }
-                        if envelope.kind == "error" {
-                            continuation.resume(throwing: BridgeError.processFailed(envelope.error ?? "Startup error"))
-                            return
-                        }
+                        continuation.resume(
+                            throwing: BridgeError.processFailed(Self.startupFailureDetail(for: newSession))
+                        )
+                        return
+                    }
+                    if envelope.kind == "ready" {
+                        Task { await self.clearStartupProgress() }
+                        continuation.resume()
+                        return
+                    }
+                    if envelope.kind == "progress" {
+                        Task { await self.setStartupProgress(envelope.progressResult?.message ?? "") }
+                        continue
+                    }
+                    if envelope.kind == "error" {
+                        continuation.resume(throwing: BridgeError.processFailed(envelope.error ?? "Startup error"))
+                        return
                     }
                 }
             }
-        } catch {
-            finishStartup(error: error)
-            throw error
         }
+    }
 
-        bridgeLog("Persistent server ready")
-        self.session = newSession
-        self.isServerReady = true
-        finishStartup(session: newSession)
-        return newSession
+    private static func startupFailureDetail(for session: ServerSession) -> String {
+        let status = session.process.terminationStatus
+        let reason: String
+        switch session.process.terminationReason {
+        case .uncaughtSignal:
+            reason = "signal"
+        case .exit:
+            reason = "exit"
+        @unknown default:
+            reason = "unknown"
+        }
+        let stderrSummary = session.stderrSummary()
+        if stderrSummary.isEmpty {
+            return "Server exited before ready (\(reason)=\(status))"
+        }
+        return "Server exited before ready (\(reason)=\(status)): \(stderrSummary)"
     }
 
     /// Resume any waiters after server startup completes or fails.
     private func finishStartup(session: ServerSession? = nil, error: Error? = nil) {
         startingUp = false
+        if error != nil {
+            startupProgressMessage = ""
+        }
         for waiter in startupWaiters {
             if let session {
                 waiter.resume(returning: session)
@@ -347,7 +354,17 @@ actor JarvisBridge {
         do {
             _ = try await ensureServer()
         } catch {
-            bridgeLog("Warmup failed: \(error.localizedDescription)")
+            let description = error.localizedDescription
+            if description.contains("Server exited before ready") {
+                bridgeLog("Warmup retry after early exit before ready")
+                do {
+                    _ = try await ensureServer()
+                    return
+                } catch {
+                    bridgeLog("Warmup retry failed: \(error.localizedDescription)")
+                }
+            }
+            bridgeLog("Warmup failed: \(description)")
         }
     }
 
@@ -356,67 +373,32 @@ actor JarvisBridge {
         session?.shutdown()
         session = nil
         isServerReady = false
+        startupProgressMessage = ""
         bridgeLog("Server shutdown requested")
+    }
+
+    private func setStartupProgress(_ message: String) {
+        startupProgressMessage = message
+    }
+
+    private func clearStartupProgress() {
+        startupProgressMessage = ""
     }
 
     // MARK: - Commands via Persistent Server
 
     func ask(_ query: String) async throws -> MenuResponse {
-        let server = try await ensureServer()
-        try server.sendJSON(["command": "ask", "query": query])
-        while let envelope = server.readEnvelope() {
-            switch envelope.kind {
-            case "query_result":
-                guard let response = envelope.queryResult else {
-                    throw BridgeError.decodeFailed("missing query_result")
-                }
-                return response
-            case "error":
-                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
-            default:
-                continue
-            }
-        }
-        throw BridgeError.emptyResponse
+        try runOneShotAsk(query: query)
     }
 
     func askStreaming(_ query: String) async -> AsyncStream<StreamEvent> {
-        // Actor-isolated setup: start server and send command
-        let server: ServerSession
-        do {
-            server = try await ensureServer()
-            try server.sendJSON(["command": "ask", "query": query, "stream": true])
-        } catch {
-            return AsyncStream { continuation in
-                continuation.yield(.error(error.localizedDescription))
-                continuation.finish()
-            }
-        }
-
-        // Streaming read runs on a detached task (ServerSession is Sendable)
         return AsyncStream { continuation in
             Task.detached {
-                while true {
-                    guard let envelope = server.readEnvelope() else {
-                        continuation.yield(.error("서버 연결이 끊어졌습니다."))
-                        break
-                    }
-                    switch envelope.kind {
-                    case "stream_chunk":
-                        if let token = envelope.token {
-                            continuation.yield(.token(token))
-                        }
-                    case "stream_done":
-                        continuation.yield(.done(envelope.queryResult))
-                        continuation.finish()
-                        return
-                    case "error":
-                        continuation.yield(.error(envelope.error ?? "unknown server error"))
-                        continuation.finish()
-                        return
-                    default:
-                        break
-                    }
+                do {
+                    let response = try await self.ask(query)
+                    continuation.yield(.done(legacyAskResponse(response)))
+                } catch {
+                    continuation.yield(.error(error.localizedDescription))
                 }
                 continuation.finish()
             }
@@ -482,11 +464,11 @@ actor JarvisBridge {
                             continuation.yield(.token(token))
                         }
                     case "stream_done":
-                        continuation.yield(.done(envelope.queryResult))
+                        continuation.yield(.done(legacyAskResponse(envelope.queryResult)))
                         continuation.finish()
                         return
                     case "query_result":
-                        continuation.yield(.done(envelope.queryResult))
+                        continuation.yield(.done(legacyAskResponse(envelope.queryResult)))
                         continuation.finish()
                         return
                     case "error":
@@ -526,22 +508,7 @@ actor JarvisBridge {
     }
 
     func transcribeFile(audioPath: String) async throws -> TranscriptionResponse {
-        let server = try await ensureServer()
-        try server.sendJSON(["command": "transcribe-file", "audio": audioPath])
-        while let envelope = server.readEnvelope() {
-            switch envelope.kind {
-            case "transcription_result":
-                guard let response = envelope.transcriptionResult else {
-                    throw BridgeError.decodeFailed("missing transcription_result")
-                }
-                return response
-            case "error":
-                throw BridgeError.processFailed(envelope.error ?? "unknown server error")
-            default:
-                continue
-            }
-        }
-        throw BridgeError.emptyResponse
+        try runOneShotTranscribeFile(audioPath: audioPath)
     }
 
     func navigationWindow(query: String) async throws -> MenuExplorationState {
@@ -622,31 +589,14 @@ actor JarvisBridge {
     }
 
     private func runOneShotHealth() throws -> HealthResponse {
-        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
-        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-            throw BridgeError.missingPython(pythonURL.path)
-        }
-
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-
-        process.executableURL = pythonURL
-        process.currentDirectoryURL = configuration.allianceRoot
-        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "health"]
-
-        process.environment = configuredBridgeEnvironment(
-            from: ProcessInfo.processInfo.environment,
-            configuration: configuration
+        let result = try runOneShotProcess(
+            arguments: ["-u", "-m", "jarvis.cli.menu_bridge", "health"],
+            logLabel: "health"
         )
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        guard !output.isEmpty else { throw BridgeError.emptyResponse }
+        let output = result.output
+        guard !output.isEmpty else {
+            throw BridgeError.processFailed(summarizeOneShotFailure(result, label: "health"))
+        }
 
         let decoder = JSONDecoder()
         let outputText = String(decoding: output, as: UTF8.self)
@@ -668,36 +618,14 @@ actor JarvisBridge {
     }
 
     private func runOneShotNavigationWindow(query: String) throws -> MenuExplorationState {
-        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
-        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-            throw BridgeError.missingPython(pythonURL.path)
-        }
-
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-
-        process.executableURL = pythonURL
-        process.currentDirectoryURL = configuration.allianceRoot
-        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "navigation-window", "--query", query]
-        process.environment = configuredBridgeEnvironment(
-            from: ProcessInfo.processInfo.environment,
-            configuration: configuration
+        let result = try runOneShotProcess(
+            arguments: ["-u", "-m", "jarvis.cli.menu_bridge", "navigation-window", "--query", query],
+            logLabel: "navigation-window"
         )
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = result.output
+        let stderr = result.stderr
         guard !output.isEmpty else {
-            let stderrText = String(decoding: stderr, as: UTF8.self)
-            if !stderrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                throw BridgeError.processFailed(stderrText)
-            }
-            throw BridgeError.emptyResponse
+            throw BridgeError.processFailed(summarizeOneShotFailure(result, label: "navigation-window"))
         }
 
         let decoder = JSONDecoder()
@@ -728,36 +656,14 @@ actor JarvisBridge {
     }
 
     private func runOneShotNormalizeQuery(query: String) throws -> String {
-        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
-        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-            throw BridgeError.missingPython(pythonURL.path)
-        }
-
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-
-        process.executableURL = pythonURL
-        process.currentDirectoryURL = configuration.allianceRoot
-        process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "normalize-query", "--query", query]
-        process.environment = configuredBridgeEnvironment(
-            from: ProcessInfo.processInfo.environment,
-            configuration: configuration
+        let result = try runOneShotProcess(
+            arguments: ["-u", "-m", "jarvis.cli.menu_bridge", "normalize-query", "--query", query],
+            logLabel: "normalize-query"
         )
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = result.output
+        let stderr = result.stderr
         guard !output.isEmpty else {
-            let stderrText = String(decoding: stderr, as: UTF8.self)
-            if !stderrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                throw BridgeError.processFailed(stderrText)
-            }
-            throw BridgeError.emptyResponse
+            throw BridgeError.processFailed(summarizeOneShotFailure(result, label: "normalize-query"))
         }
 
         let decoder = JSONDecoder()
@@ -787,6 +693,130 @@ actor JarvisBridge {
         throw BridgeError.decodeFailed(outputText)
     }
 
+    private func runOneShotAsk(query: String) throws -> MenuResponse {
+        let result = try runOneShotProcess(
+            arguments: ["-u", "-m", "jarvis.cli.menu_bridge", "ask", "--query", query],
+            logLabel: "ask"
+        )
+        let output = result.output
+        let stderr = result.stderr
+        guard !output.isEmpty else {
+            throw BridgeError.processFailed(summarizeOneShotFailure(result, label: "ask"))
+        }
+
+        let decoder = JSONDecoder()
+        let outputText = String(decoding: output, as: UTF8.self)
+        let lines = outputText
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for line in lines.reversed() {
+            if let data = line.data(using: .utf8),
+               let envelope = try? decoder.decode(CommandEnvelope.self, from: data) {
+                if let response = envelope.queryResult {
+                    return response
+                }
+                if let error = envelope.error, !error.isEmpty {
+                    throw BridgeError.processFailed(error)
+                }
+            }
+        }
+
+        let stderrText = String(decoding: stderr, as: UTF8.self)
+        if !stderrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw BridgeError.decodeFailed(outputText + "\n" + stderrText)
+        }
+        throw BridgeError.decodeFailed(outputText)
+    }
+
+    private func runOneShotTranscribeFile(audioPath: String) throws -> TranscriptionResponse {
+        let result = try runOneShotProcess(
+            arguments: ["-u", "-m", "jarvis.cli.menu_bridge", "transcribe-file", "--audio", audioPath],
+            logLabel: "transcribe-file"
+        )
+        let output = result.output
+        let stderr = result.stderr
+        guard !output.isEmpty else {
+            throw BridgeError.processFailed(summarizeOneShotFailure(result, label: "transcribe-file"))
+        }
+
+        let decoder = JSONDecoder()
+        let outputText = String(decoding: output, as: UTF8.self)
+        let lines = outputText
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for line in lines.reversed() {
+            if let data = line.data(using: .utf8),
+               let envelope = try? decoder.decode(CommandEnvelope.self, from: data) {
+                if let response = envelope.transcriptionResult {
+                    return response
+                }
+                if let error = envelope.error, !error.isEmpty {
+                    throw BridgeError.processFailed(error)
+                }
+            }
+        }
+
+        let stderrText = String(decoding: stderr, as: UTF8.self)
+        if !stderrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw BridgeError.decodeFailed(outputText + "\n" + stderrText)
+        }
+        throw BridgeError.decodeFailed(outputText)
+    }
+
+    private func runOneShotProcess(arguments: [String], logLabel: String) throws -> OneShotCommandResult {
+        let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
+        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+            throw BridgeError.missingPython(pythonURL.path)
+        }
+
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        process.executableURL = pythonURL
+        process.currentDirectoryURL = configuration.allianceRoot
+        process.arguments = arguments
+        process.environment = bridgeEnvironment()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        bridgeLog("One-shot \(logLabel) started")
+        try process.run()
+        let group = DispatchGroup()
+        let outputBuffer = OneShotPipeBuffer()
+        let stderrBuffer = OneShotPipeBuffer()
+
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            outputBuffer.set(data)
+            group.leave()
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrBuffer.set(data)
+            group.leave()
+        }
+
+        process.waitUntilExit()
+        group.wait()
+        bridgeLog("One-shot \(logLabel) finished with status=\(process.terminationStatus)")
+
+        return OneShotCommandResult(
+            output: outputBuffer.get(),
+            stderr: stderrBuffer.get(),
+            terminationStatus: process.terminationStatus
+        )
+    }
+
     // MARK: - Wake Word (separate server process)
 
     func startWakeWordSession() async throws -> WakeWordSession {
@@ -804,10 +834,7 @@ actor JarvisBridge {
         process.currentDirectoryURL = configuration.allianceRoot
         process.arguments = ["-u", "-m", "jarvis.cli.menu_bridge", "server"]
 
-        process.environment = configuredBridgeEnvironment(
-            from: ProcessInfo.processInfo.environment,
-            configuration: configuration
-        )
+        process.environment = bridgeEnvironment()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
