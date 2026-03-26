@@ -45,6 +45,8 @@ _TTS_DIR = Path(tempfile.gettempdir()) / "jarvis_tts"
 
 
 def _detect_source_type(path: str) -> str:
+    if path.startswith(("http://", "https://")):
+        return "web"
     code_exts = {".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json", ".sql"}
     suffix = Path(path).suffix.lower()
     return "code" if suffix in code_exts else "document"
@@ -55,6 +57,70 @@ def _quote_for(item: EvidenceItem) -> str:
     if len(text) > _MAX_QUOTE_CHARS:
         return text[:_MAX_QUOTE_CHARS] + "..."
     return text
+
+
+def _heading_path_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, tuple):
+        return " > ".join(str(part).strip() for part in value if str(part).strip())
+    return ""
+
+
+def _detect_source_presentation_kind(item: EvidenceItem, source_type: str) -> str:
+    heading_path = _heading_path_text(item.heading_path).lower()
+    if source_type == "web":
+        return "web_page"
+    if "table-row" in heading_path:
+        return "table_row"
+    if source_type == "code":
+        return "code_symbol"
+    return "document_section"
+
+
+def _source_presentation_title(item: EvidenceItem, *, kind: str, heading_path: str) -> str:
+    if kind == "table_row":
+        match = re.search(r"\bDay\s*=\s*(\d+)", item.text, re.IGNORECASE)
+        if match:
+            return f"{match.group(1)}일차 표 항목"
+        if heading_path:
+            return heading_path.split(">")[-1].strip()
+        return "표 항목"
+    if kind == "web_page":
+        if heading_path:
+            return heading_path.split(">")[-1].strip()
+        return Path(item.source_path or item.document_id).name
+    return heading_path.split(">")[-1].strip() if heading_path else ""
+
+
+def _parse_table_preview_lines(text: str) -> list[str]:
+    pairs = re.findall(r"([A-Za-z][A-Za-z0-9_ ]+)=([^|]+)", text)
+    if not pairs:
+        return []
+    labels = {
+        "Day": "일차",
+        "Breakfast": "아침",
+        "Lunch": "점심",
+        "Dinner": "저녁",
+        "Drinks": "음료",
+        "Morning Supplements": "오전 보충제",
+        "Pre-Workout": "운동 전",
+    }
+    lines: list[str] = []
+    day_value = ""
+    for key, value in pairs:
+        normalized_key = key.strip()
+        normalized_value = " ".join(value.split()).strip()
+        if not normalized_value:
+            continue
+        if normalized_key == "Day":
+            day_value = normalized_value
+            continue
+        label = labels.get(normalized_key, normalized_key)
+        lines.append(f"{label}: {normalized_value}")
+    if day_value:
+        lines.insert(0, f"일차: {day_value}")
+    return lines[:6]
 
 
 def _response_mode(turn: ConversationTurn, answer: AnswerDraft | None) -> str:
@@ -73,10 +139,24 @@ def _response_mode(turn: ConversationTurn, answer: AnswerDraft | None) -> str:
 class MenuBarCitation:
     label: str
     source_path: str
+    full_source_path: str
     source_type: str
     quote: str
     state: str
     relevance_score: float
+    heading_path: str = ""
+
+
+@dataclass(frozen=True)
+class MenuBarSourcePresentation:
+    kind: str
+    source_path: str
+    full_source_path: str
+    source_type: str
+    heading_path: str = ""
+    quote: str = ""
+    title: str = ""
+    preview_lines: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -142,6 +222,7 @@ class MenuBarResponse:
     exploration: MenuBarExplorationState | None = None
     guide_directive: MenuBarGuideDirective | None = None
     full_response_path: str = ""
+    source_presentation: MenuBarSourcePresentation | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +281,7 @@ def build_menu_response(
 ) -> MenuBarResponse:
     """Serialize a completed turn into a menu bar-friendly payload."""
     citations: list[MenuBarCitation] = []
+    source_presentation: MenuBarSourcePresentation | None = None
     if answer is not None:
         # Evidence items already passed retrieval + reranking filters.
         # No additional threshold — reranker scores use a different scale.
@@ -209,11 +291,30 @@ def build_menu_response(
             citations.append(MenuBarCitation(
                 label=item.citation.label,
                 source_path=display_name,
+                full_source_path=full_path,
                 source_type=_detect_source_type(full_path),
                 quote=_quote_for(item),
                 state=item.citation.state.value,
                 relevance_score=item.relevance_score,
+                heading_path=_heading_path_text(item.heading_path),
             ))
+        if answer.evidence.items:
+            top_item = answer.evidence.items[0]
+            top_full_path = top_item.source_path or top_item.document_id
+            top_source_type = _detect_source_type(top_full_path)
+            heading_path = _heading_path_text(top_item.heading_path)
+            source_kind = _detect_source_presentation_kind(top_item, top_source_type)
+            preview_lines = _parse_table_preview_lines(top_item.text) if source_kind == "table_row" else []
+            source_presentation = MenuBarSourcePresentation(
+                kind=source_kind,
+                source_path=Path(top_full_path).name if top_full_path else top_item.document_id,
+                full_source_path=top_full_path,
+                source_type=top_source_type,
+                heading_path=heading_path,
+                quote=_quote_for(top_item),
+                title=_source_presentation_title(top_item, kind=source_kind, heading_path=heading_path),
+                preview_lines=preview_lines,
+            )
 
     mode = _response_mode(turn, answer)
 
@@ -289,6 +390,7 @@ def build_menu_response(
         exploration=exploration,
         guide_directive=guide_directive,
         full_response_path=full_response_path,
+        source_presentation=source_presentation,
     )
 
 

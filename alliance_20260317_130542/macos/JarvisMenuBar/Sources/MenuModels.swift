@@ -3,20 +3,46 @@ import Foundation
 struct MenuCitation: Codable, Identifiable {
     let label: String
     let sourcePath: String
+    let fullSourcePath: String
     let sourceType: String
     let quote: String
     let state: String
     let relevanceScore: Double
+    let headingPath: String
 
     var id: String { "\(label)-\(sourcePath)" }
 
     private enum CodingKeys: String, CodingKey {
         case label
         case sourcePath = "source_path"
+        case fullSourcePath = "full_source_path"
         case sourceType = "source_type"
         case quote
         case state
         case relevanceScore = "relevance_score"
+        case headingPath = "heading_path"
+    }
+}
+
+struct MenuSourcePresentation: Codable {
+    let kind: String
+    let sourcePath: String
+    let fullSourcePath: String
+    let sourceType: String
+    let headingPath: String
+    let quote: String
+    let title: String
+    let previewLines: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case sourcePath = "source_path"
+        case fullSourcePath = "full_source_path"
+        case sourceType = "source_type"
+        case headingPath = "heading_path"
+        case quote
+        case title
+        case previewLines = "preview_lines"
     }
 }
 
@@ -154,6 +180,7 @@ struct MenuResponse: Codable {
     let exploration: MenuExplorationState?
     let guideDirective: MenuGuideDirective?
     let fullResponsePath: String?
+    let sourcePresentation: MenuSourcePresentation?
 
     private enum CodingKeys: String, CodingKey {
         case query
@@ -166,6 +193,7 @@ struct MenuResponse: Codable {
         case exploration
         case guideDirective = "guide_directive"
         case fullResponsePath = "full_response_path"
+        case sourcePresentation = "source_presentation"
     }
 }
 
