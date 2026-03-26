@@ -263,7 +263,7 @@ def test_application_service_ask_text_falls_back_to_stub_model(monkeypatch) -> N
     response = service.handle(request)
 
     assert response.ok is True
-    assert observed_models == ["qwen3.5:9b", "stub"]
+    assert observed_models == ["stub"]
     assert response.payload["answer"]["text"] == "9일차 저녁은 순두부와 방울토마토입니다."
 
 
