@@ -395,6 +395,10 @@ final class JarvisGuideState: ObservableObject {
         rawResponse?.citations ?? []
     }
 
+    var sourcePresentation: MenuSourcePresentation? {
+        rawResponse?.sourcePresentation
+    }
+
     var preferredInteractionMode: InteractionMode? {
         if let raw = backendGuide?.interactionMode,
            let mode = InteractionMode(rawValue: raw),
@@ -785,6 +789,9 @@ struct JarvisGuideView: View {
                         responseSection("실시간 응답", text: guide.liveResponseText, tint: .blue)
                     } else if !guide.finalResponseText.isEmpty {
                         responseSection("최종 응답", text: guide.finalResponseText, tint: .teal)
+                        if let sourcePresentation = guide.sourcePresentation {
+                            sourcePresentationSection(sourcePresentation)
+                        }
                         if !guide.citations.isEmpty {
                             citationSection(guide.citations)
                         }
@@ -933,6 +940,87 @@ struct JarvisGuideView: View {
     }
 
     @ViewBuilder
+    private func sourcePresentationSection(_ source: MenuSourcePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(sourcePresentationHeader(for: source))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.mint)
+                Spacer()
+                if !source.fullSourcePath.isEmpty {
+                    Button(source.sourceType == "web" ? "링크 열기" : "원문 열기") {
+                        openSourcePresentation(source)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            if !source.title.isEmpty {
+                Text(source.title)
+                    .font(.caption.weight(.semibold))
+            }
+            if !source.headingPath.isEmpty {
+                Text(source.headingPath)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if !source.quote.isEmpty && source.previewLines.isEmpty {
+                Text(source.quote)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !source.previewLines.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(source.previewLines, id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            if !source.sourcePath.isEmpty {
+                Text(source.sourcePath)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.mint.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.mint.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private func sourcePresentationHeader(for source: MenuSourcePresentation) -> String {
+        switch source.kind {
+        case "table_row":
+            return "표 미리보기"
+        case "web_page":
+            return "웹 미리보기"
+        case "code_symbol":
+            return "코드 미리보기"
+        default:
+            return "원문 보기"
+        }
+    }
+
+    private func openSourcePresentation(_ source: MenuSourcePresentation) {
+        guard !source.fullSourcePath.isEmpty else { return }
+        if source.sourceType == "web", let url = URL(string: source.fullSourcePath) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: source.fullSourcePath))
+    }
+
+    @ViewBuilder
     private func citationSection(_ citations: [MenuCitation]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("출처")
@@ -952,8 +1040,20 @@ struct JarvisGuideView: View {
                                     Text("\(citation.sourceType) · \(citation.state)")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
+                                    if !citation.headingPath.isEmpty {
+                                        Text(citation.headingPath)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                                 Spacer()
+                                if !citation.fullSourcePath.isEmpty {
+                                    Button("열기") {
+                                        NSWorkspace.shared.open(URL(fileURLWithPath: citation.fullSourcePath))
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
                             }
                             if !citation.quote.isEmpty {
                                 Text(citation.quote)

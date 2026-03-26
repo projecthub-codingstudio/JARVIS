@@ -188,6 +188,51 @@ class TestMenuBridge:
         )
 
         assert payload.spoken_response == "3일차 점심은 닭가슴살과 현미밥 삼 분의 일과 김 두 장입니다."
+        assert payload.source_presentation is not None
+        assert payload.source_presentation.kind == "table_row"
+        assert payload.source_presentation.title == "3일차 표 항목"
+        assert payload.source_presentation.preview_lines[0] == "일차: 3"
+        assert any(line.startswith("점심: ") for line in payload.source_presentation.preview_lines)
+
+    def test_builds_web_source_presentation(self) -> None:
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-web-1",
+                    document_id="web-doc",
+                    text="OpenAI API guide overview",
+                    citation=CitationRecord(
+                        document_id="web-doc",
+                        chunk_id="chunk-web-1",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.88,
+                    source_path="https://platform.openai.com/docs/overview",
+                    heading_path="OpenAI Docs > Overview",
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="openai docs overview", language="en", query_type="keyword"),),
+        )
+
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="OpenAI docs overview 설명해줘",
+                assistant_output="OpenAI API guide overview",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="OpenAI API guide overview", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.source_presentation is not None
+        assert payload.source_presentation.kind == "web_page"
+        assert payload.source_presentation.source_type == "web"
 
     def test_marks_safe_mode_from_answer_model(self) -> None:
         payload = build_menu_response(
