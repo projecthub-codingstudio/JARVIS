@@ -3,6 +3,7 @@ import Foundation
 actor JarvisServiceManager {
     private let configuration: BridgeConfiguration
     private let socketPath: String
+    private let pidFilePath: String
     private var knowledgeBaseOverridePath: String?
     private var process: Process?
     private var startupProgressMessage = ""
@@ -15,6 +16,7 @@ actor JarvisServiceManager {
     ) {
         self.configuration = configuration
         self.socketPath = socketPath
+        self.pidFilePath = socketPath + ".pid"
         self.knowledgeBaseOverridePath = knowledgeBaseOverridePath
     }
 
@@ -34,6 +36,8 @@ actor JarvisServiceManager {
             process.terminate()
         }
         process = nil
+
+        terminateExistingServiceIfNeeded()
 
         let pythonURL = URL(fileURLWithPath: configuration.pythonExecutable)
         guard FileManager.default.fileExists(atPath: pythonURL.path) else {
@@ -82,6 +86,7 @@ actor JarvisServiceManager {
     func shutdown() {
         process?.terminate()
         process = nil
+        terminateExistingServiceIfNeeded()
         startupProgressMessage = ""
         startingUp = false
     }
@@ -92,6 +97,7 @@ actor JarvisServiceManager {
             process.terminate()
             self.process = nil
         }
+        terminateExistingServiceIfNeeded()
         try? FileManager.default.removeItem(atPath: socketPath)
     }
 
@@ -111,5 +117,20 @@ actor JarvisServiceManager {
         )
         env["JARVIS_SERVICE_SOCKET"] = socketPath
         return env
+    }
+
+    private func terminateExistingServiceIfNeeded() {
+        guard let pidText = try? String(contentsOfFile: pidFilePath, encoding: .utf8) else {
+            return
+        }
+        let trimmed = pidText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pid = Int32(trimmed), pid > 0 else {
+            try? FileManager.default.removeItem(atPath: pidFilePath)
+            return
+        }
+        if kill(pid, 0) == 0 {
+            _ = kill(pid, SIGTERM)
+        }
+        try? FileManager.default.removeItem(atPath: pidFilePath)
     }
 }

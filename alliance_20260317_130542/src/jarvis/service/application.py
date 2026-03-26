@@ -21,7 +21,8 @@ from jarvis.cli.menu_bridge import (
 )
 from jarvis.service.protocol import RpcRequest, RpcResponse, error_response, ok_response
 
-_DEFAULT_MENU_BAR_MODEL_CHAIN = ("qwen3.5:9b", "stub")
+_DEFAULT_MENU_BAR_MODEL_CHAIN = ("stub",)
+_DEFAULT_MENU_BRIDGE_TIMEOUT_SECONDS = 18
 
 
 def _menu_bar_model_chain() -> tuple[str, ...]:
@@ -30,6 +31,15 @@ def _menu_bar_model_chain() -> tuple[str, ...]:
         return _DEFAULT_MENU_BAR_MODEL_CHAIN
     models = tuple(part.strip() for part in raw.split(",") if part.strip())
     return models or _DEFAULT_MENU_BAR_MODEL_CHAIN
+
+
+def _menu_bridge_timeout_seconds(command: str) -> int:
+    raw = os.getenv("JARVIS_MENU_BRIDGE_TIMEOUT_SECONDS", "").strip()
+    if raw.isdigit():
+        return max(5, int(raw))
+    if command == "ask":
+        return _DEFAULT_MENU_BRIDGE_TIMEOUT_SECONDS
+    return 15
 
 
 def _run_menu_bridge_subprocess(*, command: str, args: list[str]) -> dict[str, object]:
@@ -61,6 +71,7 @@ def _run_menu_bridge_subprocess(*, command: str, args: list[str]) -> dict[str, o
         text=True,
         env=env,
         cwd=str(alliance_root),
+        timeout=_menu_bridge_timeout_seconds(command),
     )
     stdout = completed.stdout.strip()
     stderr = completed.stderr.strip()

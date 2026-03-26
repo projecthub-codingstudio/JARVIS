@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 
 from jarvis.contracts import AccessStatus, DocumentRecord, IndexingStatus
@@ -577,6 +578,47 @@ def _extract_hwpx_tables(path: Path) -> list:
     tables: list[DocumentElement] = []
     table_idx = 0
 
+    def _local_name(elem: ElementTree.Element) -> str:
+        return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+    def _normalized_text(elem: ElementTree.Element) -> str:
+        return " ".join("".join(elem.itertext()).split())
+
+    def _caption_from_neighbors(
+        tbl_elem: ElementTree.Element,
+        parent_map: dict[ElementTree.Element, ElementTree.Element],
+    ) -> str:
+        for elem in tbl_elem.iter():
+            if "caption" in _local_name(elem).lower():
+                caption = _normalized_text(elem)
+                if caption:
+                    return caption
+
+        parent = parent_map.get(tbl_elem)
+        if parent is None:
+            return ""
+
+        siblings = list(parent)
+        try:
+            index = siblings.index(tbl_elem)
+        except ValueError:
+            return ""
+
+        nearby = siblings[max(0, index - 2): min(len(siblings), index + 2)]
+        for sibling in nearby:
+            if sibling is tbl_elem:
+                continue
+            sibling_name = _local_name(sibling).lower()
+            sibling_text = _normalized_text(sibling)
+            if not sibling_text:
+                continue
+            if "caption" in sibling_name:
+                return sibling_text
+            if sibling_name in {"p", "paragraph"} and re.match(r"^(표|table)\s*\d+", sibling_text, re.IGNORECASE):
+                return sibling_text
+
+        return ""
+
     try:
         with zipfile.ZipFile(str(path), "r") as zf:
             for name in sorted(zf.namelist()):
@@ -585,6 +627,7 @@ def _extract_hwpx_tables(path: Path) -> list:
                 try:
                     xml_bytes = zf.read(name)
                     root = ElementTree.fromstring(xml_bytes)
+                    parent_map = {child: parent for parent in root.iter() for child in parent}
                 except (ElementTree.ParseError, KeyError):
                     continue
 
@@ -609,7 +652,8 @@ def _extract_hwpx_tables(path: Path) -> list:
                     table_idx += 1
                     headers = tuple(rows_data[0])
                     rows = tuple(tuple(r) for r in rows_data[1:] if any(r))
-                    label = f"Table {table_idx}"
+                    caption = _caption_from_neighbors(tbl_elem, parent_map)
+                    label = caption if caption else f"Table {table_idx}"
                     text_repr = f"[{label}] {' | '.join(headers)}" if headers else f"[{label}]"
                     tables.append(DocumentElement(
                         element_type="table",
@@ -942,32 +986,90 @@ def _parse_hwp_structured(path: Path) -> list:
     if result.returncode != 0 or not result.stdout:
         return []
 
+    return _parse_hwp_structured_xml_bytes(result.stdout, path_name=path.name)
+
+
+def _parse_hwp_structured_xml_bytes(xml_bytes: bytes, *, path_name: str = "") -> list:
+    """Parse HWP XML bytes into structured text/table elements.
+
+    This helper exists so HWP parser behavior can be tested without requiring
+    `hwp5proc` in the test environment.
+    """
+    if not xml_bytes:
+        return []
+
     try:
         from lxml import etree
         from jarvis.contracts import DocumentElement
 
-        root = etree.fromstring(result.stdout)
+        root = etree.fromstring(xml_bytes)
         elements: list[DocumentElement] = []
 
         # Build set of elements inside tables (to skip their Text)
-        table_element_ids: set[int] = set()
+        table_elements: set[object] = set()
         for tbl in root.iter():
             tbl_tag = tbl.tag.split("}")[-1] if "}" in tbl.tag else tbl.tag
             if tbl_tag in ("TableBody", "TableCell", "TableRow", "TableControl", "TableCaption"):
-                table_element_ids.add(id(tbl))
+                table_elements.add(tbl)
                 for desc in tbl.iter():
-                    table_element_ids.add(id(desc))
+                    table_elements.add(desc)
 
         # Collect text paragraphs and tables in document order
         text_buffer: list[str] = []
         table_idx = 0
+        consumed_text_elements: set[object] = set()
+        current_heading_path = ""
+        pending_heading_path = ""
+        pending_parent_heading = ""
 
         def _flush_text():
-            nonlocal text_buffer
+            nonlocal text_buffer, current_heading_path, pending_heading_path, pending_parent_heading
             if text_buffer:
-                combined = "\n\n".join(text_buffer)
-                if combined.strip():
-                    elements.append(DocumentElement(element_type="text", text=combined.strip()))
+                for paragraph_text in text_buffer:
+                    normalized_paragraph = paragraph_text.strip()
+                    if not normalized_paragraph:
+                        continue
+                    compact_paragraph = " ".join(normalized_paragraph.split()).strip(" -:")
+                    if _looks_like_hwp_parent_heading(compact_paragraph):
+                        pending_parent_heading = compact_paragraph
+                        pending_heading_path = ""
+                        continue
+                    if pending_parent_heading and compact_paragraph in _HWP_SUBHEADINGS:
+                        current_heading_path = f"{pending_parent_heading} > {compact_paragraph}"
+                        pending_parent_heading = ""
+                        pending_heading_path = ""
+                        continue
+                    built_elements = _build_hwp_text_elements(normalized_paragraph)
+                    paragraph_emitted = False
+                    for built in built_elements:
+                        heading_path = str(built.metadata.get("heading_path", "")).strip()
+                        if heading_path:
+                            current_heading_path = heading_path
+                            pending_heading_path = ""
+                            pending_parent_heading = ""
+                            elements.append(built)
+                            paragraph_emitted = True
+                            continue
+                        if pending_heading_path:
+                            current_heading_path = pending_heading_path
+                            pending_heading_path = ""
+                        elif current_heading_path and _looks_like_hwp_followup_heading(built.text):
+                            pending_heading_path = _derive_hwp_followup_heading(built.text, current_heading_path)
+                            pending_parent_heading = ""
+                            paragraph_emitted = True
+                            break
+
+                        if current_heading_path:
+                            elements.append(DocumentElement(
+                                element_type=built.element_type,
+                                text=built.text,
+                                metadata={**built.metadata, "heading_path": current_heading_path},
+                            ))
+                        else:
+                            elements.append(built)
+                        paragraph_emitted = True
+                    if not paragraph_emitted and pending_heading_path:
+                        continue
                 text_buffer = []
 
         def _get_table_caption(body_elem) -> str:
@@ -988,8 +1090,18 @@ def _parse_hwp_structured(path: Path) -> list:
         for elem in root.iter():
             tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
 
-            if tag == "Text" and elem.text and elem.text.strip():
-                if id(elem) not in table_element_ids:
+            if tag in ("P", "Paragraph") and elem not in table_elements:
+                paragraph_text = etree.tostring(elem, method="text", encoding="unicode").strip()
+                paragraph_text = " ".join(paragraph_text.split())
+                if paragraph_text:
+                    text_buffer.append(paragraph_text)
+                    for desc in elem.iter():
+                        consumed_text_elements.add(desc)
+
+            elif tag == "Text" and elem.text and elem.text.strip():
+                if elem not in table_elements:
+                    if elem in consumed_text_elements:
+                        continue
                     text_buffer.append(elem.text.strip())
 
             elif tag == "TableBody":
@@ -1019,12 +1131,90 @@ def _parse_hwp_structured(path: Path) -> list:
         _flush_text()
 
         logger.info("HWP structured parse: %d elements (%d tables) from %s",
-                     len(elements), table_idx, path.name)
+                     len(elements), table_idx, path_name)
         return elements
 
     except Exception as exc:
         logger.warning("HWP structured parse failed: %s", exc)
         return []
+
+
+_HWP_SUBHEADINGS = ("기본 구조", "저장 구조", "공통 속성", "개체 속성", "텍스트 정보", "텍스트 속성")
+_HWP_FOLLOWUP_HEADING_EXCLUDE_PREFIXES = ("표 ", "[표", "그림 ", "[그림")
+_HWP_EXPLANATORY_RE = re.compile(r"(?:이다|있다|한다|된다|저장된다|설명|구조)")
+
+
+def _build_hwp_text_elements(text: str) -> list:
+    """Promote inline section titles in HWP spec text into heading-aware elements."""
+    from jarvis.contracts import DocumentElement
+
+    normalized = " ".join(text.split())
+    head1 = ""
+    head2 = ""
+    body = normalized
+    for subheading in _HWP_SUBHEADINGS:
+        marker = f" {subheading} "
+        if marker not in normalized:
+            continue
+        prefix, suffix = normalized.split(marker, 1)
+        if not prefix.strip() or not suffix.strip():
+            continue
+        head1_candidate = prefix.strip().split(".")[-1].strip()
+        if len(head1_candidate) < 4 or len(head1_candidate) > 40:
+            continue
+        if not any(keyword in head1_candidate for keyword in ("자료 구조", "파일 구조", "공통 속성", "개체")):
+            continue
+        head1 = head1_candidate
+        head2 = subheading
+        body = suffix.strip()
+        break
+
+    if not head1:
+        return [DocumentElement(element_type="text", text=text)]
+
+    heading_path = f"{head1} > {head2}" if head2 else head1
+    return [
+        DocumentElement(
+            element_type="text",
+            text=body,
+            metadata={"heading_path": heading_path},
+        )
+    ]
+
+
+def _looks_like_hwp_followup_heading(text: str) -> bool:
+    normalized = " ".join(text.split()).strip(" -:")
+    if len(normalized) < 4 or len(normalized) > 40:
+        return False
+    if any(normalized.startswith(prefix) for prefix in _HWP_FOLLOWUP_HEADING_EXCLUDE_PREFIXES):
+        return False
+    if _HWP_EXPLANATORY_RE.search(normalized):
+        return False
+    if any(ch in normalized for ch in ".!?=|"):
+        return False
+    return True
+
+
+def _looks_like_hwp_parent_heading(text: str) -> bool:
+    normalized = " ".join(text.split()).strip(" -:")
+    if len(normalized) < 4 or len(normalized) > 40:
+        return False
+    if any(ch in normalized for ch in ".!?=|"):
+        return False
+    if any(token in normalized for token in ("이다", "있다", "한다", "된다", "설명")):
+        return False
+    return any(keyword in normalized for keyword in ("자료 구조", "파일 구조", "공통 속성", "개체 정보"))
+
+
+def _derive_hwp_followup_heading(text: str, current_heading_path: str) -> str:
+    normalized = " ".join(text.split()).strip(" -:")
+    if not normalized or not current_heading_path:
+        return ""
+    if " > " in current_heading_path:
+        parent = current_heading_path.rsplit(" > ", 1)[0]
+    else:
+        parent = current_heading_path
+    return f"{parent} > {normalized}" if parent else normalized
 
 
 def _extract_hwp_table_rows(table_body) -> list[list[str]]:
