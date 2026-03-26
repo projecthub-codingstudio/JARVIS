@@ -7,10 +7,11 @@ from types import SimpleNamespace
 
 from jarvis.cli.menu_bridge import (
     MenuBarTranscriptionResponse,
-    _MAX_DISPLAY_CHARS,
+    _build_context,
     _build_navigation_window,
     _export_draft,
     _health_payload,
+    _run_query,
     _synthesize_speech,
     build_menu_response,
 )
@@ -48,6 +49,62 @@ def _answer(*, model_id: str = "stub") -> AnswerDraft:
 
 
 class TestMenuBridge:
+    def test_build_context_allows_mlx_for_non_stub_models(self, monkeypatch) -> None:
+        observed: dict[str, object] = {}
+
+        def fake_build_runtime_context(**kwargs):
+            observed.update(kwargs)
+            return SimpleNamespace()
+
+        monkeypatch.setattr("jarvis.cli.menu_bridge.build_runtime_context", fake_build_runtime_context)
+
+        _build_context(model_id="qwen3.5:9b")
+
+        assert observed["allow_mlx"] is True
+
+    def test_build_context_disables_mlx_for_stub_model(self, monkeypatch) -> None:
+        observed: dict[str, object] = {}
+
+        def fake_build_runtime_context(**kwargs):
+            observed.update(kwargs)
+            return SimpleNamespace()
+
+        monkeypatch.setattr("jarvis.cli.menu_bridge.build_runtime_context", fake_build_runtime_context)
+
+        _build_context(model_id="stub")
+
+        assert observed["allow_mlx"] is False
+
+    def test_run_query_short_circuits_smalltalk(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jarvis.cli.menu_bridge._build_context",
+            lambda model_id: (_ for _ in ()).throw(AssertionError("runtime context should not build")),
+        )
+
+        payload = _run_query(query="안녕하세요", model_id="stub")
+
+        assert payload.response == "안녕하세요. 무엇을 도와드릴까요?"
+        assert payload.has_evidence is False
+        assert payload.status is not None
+        assert payload.status.mode == "smalltalk"
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.intent == "smalltalk"
+
+    def test_run_query_short_circuits_weather_intent(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jarvis.cli.menu_bridge._build_context",
+            lambda model_id: (_ for _ in ()).throw(AssertionError("runtime context should not build")),
+        )
+
+        payload = _run_query(query="오늘 날씨좀 알려주세요", model_id="stub")
+
+        assert "실시간 날씨 데이터" in payload.response
+        assert payload.has_evidence is False
+        assert payload.status is not None
+        assert payload.status.mode == "capability_gap"
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.intent == "weather"
+
     def test_serializes_turn_with_citations(self, tmp_path: Path) -> None:
         kb = tmp_path / "knowledge_base"
         kb.mkdir()
@@ -85,8 +142,52 @@ class TestMenuBridge:
         assert payload.render_hints.truncated is False
         assert payload.exploration is not None
         assert payload.exploration.target_file == "pipeline.py"
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.skill == "source_exploration"
+        assert payload.guide_directive.should_hold is True
+        assert payload.guide_directive.loop_stage == "presenting"
+        assert payload.guide_directive.clarification_prompt == ""
+        assert payload.guide_directive.missing_slots == []
+        assert payload.spoken_response == "이 함수는 파이프라인을 실행합니다. [1]"
         assert any(item.label == "Pipeline" for item in payload.exploration.class_candidates)
         assert any("class Pipeline" in item.preview for item in payload.exploration.class_candidates)
+
+    def test_builds_structured_spoken_response_for_table_rows(self) -> None:
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-row-1",
+                    document_id="diet-sheet",
+                    text="Day=3 | Breakfast=구운계란2+요거트+베리 | Lunch=닭가슴살+현미밥1/3+김2장 | Dinner=순두부+방울토마토",
+                    citation=CitationRecord(
+                        document_id="diet-sheet",
+                        chunk_id="chunk-row-1",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.97,
+                    source_path="/tmp/14day_diet_supplements_final.xlsx",
+                    heading_path=("table-row",),
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="3일차 점심", language="ko", query_type="keyword"),),
+        )
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="다이어트 식단표에서 3일차 점심을 알려줘",
+                assistant_output="확인된 근거는 [/tmp/14day_diet_supplements_final.xlsx]에 있습니다.\n3일차 점심은 닭가슴살+현미밥1/3+김2장입니다.\n근거: [1]",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="irrelevant display wrapper", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.spoken_response == "3일차 점심은 닭가슴살과 현미밥 삼 분의 일과 김 두 장입니다."
 
     def test_marks_safe_mode_from_answer_model(self) -> None:
         payload = build_menu_response(
@@ -171,6 +272,10 @@ class TestMenuBridge:
 
         assert payload.render_hints is not None
         assert payload.render_hints.interaction_mode == "document_exploration"
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.skill == "document_review"
+        assert payload.guide_directive.loop_stage == "presenting"
+        assert payload.guide_directive.clarification_prompt == ""
 
     def test_builds_document_candidates_for_document_mode(self, tmp_path: Path) -> None:
         kb = tmp_path / "knowledge_base"
@@ -195,6 +300,30 @@ class TestMenuBridge:
         assert payload.exploration.target_document == "guide.pdf"
         assert payload.exploration.document_candidates
         assert payload.exploration.document_candidates[0].preview.startswith("JARVIS guide summary")
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.missing_slots == []
+
+    def test_builds_guide_directive_for_follow_up_question(self) -> None:
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="시청역 가는 길 알려줘",
+                assistant_output="출발 위치를 먼저 알려주실 수 있을까요?",
+                has_evidence=False,
+            ),
+            answer=None,
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.guide_directive is not None
+        assert payload.guide_directive.skill == "route_guidance"
+        assert payload.guide_directive.loop_stage == "waiting_user_reply"
+        assert payload.guide_directive.clarification_prompt == "출발 위치를 먼저 알려주실 수 있을까요?"
+        assert payload.guide_directive.should_hold is True
 
     def test_build_navigation_window_returns_source_candidates(self, monkeypatch, tmp_path: Path) -> None:
         kb = tmp_path / "knowledge_base"
@@ -261,8 +390,9 @@ class TestMenuBridge:
 
     def test_synthesize_speech_returns_audio_path(self, monkeypatch, tmp_path: Path) -> None:
         class FakeTTS:
-            def __init__(self, voice: str | None = None) -> None:
+            def __init__(self, voice: str | None = None, backend: str = "auto") -> None:
                 self.voice = voice
+                self.backend = backend
 
             def synthesize(self, text: str, output_path: Path) -> Path:
                 output_path.write_text(text, encoding="utf-8")
@@ -300,8 +430,8 @@ class TestMenuBridge:
         assert payload.render_hints is not None
         assert payload.render_hints.truncated is False
 
-    def test_long_response_truncated_with_temp_file(self) -> None:
-        long_text = "가" * (_MAX_DISPLAY_CHARS + 200)
+    def test_long_response_preserves_full_text(self) -> None:
+        long_text = "가" * 700
         payload = build_menu_response(
             turn=ConversationTurn(
                 user_input="긴 질문",
@@ -316,17 +446,10 @@ class TestMenuBridge:
             rebuild_index_required=False,
             knowledge_base_path=None,
         )
-        assert payload.response.endswith(" ...more")
-        assert len(payload.response) == _MAX_DISPLAY_CHARS + len(" ...more")
-        assert payload.full_response_path != ""
+        assert payload.response == long_text
+        assert payload.full_response_path == ""
         assert payload.render_hints is not None
-        assert payload.render_hints.truncated is True
-
-        # Verify temp file contains full response
-        full_content = Path(payload.full_response_path).read_text(encoding="utf-8")
-        assert full_content == long_text
-        # Cleanup
-        Path(payload.full_response_path).unlink(missing_ok=True)
+        assert payload.render_hints.truncated is False
 
     def test_health_payload_exposes_lazy_and_disabled_runtime_states(self) -> None:
         class FakeEmbedding:

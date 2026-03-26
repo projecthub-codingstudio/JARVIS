@@ -82,6 +82,12 @@ class IndexPipeline:
             (document_id,),
         )
 
+    def _mark_failed(self, record: DocumentRecord, *, reason: str) -> DocumentRecord:
+        failed_record = replace(record, indexing_status=IndexingStatus.FAILED)
+        self._write_document(failed_record)
+        self._db.commit()
+        raise ValueError(f"Indexing produced no searchable content for {record.path}: {reason}")
+
     def _insert_chunks(self, chunks: list[ChunkRecord]) -> None:
         """Insert chunks immediately without morpheme analysis.
 
@@ -208,6 +214,8 @@ class IndexPipeline:
         self._write_document(record)
 
         # Write chunks
+        if not chunks:
+            return self._mark_failed(record, reason="empty parsed content")
         self._insert_chunks(chunks)
 
         # Mark as INDEXED
@@ -245,6 +253,8 @@ class IndexPipeline:
 
         record = replace(record, indexing_status=IndexingStatus.INDEXING)
         self._write_document(record)
+        if not chunks:
+            return self._mark_failed(record, reason="empty parsed content")
         self._insert_chunks(chunks)
         record = replace(record, indexing_status=IndexingStatus.INDEXED)
         self._write_document(record)

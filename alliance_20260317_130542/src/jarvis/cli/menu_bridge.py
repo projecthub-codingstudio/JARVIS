@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import tempfile
 import time
@@ -26,10 +27,12 @@ from jarvis.contracts import (
     EvidenceItem,
     VerifiedEvidenceSet,
 )
+from jarvis.core.intent_policy import resolve_menu_intent_policy
 from jarvis.identifier_restoration import build_identifier_lexicon, score_identifier_candidates
 from jarvis.query_normalization import normalize_spoken_code_query
 
 from jarvis.runtime.audio_recorder import AudioRecorder
+from jarvis.runtime.mlx_runtime import build_stub_spoken_response
 from jarvis.observability.health import check_health
 from jarvis.observability.logging import configure_logging
 from jarvis.runtime.stt_biasing import build_vocabulary_hint
@@ -38,8 +41,6 @@ from jarvis.runtime.tts_runtime import LocalTTSRuntime
 from jarvis.tools.draft_export import DraftExportTool
 
 _MAX_QUOTE_CHARS = 160
-_MAX_DISPLAY_CHARS = 500
-_RESPONSE_DIR = Path(tempfile.gettempdir()) / "jarvis_responses"
 _TTS_DIR = Path(tempfile.gettempdir()) / "jarvis_tts"
 
 
@@ -119,14 +120,27 @@ class MenuBarExplorationState:
 
 
 @dataclass(frozen=True)
+class MenuBarGuideDirective:
+    intent: str
+    skill: str
+    loop_stage: str
+    clarification_prompt: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    suggested_replies: list[str] = field(default_factory=list)
+    should_hold: bool = False
+
+
+@dataclass(frozen=True)
 class MenuBarResponse:
     query: str
     response: str
     has_evidence: bool
+    spoken_response: str = ""
     citations: list[MenuBarCitation] = field(default_factory=list)
     status: MenuBarStatus | None = None
     render_hints: MenuBarRenderHints | None = None
     exploration: MenuBarExplorationState | None = None
+    guide_directive: MenuBarGuideDirective | None = None
     full_response_path: str = ""
 
 
@@ -154,6 +168,11 @@ class MenuBarNormalizationResponse:
 
 
 @dataclass(frozen=True)
+class MenuBarProgressResponse:
+    message: str
+
+
+@dataclass(frozen=True)
 class MenuBarCommandEnvelope:
     kind: str
     query_result: MenuBarResponse | None = None
@@ -163,6 +182,7 @@ class MenuBarCommandEnvelope:
     transcription_result: MenuBarTranscriptionResponse | None = None
     speech_result: MenuBarSpeechResponse | None = None
     health_result: dict[str, object] | None = None
+    progress_result: MenuBarProgressResponse | None = None
     error: str = ""
 
 
@@ -176,6 +196,7 @@ def build_menu_response(
     write_blocked: bool,
     rebuild_index_required: bool,
     knowledge_base_path: Path | None = None,
+    planner_analysis: object | None = None,
 ) -> MenuBarResponse:
     """Serialize a completed turn into a menu bar-friendly payload."""
     citations: list[MenuBarCitation] = []
@@ -199,14 +220,7 @@ def build_menu_response(
     full_text = turn.assistant_output
     full_response_path = ""
     display_text = full_text
-
-    if len(full_text) > _MAX_DISPLAY_CHARS:
-        _RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time() * 1000)
-        response_file = _RESPONSE_DIR / f"response_{ts}.txt"
-        response_file.write_text(full_text, encoding="utf-8")
-        full_response_path = str(response_file)
-        display_text = full_text[:_MAX_DISPLAY_CHARS] + " ...more"
+    spoken_text = _build_spoken_response(turn=turn, answer=answer, display_text=display_text)
 
     citation_count = len(citations)
     source_types = {citation.source_type for citation in citations}
@@ -241,10 +255,19 @@ def build_menu_response(
         interaction_mode=interaction_mode,
         knowledge_base_path=knowledge_base_path,
     )
+    guide_directive = _build_guide_directive(
+        query=turn.user_input,
+        response_text=full_text,
+        interaction_mode=interaction_mode,
+        exploration=exploration,
+        planner_analysis=planner_analysis,
+        has_evidence=turn.has_evidence,
+    )
 
     return MenuBarResponse(
         query=turn.user_input,
         response=display_text,
+        spoken_response=spoken_text,
         has_evidence=turn.has_evidence,
         citations=citations,
         status=MenuBarStatus(
@@ -264,8 +287,24 @@ def build_menu_response(
             truncated=bool(full_response_path),
         ),
         exploration=exploration,
+        guide_directive=guide_directive,
         full_response_path=full_response_path,
     )
+
+
+def _build_spoken_response(
+    *,
+    turn: ConversationTurn,
+    answer: AnswerDraft | None,
+    display_text: str,
+) -> str:
+    if answer is None:
+        return display_text
+    if answer.model_id == "stub":
+        spoken = build_stub_spoken_response(turn.user_input, answer.evidence)
+        if spoken:
+            return spoken
+    return answer.content or display_text
 
 
 def _detect_interaction_mode(*, query: str, response_type: str, primary_source_type: str) -> str:
@@ -416,13 +455,148 @@ def _preview_document(path: Path) -> str:
     return "\n".join(lines[:18])[:1200]
 
 
-def _build_context(*, model_id: str):
+def _analysis_intent(planner_analysis: object | None, interaction_mode: str) -> str:
+    intent = getattr(planner_analysis, "intent", "") if planner_analysis is not None else ""
+    if intent:
+        return str(intent)
+    if interaction_mode == "source_exploration":
+        return "source_navigation"
+    if interaction_mode == "document_exploration":
+        return "document_navigation"
+    return "qa"
+
+
+def _skill_for(interaction_mode: str, query: str) -> str:
+    lowered = query.lower()
+    if interaction_mode == "source_exploration":
+        return "source_exploration"
+    if interaction_mode == "document_exploration":
+        return "document_review"
+    if (
+        "지하철" in lowered
+        or "버스" in lowered
+        or "경로" in lowered
+        or "길찾기" in lowered
+        or "가는 길" in lowered
+        or "가는길" in lowered
+    ):
+        return "route_guidance"
+    return "conversation_support"
+
+
+def _extract_question_prompt(text: str) -> str:
+    normalized = " ".join(segment.strip() for segment in text.splitlines() if segment.strip()).strip()
+    if not normalized or "?" not in normalized:
+        return ""
+    parts = [segment.strip() for segment in normalized.split("?") if segment.strip()]
+    if not parts:
+        return ""
+    for segment in reversed(parts):
+        if any(token in segment for token in ("어디", "어느", "무엇", "말씀", "알려", "선택", "확인", "추가")):
+            return f"{segment}?"
+    return f"{parts[0]}?"
+
+
+def _missing_slots_for(interaction_mode: str, exploration: MenuBarExplorationState | None) -> list[str]:
+    if exploration is None:
+        return []
+    slots: list[str] = []
+    if interaction_mode == "document_exploration":
+        if not exploration.target_document:
+            slots.append("target_document")
+        if len(exploration.document_candidates) > 1:
+            slots.append("document_selection")
+    elif interaction_mode == "source_exploration":
+        if not exploration.target_file:
+            slots.append("target_file")
+        scoped_count = len(exploration.file_candidates) + len(exploration.class_candidates) + len(exploration.function_candidates)
+        if scoped_count > 1:
+            slots.append("source_selection")
+    return slots
+
+
+def _suggested_replies_for(
+    interaction_mode: str,
+    exploration: MenuBarExplorationState | None,
+) -> list[str]:
+    if exploration is not None:
+        labels = [
+            *(item.label for item in exploration.document_candidates[:2]),
+            *(item.label for item in exploration.file_candidates[:2]),
+            *(item.label for item in exploration.class_candidates[:2]),
+            *(item.label for item in exploration.function_candidates[:2]),
+        ]
+        deduped: list[str] = []
+        for label in labels:
+            cleaned = label.strip()
+            if cleaned and cleaned not in deduped:
+                deduped.append(cleaned)
+        if deduped:
+            return deduped
+    if interaction_mode == "document_exploration":
+        return ["첫 번째 문서", "문서 제목으로 지정", "이 문서 요약해줘"]
+    if interaction_mode == "source_exploration":
+        return ["첫 번째 후보", "파일 이름으로 지정", "이 클래스 설명해줘"]
+    return ["현재 위치 추가", "대상 이름 추가", "조건을 더 구체화"]
+
+
+def _clarification_prompt_for(
+    *,
+    interaction_mode: str,
+    response_text: str,
+    missing_slots: list[str],
+) -> str:
+    extracted = _extract_question_prompt(response_text)
+    if extracted:
+        return extracted
+    if "target_document" in missing_slots or "document_selection" in missing_slots:
+        return "어떤 문서를 기준으로 이어서 볼지 알려주세요."
+    if "target_file" in missing_slots or "source_selection" in missing_slots:
+        return "어느 파일, 클래스, 함수 기준으로 이어서 볼지 알려주세요."
+    return ""
+
+
+def _build_guide_directive(
+    *,
+    query: str,
+    response_text: str,
+    interaction_mode: str,
+    exploration: MenuBarExplorationState | None,
+    planner_analysis: object | None,
+    has_evidence: bool,
+) -> MenuBarGuideDirective:
+    missing_slots = _missing_slots_for(interaction_mode, exploration) if not has_evidence else []
+    clarification_prompt = _clarification_prompt_for(
+        interaction_mode=interaction_mode,
+        response_text=response_text,
+        missing_slots=missing_slots,
+    )
+    should_hold = bool(clarification_prompt or missing_slots or response_text.strip())
+    if clarification_prompt and (not has_evidence or _extract_question_prompt(response_text)):
+        loop_stage = "waiting_user_reply"
+    elif has_evidence:
+        loop_stage = "presenting"
+    else:
+        loop_stage = "reasoning"
+    return MenuBarGuideDirective(
+        intent=_analysis_intent(planner_analysis, interaction_mode),
+        skill=_skill_for(interaction_mode, query),
+        loop_stage=loop_stage,
+        clarification_prompt=clarification_prompt,
+        missing_slots=missing_slots,
+        suggested_replies=_suggested_replies_for(interaction_mode, exploration),
+        should_hold=should_hold,
+    )
+
+
+def _build_context(*, model_id: str, reporter=None):
     return build_runtime_context(
         model_id=model_id,
-        start_watcher_enabled=True,
+        start_watcher_enabled=False,
         start_background_backfill=False,
-        allow_mlx=True,
+        allow_mlx=model_id.strip().lower() != "stub",
         data_dir=Path.cwd() / ".jarvis-menubar",
+        reporter=reporter,
     )
 
 
@@ -433,6 +607,13 @@ def _resolve_bridge_knowledge_base_path() -> Path | None:
 
 def _response_from_context(*, context: object, turn: ConversationTurn) -> MenuBarResponse:
     answer = context.orchestrator.last_answer
+    planner = getattr(context.orchestrator, "_planner", None)
+    planner_analysis = None
+    if planner is not None:
+        try:
+            planner_analysis = planner.analyze(turn.user_input)
+        except Exception:
+            logging.getLogger(__name__).debug("planner analyze failed for guide directive", exc_info=True)
     return build_menu_response(
         turn=turn,
         answer=answer,
@@ -442,6 +623,7 @@ def _response_from_context(*, context: object, turn: ConversationTurn) -> MenuBa
         write_blocked=context.error_monitor.write_blocked,
         rebuild_index_required=context.error_monitor.rebuild_index_required,
         knowledge_base_path=context.knowledge_base_path,
+        planner_analysis=planner_analysis,
     )
 
 
@@ -469,7 +651,55 @@ def _normalize_query(*, query: str) -> MenuBarNormalizationResponse:
     )
 
 
+def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse | None:
+    if model_id.strip().lower() != "stub":
+        return None
+    resolution = resolve_menu_intent_policy(
+        query,
+        knowledge_base_path=_resolve_bridge_knowledge_base_path(),
+    )
+    if resolution.policy is None:
+        return None
+    policy = resolution.policy
+    return MenuBarResponse(
+        query=query,
+        response=policy.response_text,
+        spoken_response=policy.response_text,
+        has_evidence=False,
+        citations=[],
+        status=MenuBarStatus(
+            mode=policy.mode,
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+        ),
+        render_hints=MenuBarRenderHints(
+            response_type=policy.response_type,
+            primary_source_type=policy.primary_source_type,
+            source_profile=policy.source_profile,
+            interaction_mode=policy.interaction_mode,
+            citation_count=0,
+            truncated=False,
+        ),
+        exploration=None,
+        guide_directive=MenuBarGuideDirective(
+            intent=policy.intent,
+            skill=policy.skill,
+            loop_stage="presenting",
+            clarification_prompt="",
+            missing_slots=[],
+            suggested_replies=list(policy.suggested_replies),
+            should_hold=True,
+        ),
+        full_response_path="",
+    )
+
+
 def _run_query(*, query: str, model_id: str) -> MenuBarResponse:
+    if override := _intent_override_response(query, model_id=model_id):
+        return override
     context = _build_context(model_id=model_id)
     try:
         turn = context.orchestrator.handle_turn(query)
@@ -562,6 +792,7 @@ def _synthesize_speech(*, text: str) -> MenuBarSpeechResponse:
 
     tts_runtime = LocalTTSRuntime(
         voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
+        backend="say",
     )
     _TTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = _TTS_DIR / f"speech_{int(time.time() * 1000)}.aiff"
@@ -711,6 +942,17 @@ def _health_payload(*, context: object) -> dict[str, object]:
     details["knowledge_base"] = (
         str(context.knowledge_base_path) if context.knowledge_base_path is not None else "not configured"
     )
+    failed_doc_count = 0
+    try:
+        failed_doc_query = context.bootstrap_result.db.execute(
+            "SELECT COUNT(*) FROM documents WHERE indexing_status = 'FAILED'"
+        )
+        if hasattr(failed_doc_query, "fetchone"):
+            failed_doc_row = failed_doc_query.fetchone()
+            failed_doc_count = int(failed_doc_row[0]) if failed_doc_row else 0
+    except Exception:
+        failed_doc_count = 0
+    details["index_failures"] = str(failed_doc_count)
     vector_available = context.vector_index._check_available()
     checks["vector_search"] = vector_available
     details["vector_search"] = "active" if vector_available else "FTS-only mode"
@@ -720,6 +962,8 @@ def _health_payload(*, context: object) -> dict[str, object]:
         failed_checks.append("knowledge_base")
     if not checks["vector_search"]:
         failed_checks.append("vector_search")
+    if failed_doc_count > 0:
+        failed_checks.append("index_failures")
     return {
         "healthy": status.healthy,
         "message": status.message,
@@ -757,6 +1001,7 @@ def _health_light() -> dict[str, object]:
     # Database check
     db = None
     chunk_count = 0
+    failed_doc_count = 0
     try:
         db = init_database(config)
         db.execute("SELECT 1")
@@ -764,6 +1009,8 @@ def _health_light() -> dict[str, object]:
         details["database"] = "OK"
         row = db.execute("SELECT COUNT(*) FROM chunks").fetchone()
         chunk_count = row[0] if row else 0
+        failed_row = db.execute("SELECT COUNT(*) FROM documents WHERE indexing_status = 'FAILED'").fetchone()
+        failed_doc_count = failed_row[0] if failed_row else 0
     except Exception as exc:
         checks["database"] = False
         details["database"] = str(exc)
@@ -777,8 +1024,11 @@ def _health_light() -> dict[str, object]:
     kb_exists = kb_path.exists()
     checks["knowledge_base"] = kb_exists
     details["knowledge_base"] = str(kb_path) if kb_exists else "not configured"
+    details["index_failures"] = str(failed_doc_count)
     if not kb_exists:
         failed_checks.append("knowledge_base")
+    if failed_doc_count > 0:
+        failed_checks.append("index_failures")
 
     # Watched folders
     checks["watched_folders"] = kb_exists
@@ -932,7 +1182,13 @@ def _execute_command(command: str, payload: dict[str, object]) -> MenuBarCommand
 
 
 def _run_server(model_id: str) -> int:
-    context = _build_context(model_id=model_id)
+    def _report_progress(message: str) -> None:
+        print(json.dumps({
+            "kind": "progress",
+            "progress_result": {"message": message},
+        }, ensure_ascii=False), flush=True)
+
+    context = _build_context(model_id=model_id, reporter=_report_progress)
     try:
         print(json.dumps({"kind": "ready"}), flush=True)
         for raw_line in sys.stdin:

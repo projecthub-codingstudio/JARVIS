@@ -86,26 +86,143 @@ struct MenuExplorationState: Codable {
     }
 }
 
+struct MenuGuideDirective: Codable {
+    let intent: String
+    let skill: String
+    let loopStage: String
+    let clarificationPrompt: String
+    let missingSlots: [String]
+    let suggestedReplies: [String]
+    let shouldHold: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case intent
+        case skill
+        case loopStage = "loop_stage"
+        case clarificationPrompt = "clarification_prompt"
+        case missingSlots = "missing_slots"
+        case suggestedReplies = "suggested_replies"
+        case shouldHold = "should_hold"
+    }
+}
+
+struct PendingClarificationContext {
+    let originalUserQuery: String
+    let clarificationPrompt: String
+    let intent: String
+    let skill: String
+    let missingSlots: [String]
+    let suggestedReplies: [String]
+
+    var isActive: Bool {
+        !clarificationPrompt.isEmpty || !missingSlots.isEmpty
+    }
+
+    func mergedQuery(with answer: String) -> String {
+        var components = [originalUserQuery]
+        if !clarificationPrompt.isEmpty {
+            components.append("보완 질문: \(clarificationPrompt)")
+        }
+        components.append("사용자 답변: \(answer)")
+        if !missingSlots.isEmpty {
+            components.append("보완 필요 항목: \(missingSlots.joined(separator: ", "))")
+        }
+        if !intent.isEmpty {
+            components.append("intent: \(intent)")
+        }
+        if !skill.isEmpty {
+            components.append("skill: \(skill)")
+        }
+        if !suggestedReplies.isEmpty {
+            components.append("참고 가능한 응답 예시: \(suggestedReplies.joined(separator: ", "))")
+        }
+        return components
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ". ")
+    }
+}
+
 struct MenuResponse: Codable {
     let query: String
     let response: String
+    let spokenResponse: String?
     let hasEvidence: Bool
     let citations: [MenuCitation]
     let status: MenuStatus?
     let renderHints: MenuRenderHints?
     let exploration: MenuExplorationState?
+    let guideDirective: MenuGuideDirective?
     let fullResponsePath: String?
 
     private enum CodingKeys: String, CodingKey {
         case query
         case response
+        case spokenResponse = "spoken_response"
         case hasEvidence = "has_evidence"
         case citations
         case status
         case renderHints = "render_hints"
         case exploration
+        case guideDirective = "guide_directive"
         case fullResponsePath = "full_response_path"
     }
+}
+
+struct ServiceAnswerPayload: Codable {
+    let text: String
+    let spokenText: String?
+    let hasEvidence: Bool
+    let citationCount: Int
+    let fullResponsePath: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case spokenText = "spoken_text"
+        case hasEvidence = "has_evidence"
+        case citationCount = "citation_count"
+        case fullResponsePath = "full_response_path"
+    }
+}
+
+struct ServiceGuidePayload: Codable {
+    let loopStage: String
+    let clarificationPrompt: String
+    let suggestedReplies: [String]
+    let clarificationOptions: [String]
+    let missingSlots: [String]
+    let clarificationReasons: [String]
+    let intent: String
+    let skill: String
+    let shouldHold: Bool
+    let hasClarification: Bool
+    let interactionMode: String
+    let explorationMode: String
+    let targetFile: String
+    let targetDocument: String
+
+    private enum CodingKeys: String, CodingKey {
+        case loopStage = "loop_stage"
+        case clarificationPrompt = "clarification_prompt"
+        case suggestedReplies = "suggested_replies"
+        case clarificationOptions = "clarification_options"
+        case missingSlots = "missing_slots"
+        case clarificationReasons = "clarification_reasons"
+        case intent
+        case skill
+        case shouldHold = "should_hold"
+        case hasClarification = "has_clarification"
+        case interactionMode = "interaction_mode"
+        case explorationMode = "exploration_mode"
+        case targetFile = "target_file"
+        case targetDocument = "target_document"
+    }
+}
+
+struct ServiceAskResponse: Codable {
+    let response: MenuResponse
+    let answer: ServiceAnswerPayload?
+    let guide: ServiceGuidePayload?
 }
 
 struct ExportResponse: Codable {
@@ -142,6 +259,10 @@ struct NormalizationResponse: Codable {
     }
 }
 
+struct ProgressResponse: Codable {
+    let message: String
+}
+
 struct HealthResponse: Codable {
     let healthy: Bool
     let message: String
@@ -175,6 +296,7 @@ struct CommandEnvelope: Codable {
     let transcriptionResult: TranscriptionResponse?
     let speechResult: SpeechResponse?
     let healthResult: HealthResponse?
+    let progressResult: ProgressResponse?
     let error: String?
     let token: String?
     let score: Double?
@@ -188,6 +310,7 @@ struct CommandEnvelope: Codable {
         case transcriptionResult = "transcription_result"
         case speechResult = "speech_result"
         case healthResult = "health_result"
+        case progressResult = "progress_result"
         case error
         case token
         case score
@@ -197,6 +320,6 @@ struct CommandEnvelope: Codable {
 /// Represents a streaming event from the Python bridge server.
 enum StreamEvent {
     case token(String)
-    case done(MenuResponse?)
+    case done(ServiceAskResponse?)
     case error(String)
 }

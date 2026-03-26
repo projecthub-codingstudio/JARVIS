@@ -50,6 +50,9 @@ _CODE_SOURCE_BOOST = 0.28
 _NON_CODE_PENALTY = 0.14
 _CLASS_SIGNATURE_BOOST = 0.16
 _FUNCTION_SIGNATURE_BOOST = 0.12
+_DOCUMENT_PHRASE_BOOST = 0.18
+_DOCUMENT_EXPLANATORY_BOOST = 0.10
+_DOCUMENT_REFERENCE_PENALTY = 0.12
 MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
 
 # Pattern to extract numbers referenced in queries (e.g., "9일차", "day 5", "13일")
@@ -61,6 +64,13 @@ _CODE_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".java", ".kt", ".go", ".rs", ".cpp", ".c", ".h"}
+_DOCUMENT_EXPLANATORY_RE = re.compile(r"(?:이다|있다|한다|된다|저장된다|구조로|의미|설명)")
+_DOCUMENT_REFERENCE_RE = re.compile(r"(?:참조|자세한 것은|보기 바란다|아닐 때는)")
+_PHRASE_TOKEN_RE = re.compile(r"[A-Za-z0-9가-힣]+")
+_PHRASE_STOPWORDS = {
+    "설명", "설명해", "설명해요", "설명해줘", "설명해주세요", "주세요",
+    "문서", "자료", "중", "중에", "대해", "대해서", "기본", "구조",
+}
 
 
 class EvidenceBuilder:
@@ -96,6 +106,7 @@ class EvidenceBuilder:
         prefers_code = _looks_like_code_query(query_text)
         wants_class = bool(_CLASS_QUERY_RE.search(query_text))
         wants_function = bool(_FUNCTION_QUERY_RE.search(query_text))
+        query_phrases = _document_query_phrases(query_text)
 
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
@@ -175,6 +186,13 @@ class EvidenceBuilder:
                 for ident in query_identifiers
             ):
                 boost += _FUNCTION_SIGNATURE_BOOST
+            if not prefers_code and chunk_text:
+                boost += _document_chunk_boost(
+                    query_text=query_text,
+                    query_phrases=query_phrases,
+                    heading_path=chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else "",
+                    chunk_text=chunk_text,
+                )
 
             # Row number match boost: query mentions a specific number (e.g., "9일차")
             # and chunk contains that exact row (e.g., "Day=9 |")
@@ -239,6 +257,54 @@ class EvidenceBuilder:
 
 def _looks_like_code_query(query_text: str) -> bool:
     return bool(_CODE_QUERY_RE.search(query_text))
+
+
+def _document_query_phrases(query_text: str) -> tuple[str, ...]:
+    tokens = [token for token in _PHRASE_TOKEN_RE.findall(query_text) if len(token) >= 2]
+    phrases: list[str] = []
+    for size in range(2, min(4, len(tokens)) + 1):
+        for index in range(0, len(tokens) - size + 1):
+            phrase = " ".join(tokens[index:index + size]).strip()
+            compact = phrase.replace(" ", "")
+            if compact in _PHRASE_STOPWORDS:
+                continue
+            if len(compact) < 4:
+                continue
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return tuple(phrases)
+
+
+def _document_chunk_boost(
+    *,
+    query_text: str,
+    query_phrases: tuple[str, ...],
+    heading_path: str,
+    chunk_text: str,
+) -> float:
+    boost = 0.0
+    normalized_chunk = " ".join(chunk_text.split())
+    compact_chunk = normalized_chunk.replace(" ", "")
+
+    phrase_matches = 0
+    for phrase in query_phrases:
+        compact_phrase = phrase.replace(" ", "")
+        if compact_phrase and compact_phrase in compact_chunk:
+            phrase_matches += 1
+    if phrase_matches:
+        boost += _DOCUMENT_PHRASE_BOOST * min(2, phrase_matches)
+
+    heading_lower = heading_path.lower()
+    if "table-row" not in heading_lower and "table-summary" not in heading_lower:
+        if _DOCUMENT_EXPLANATORY_RE.search(normalized_chunk):
+            boost += _DOCUMENT_EXPLANATORY_BOOST
+        if _DOCUMENT_REFERENCE_RE.search(normalized_chunk) and phrase_matches == 0:
+            boost -= _DOCUMENT_REFERENCE_PENALTY
+
+    if "기본 구조" in query_text and "기본 구조" in normalized_chunk:
+        boost += _DOCUMENT_PHRASE_BOOST
+
+    return boost
 
 
 def _is_code_path(path: str) -> bool:

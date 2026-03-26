@@ -72,6 +72,21 @@ class RuntimeContext:
     knowledge_base_path: Path | None = None
 
 
+class NoOpVectorIndex:
+    """Lightweight vector retriever used for menu-bar stub queries."""
+
+    _embedding_runtime = None
+
+    def search(self, fragments, top_k: int = 10) -> list[object]:
+        return []
+
+    def add(self, chunk_ids: list[str], document_ids: list[str], embeddings: list[list[float]]) -> None:
+        return None
+
+    def remove(self, chunk_ids: list[str]) -> None:
+        return None
+
+
 def is_indexable(path: Path) -> bool:
     """Check if a file can be indexed."""
     from jarvis.indexing.parsers import is_indexable as _is_indexable
@@ -111,6 +126,43 @@ def create_pipeline(
     )
 
 
+def purge_documents_outside_knowledge_base(
+    db: object,
+    kb_path: Path,
+    *,
+    vector_index: object | None = None,
+    reporter: Callable[[str], None] | None = None,
+) -> int:
+    """Remove indexed metadata for documents outside the active knowledge base."""
+    rows = db.execute(  # type: ignore[union-attr]
+        "SELECT document_id, path FROM documents WHERE indexing_status != 'TOMBSTONED'"
+    ).fetchall()
+
+    removed_count = 0
+    resolved_kb_path = kb_path.expanduser().resolve()
+    for document_id, document_path in rows:
+        try:
+            resolved_document_path = Path(document_path).expanduser().resolve()
+            resolved_document_path.relative_to(resolved_kb_path)
+        except ValueError:
+            chunk_rows = db.execute(  # type: ignore[union-attr]
+                "SELECT chunk_id FROM chunks WHERE document_id = ?",
+                (document_id,),
+            ).fetchall()
+            chunk_ids = [row[0] for row in chunk_rows]
+            if chunk_ids and vector_index is not None:
+                vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+            db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))  # type: ignore[union-attr]
+            db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))  # type: ignore[union-attr]
+            removed_count += 1
+
+    if removed_count:
+        db.commit()  # type: ignore[union-attr]
+        if reporter is not None:
+            reporter(f"   Purged {removed_count} documents outside active knowledge base")
+    return removed_count
+
+
 def run_indexing(
     db: object,
     kb_path: Path,
@@ -125,6 +177,12 @@ def run_indexing(
 ) -> tuple[int, object]:
     """Index files in the knowledge base directory."""
     pipeline = create_pipeline(db, vector_index=vector_index, metrics=metrics)
+    purge_documents_outside_knowledge_base(
+        db,
+        kb_path,
+        vector_index=vector_index,
+        reporter=reporter,
+    )
 
     stale_rows = db.execute(  # type: ignore[union-attr]
         "SELECT document_id, path FROM documents WHERE indexing_status = 'INDEXED'"
@@ -144,8 +202,15 @@ def run_indexing(
             reporter(f"   Cleaned up {stale_count} stale documents")
 
     files = [f for f in kb_path.rglob("*") if f.is_file() and is_indexable(f)]
+    total_files = len(files)
+    if reporter is not None:
+        reporter(
+            f"   Index scan: {total_files} indexable files in {kb_path.name}"
+            if total_files > 0
+            else f"   Index scan: no indexable files found in {kb_path.name}"
+        )
 
-    for path in files:
+    for index, path in enumerate(files, start=1):
         if error_monitor is not None and error_monitor.read_only_mode:
             break
         if governor is not None and governor.should_pause_indexing():
@@ -156,6 +221,8 @@ def run_indexing(
             time.sleep(0.1)
         try:
             pipeline.index_file(path)  # type: ignore[union-attr]
+            if reporter is not None:
+                reporter(f"   Indexing {index}/{total_files}: {path.name}")
         except Exception as exc:
             if error_monitor is not None:
                 lower_exc = str(exc).lower()
@@ -167,7 +234,7 @@ def run_indexing(
                     code = "INDEX_WRITE_FAILED"
                 error_monitor.record_error(code, category="index")
             if reporter is not None:
-                reporter(f"   Index failed: {path.name} ({exc})")
+                reporter(f"   Index failed {index}/{total_files}: {path.name} ({exc})")
             logger.warning("Index failed for %s: %s", path.name, exc)
 
     total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]  # type: ignore[union-attr]
@@ -397,6 +464,16 @@ def create_llm_backend(
 ) -> MLXRuntime:
     """Create the LLM runtime with MLX primary and llama.cpp fallback."""
     max_context_chars = max(2048, (decision.context_window // 2) * 4)
+    if decision.model_id.strip().lower() == "stub":
+        if reporter is not None:
+            reporter("   Backend: stub (forced)")
+        return MLXRuntime(
+            model_id="stub",
+            max_context_chars=max_context_chars,
+            metrics=metrics,
+            status_detail="forced stub backend",
+        )
+
     fallback_reasons: list[str] = []
     estimated_memory_gb = _estimate_llm_memory_gb(decision)
     if decision.backend == "mlx" and allow_mlx:
@@ -495,6 +572,7 @@ def build_runtime_context(
     data_dir: Path | None = None,
 ) -> RuntimeContext:
     """Build the shared runtime dependency graph."""
+    lightweight_query_mode = model_id.strip().lower() == "stub"
     resolved_kb_path = resolve_knowledge_base_path(knowledge_base_path)
     watched_folders = [resolved_kb_path] if resolved_kb_path.exists() else []
     config = JarvisConfig(
@@ -508,15 +586,24 @@ def build_runtime_context(
         metrics=result.metrics,
         indexing_queue_depth_provider=lambda: watcher_pending(),
     )
-    vector_index = VectorIndex(
-        db_path=result.config.data_dir / "vectors.lance",
-        embedding_runtime=EmbeddingRuntime(),
-        metrics=result.metrics,
-    )
+    if lightweight_query_mode:
+        vector_index = NoOpVectorIndex()
+    else:
+        vector_index = VectorIndex(
+            db_path=result.config.data_dir / "vectors.lance",
+            embedding_runtime=EmbeddingRuntime(),
+            metrics=result.metrics,
+        )
 
     chunk_count = 0
     watcher = None
-    if resolved_kb_path.exists():
+    if lightweight_query_mode:
+        if has_indexed_data(result.db):
+            row = result.db.execute("SELECT COUNT(*) FROM chunks").fetchone()
+            chunk_count = int(row[0]) if row else 0
+        if reporter is not None:
+            reporter("   Indexing: skipped for lightweight query mode")
+    elif resolved_kb_path.exists():
         chunk_count, pipeline = run_indexing(
             result.db,
             resolved_kb_path,
@@ -528,7 +615,10 @@ def build_runtime_context(
             error_monitor=error_monitor,
             reporter=reporter,
         )
-        if not start_background_backfill:
+        if not start_background_backfill and start_watcher_enabled:
+            # Only run background vector backfill when watcher is active.
+            # When watcher is disabled (menu-bar), skip to avoid LanceDB
+            # stack overflow caused by concurrent thread writes.
             ensure_vector_index_ready(
                 pipeline=pipeline,
                 vector_index=vector_index,
@@ -572,13 +662,27 @@ def build_runtime_context(
         allow_mlx=allow_mlx,
     )
 
-    from jarvis.core.planner import Planner
+    from jarvis.core.planner import LLMIntentJSONBackend, Planner
 
-    planner = Planner(model_id="qwen3.5:9b", knowledge_base_path=resolved_kb_path)
+    planner_backend = None
+    llm_backend = getattr(llm_generator, "_backend", None)
+    if llm_backend is not None:
+        planner_backend = LLMIntentJSONBackend(llm_backend=llm_backend)
+
+    planner = Planner(
+        model_id="qwen3.5:9b",
+        lightweight_backend=planner_backend,
+        knowledge_base_path=resolved_kb_path,
+    )
 
     # Cross-encoder reranker (lazy-loaded on first query)
-    from jarvis.retrieval.reranker import Reranker
-    reranker = Reranker(metrics=result.metrics)
+    if lightweight_query_mode:
+        reranker = None
+        if reporter is not None:
+            reporter("   Retrieval: lightweight FTS-only mode")
+    else:
+        from jarvis.retrieval.reranker import Reranker
+        reranker = Reranker(metrics=result.metrics)
 
     orchestrator = Orchestrator(
         governor=governor,
