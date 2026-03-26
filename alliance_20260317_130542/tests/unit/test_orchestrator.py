@@ -61,6 +61,28 @@ class DbBackedFTSRetriever(StaticFTSRetriever):
         self._db = db
 
 
+class CapturingEvidenceBuilder:
+    def __init__(self) -> None:
+        self.last_results: list[object] = []
+
+    def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
+        self.last_results = list(results)
+        item = EvidenceItem(
+            chunk_id="chunk-1",
+            document_id="doc-1",
+            text="captured evidence",
+            citation=CitationRecord(
+                document_id="doc-1",
+                chunk_id="chunk-1",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=1.0,
+            source_path="/tmp/doc.md",
+        )
+        return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
+
+
 @pytest.fixture
 def orchestrator() -> Orchestrator:
     """Orchestrator with explicit positive-path evidence dependencies."""
@@ -263,27 +285,6 @@ class TestOrchestratorTargetedSearch:
                     snippet="Pipeline 클래스 설명 문서",
                 )]
 
-        class CapturingEvidenceBuilder:
-            def __init__(self) -> None:
-                self.last_document_ids: list[str] = []
-
-            def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
-                self.last_document_ids = [getattr(item, "document_id", "") for item in results]
-                item = EvidenceItem(
-                    chunk_id="chunk-code",
-                    document_id="doc-code",
-                    text="class Pipeline:\n    pass",
-                    citation=CitationRecord(
-                        document_id="doc-code",
-                        chunk_id="chunk-code",
-                        label="[1]",
-                        state=CitationState.VALID,
-                    ),
-                    relevance_score=1.0,
-                    source_path="/tmp/pipeline.py",
-                )
-                return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
-
         evidence_builder = CapturingEvidenceBuilder()
         orch = Orchestrator(
             governor=GovernorStub(),
@@ -300,5 +301,24 @@ class TestOrchestratorTargetedSearch:
 
         orch.handle_turn("pipeline.py 소스에서 pipeline 클래스 설명해 줘")
 
-        assert evidence_builder.last_document_ids
-        assert set(evidence_builder.last_document_ids) == {"doc-code"}
+        document_ids = [getattr(item, "document_id", "") for item in evidence_builder.last_results]
+        assert document_ids
+        assert set(document_ids) == {"doc-code"}
+
+
+class TestOrchestratorStructuredRowLookup:
+    def test_numeric_document_query_does_not_enable_structured_row_lookup(self) -> None:
+        enabled = Orchestrator._should_use_structured_row_lookup(
+            "한글문서 파일형식에서 11번 그리기 개체 자료 구조에서 기본 구조에 대해 설명",
+            meal_fields=None,
+        )
+
+        assert enabled is False
+
+    def test_menu_query_enables_structured_row_lookup(self) -> None:
+        enabled = Orchestrator._should_use_structured_row_lookup(
+            "식단표에서 11번 메뉴 알려줘",
+            meal_fields=None,
+        )
+
+        assert enabled is True

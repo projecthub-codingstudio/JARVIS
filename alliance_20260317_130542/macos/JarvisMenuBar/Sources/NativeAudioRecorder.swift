@@ -29,9 +29,12 @@ final class NativeAudioRecorder: @unchecked Sendable {
     private let calibrationFrames = 10
     private var silenceStartTime: CFAbsoluteTime = 0
     private var recordingStartTime: CFAbsoluteTime = 0
-    private let tentativeSilenceSec: Double = 1.0
-    private let confirmedSilenceSec: Double = 3.0
-    private let minRecordingSec: Double = 2.0
+    private let tentativeSilenceSec: Double =
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_TENTATIVE_SILENCE_SECONDS"] ?? "1.5") ?? 1.5
+    private let confirmedSilenceSec: Double =
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_CONFIRMED_SILENCE_SECONDS"] ?? "5.0") ?? 5.0
+    private let minRecordingSec: Double =
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_MIN_RECORDING_SECONDS"] ?? "2.5") ?? 2.5
     private var totalFramesWritten = 0
     private var noSpeechWarned = false
 
@@ -94,6 +97,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
     func record(deviceID: String?, duration: Double) async throws -> URL {
         try activate(deviceID: deviceID)
+        stopTimer?.cancel()
 
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".jarvis", isDirectory: true)
@@ -122,11 +126,15 @@ final class NativeAudioRecorder: @unchecked Sendable {
             self.noSpeechWarned = false
             self.isWriting = true
 
+            appLog(
+                "Recording armed: max=\(String(format: "%.1f", duration))s, tentativeSilence=\(String(format: "%.1f", self.tentativeSilenceSec))s, confirmedSilence=\(String(format: "%.1f", self.confirmedSilenceSec))s"
+            )
+
             let timer = DispatchWorkItem { [weak self] in
                 self?.finishRecording()
             }
             stopTimer = timer
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timer)
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: timer)
         }
     }
 
@@ -147,6 +155,8 @@ final class NativeAudioRecorder: @unchecked Sendable {
     // MARK: - Private
 
     private func finishRecording() {
+        stopTimer?.cancel()
+        stopTimer = nil
         isWriting = false
         vadState = .idle
         silenceStartTime = 0
@@ -158,6 +168,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
         guard let url = outputURL, let cont = recordingContinuation else { return }
         recordingContinuation = nil
+        outputURL = nil
 
         // Convert to 16kHz mono on a background thread to avoid blocking UI.
         DispatchQueue.global(qos: .userInitiated).async {

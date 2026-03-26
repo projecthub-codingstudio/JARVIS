@@ -27,6 +27,22 @@ def _decision(*, backend: str = "mlx", model_id: str = "qwen3:14b") -> RuntimeDe
 
 
 class TestCreateLLMBackend:
+    def test_forced_stub_model_skips_backend_loading(self, monkeypatch) -> None:
+        def _unexpected_import(*args, **kwargs):
+            raise AssertionError("backend load should be skipped for stub model")
+
+        monkeypatch.setattr("jarvis.runtime.mlx_backend.mlx_import_probe", _unexpected_import)
+
+        runtime = create_llm_backend(
+            _decision(model_id="stub"),
+            metrics=MetricsCollector(),
+            error_monitor=ErrorMonitor(),
+            allow_mlx=True,
+        )
+
+        assert runtime._model_id == "stub"
+        assert runtime.status_detail == "forced stub backend"
+
     def test_skips_mlx_when_probe_fails(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jarvis.runtime.mlx_backend.mlx_import_probe",

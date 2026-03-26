@@ -143,3 +143,49 @@ class TestEvidenceBuilderWithDb:
         evidence = builder.build(results, fragments)
 
         assert evidence.items[0].source_path.endswith("pipeline.py")
+
+    def test_prefers_explanatory_document_chunk_over_cross_reference(self, tmp_path: Path) -> None:
+        config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
+        db = init_database(config)
+        db.execute(
+            "INSERT INTO documents (document_id, path, content_hash, size_bytes, indexing_status) VALUES (?, ?, ?, ?, ?)",
+            ("doc-hwp", str(tmp_path / "hwp-format.txt"), "hash", 100, "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text, chunk_hash, heading_path) VALUES (?, ?, ?, ?, ?)",
+            (
+                "chunk-ref",
+                "doc-hwp",
+                "자세한 것은 그리기 개체 자료 구조를 참조하기 바란다. 그리기 개체가 아닐 때는 하이퍼 텍스트 정보가 포함되어 있다.",
+                "hash-ref",
+                "section-reference",
+            ),
+        )
+        db.execute(
+            "INSERT INTO chunks (chunk_id, document_id, text, chunk_hash, heading_path) VALUES (?, ?, ?, ?, ?)",
+            (
+                "chunk-body",
+                "doc-hwp",
+                "그리기 개체 자료 구조 기본 구조 그리기 개체는 여러 개의 개체를 하나의 틀로 묶을 수 있기 때문에, 하나의 그림 코드에 하나 이상의 개체가 존재할 수 있다. 파일상에는 다음과 같은 구조로 저장된다.",
+                "hash-body",
+                "section-body",
+            ),
+        )
+        db.commit()
+
+        builder = EvidenceBuilder(db=db)
+        results = [
+            HybridSearchResult(chunk_id="chunk-ref", document_id="doc-hwp", rrf_score=0.62),
+            HybridSearchResult(chunk_id="chunk-body", document_id="doc-hwp", rrf_score=0.58),
+        ]
+        fragments = [
+            TypedQueryFragment(
+                text="한글 문서 형식에서 그리기 개체 자료 구조 중 기본 구조에 대해 설명해 주세요",
+                language="ko",
+                query_type="keyword",
+            )
+        ]
+
+        evidence = builder.build(results, fragments)
+
+        assert evidence.items[0].chunk_id == "chunk-body"
