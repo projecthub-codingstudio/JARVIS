@@ -102,7 +102,10 @@ class Reranker:
 
         started_at = time.perf_counter()
 
-        # Build (query, passage) pairs for cross-encoder
+        # Build (query, passage) pairs for cross-encoder.
+        # Do not apply naive character-based truncation here.
+        # CrossEncoder already tokenizes with its own max_length, and a
+        # 512-character cutoff is especially harmful for Korean passages.
         pairs: list[tuple[str, str]] = []
         for r in results:
             text = ""
@@ -110,9 +113,6 @@ class Reranker:
                 text = chunk_texts[r.chunk_id]
             elif r.snippet:
                 text = r.snippet
-            # Truncate long texts (cross-encoder has token limits)
-            if len(text) > 512:
-                text = text[:512]
             pairs.append((query, text))
 
         # Score with cross-encoder

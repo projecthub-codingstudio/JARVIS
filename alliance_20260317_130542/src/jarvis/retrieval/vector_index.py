@@ -131,6 +131,17 @@ class VectorIndex:
             except Exception as e:
                 logger.warning("Failed to remove vectors: %s", e)
 
+    def remove_document(self, document_id: str) -> None:
+        """Remove all vectors for a document_id (thread-safe)."""
+        table = self._get_table()
+        if table is None or not document_id or '"' in document_id:
+            return
+        with self._lock:
+            try:
+                table.delete(f'document_id = "{document_id}"')  # type: ignore[union-attr]
+            except Exception as e:
+                logger.warning("Failed to remove document vectors: %s", e)
+
     def search(
         self, fragments: Sequence[TypedQueryFragment], top_k: int = 10
     ) -> list[VectorHit]:

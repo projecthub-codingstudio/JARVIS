@@ -41,6 +41,7 @@ from jarvis.contracts import (
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricName, MetricsCollector
 from jarvis.query_normalization import normalize_spoken_code_query
+from jarvis.retrieval.strategy import RetrievalInputs, select_retrieval_strategy
 
 _DESTRUCTIVE_REQUEST_PATTERNS = (
     re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
@@ -132,6 +133,7 @@ class Orchestrator:
 
         # 3. Planner: AI-based query analysis (Spec Section 2.1)
         search_query = user_input
+        analysis = None
         if self._planner is not None:
             analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
             if analysis.search_terms:
@@ -142,7 +144,7 @@ class Orchestrator:
                 self._query_complexity = classify(user_input)
 
         # 4. Retrieve evidence using analyzed search terms
-        evidence = self._retrieve_evidence(search_query)
+        evidence = self._retrieve_evidence(search_query, analysis=analysis)
 
         # 5. If no evidence, return early
         if evidence.is_empty:
@@ -244,6 +246,7 @@ class Orchestrator:
         ))
 
         search_query = user_input
+        analysis = None
         if self._planner is not None:
             analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
             if analysis.search_terms:
@@ -252,7 +255,7 @@ class Orchestrator:
             if callable(classify):
                 self._query_complexity = classify(user_input)
 
-        evidence = self._retrieve_evidence(search_query)
+        evidence = self._retrieve_evidence(search_query, analysis=analysis)
 
         if evidence.is_empty:
             turn.assistant_output = "관련 증거를 찾을 수 없어 답변을 생성할 수 없습니다."
@@ -318,7 +321,7 @@ class Orchestrator:
         r"([\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx))"
     )
 
-    def _retrieve_evidence(self, query: str) -> VerifiedEvidenceSet:
+    def _retrieve_evidence(self, query: str, *, analysis=None) -> VerifiedEvidenceSet:
         retrieval_start = time.perf_counter()
         fragments = self._query_decomposer.decompose(query)
         if not fragments:
@@ -340,80 +343,19 @@ class Orchestrator:
             vector_hits = self._vector_retriever.search(fragments, retrieval_top_k)
         search_ms = (time.perf_counter() - search_start) * 1000
 
-        # Document-targeted search: if query mentions a filename,
-        # also search within that specific document's chunks
-        targeted_hits = self._targeted_file_search(query, fragments)
-        if targeted_hits:
-            targeted_chunk_ids = {t.chunk_id for t in targeted_hits}
-            targeted_doc_ids = {t.document_id for t in targeted_hits}
-            if self._is_explicit_file_scoped_query(query):
-                fts_hits = targeted_hits + [
-                    h for h in fts_hits
-                    if h.chunk_id not in targeted_chunk_ids and h.document_id in targeted_doc_ids
-                ]
-                vector_hits = [h for h in vector_hits if h.document_id in targeted_doc_ids]
-            else:
-                fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in targeted_chunk_ids]
-
-        # Row-ID supplemental search: when query references specific row
-        # identifiers (e.g., "3일차", "Day 5"), directly query the DB for
-        # matching chunks that FTS/vector may have missed.
-        # This is the row-level equivalent of _targeted_file_search.
-        _ROW_SUPP_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
-        query_row_ids = set(_ROW_SUPP_RE.findall(query))
-        meal_fields = self._table_field_hints(query)
-        use_structured_row_lookup = self._should_use_structured_row_lookup(query, meal_fields)
-        if query_row_ids and use_structured_row_lookup:
-            db = getattr(self._fts_retriever, "_db", None)
-            if db is not None:
-                existing_ids = {h.chunk_id for h in fts_hits} | {h.chunk_id for h in vector_hits}
-                supplemental_hits: list[SearchHit] = []
-                for rid in query_row_ids:
-                    rows = db.execute(
-                        "SELECT chunk_id, document_id, text FROM chunks"
-                        " WHERE heading_path LIKE 'table-row-%'"
-                        " AND text LIKE ?",
-                        (f"%Day={rid} |%",),
-                    ).fetchall()
-                    for chunk_id, doc_id, text in rows:
-                        if chunk_id not in existing_ids:
-                            supplemental_hits.append(SearchHit(
-                                chunk_id=chunk_id,
-                                document_id=doc_id,
-                                score=50.0,
-                                snippet=text[:200],
-                            ))
-                            existing_ids.add(chunk_id)
-                if supplemental_hits:
-                    fts_hits = supplemental_hits + [h for h in fts_hits if h.chunk_id not in existing_ids]
-
-        # Table field supplemental search: when query asks for a specific
-        # meal/column inside a numbered plan row, directly surface that row.
-        if query_row_ids and meal_fields:
-            db = getattr(self._fts_retriever, "_db", None)
-            if db is not None:
-                existing_ids = {h.chunk_id for h in fts_hits} | {h.chunk_id for h in vector_hits}
-                table_hits: list[SearchHit] = []
-                for rid in query_row_ids:
-                    for meal_field in meal_fields:
-                        rows = db.execute(
-                            "SELECT chunk_id, document_id, text FROM chunks"
-                            " WHERE heading_path LIKE 'table-row-%'"
-                            " AND text LIKE ?"
-                            " AND text LIKE ?",
-                            (f"%Day={rid} |%", f"%{meal_field}=%"),
-                        ).fetchall()
-                        for chunk_id, doc_id, text in rows:
-                            if chunk_id not in existing_ids:
-                                table_hits.append(SearchHit(
-                                    chunk_id=chunk_id,
-                                    document_id=doc_id,
-                                    score=100.0,
-                                    snippet=text[:200],
-                                ))
-                                existing_ids.add(chunk_id)
-                if table_hits:
-                    fts_hits = table_hits + [h for h in fts_hits if h.chunk_id not in existing_ids]
+        strategy = select_retrieval_strategy(analysis)
+        fts_hits, vector_hits = strategy.augment_candidates(
+            RetrievalInputs(
+                query=query,
+                analysis=analysis,
+                fragments=fragments,
+                fts_hits=list(fts_hits),
+                vector_hits=list(vector_hits),
+                db=getattr(self._fts_retriever, "_db", None),
+                targeted_file_search=self._targeted_file_search,
+                explicit_file_scoped_query=self._is_explicit_file_scoped_query,
+            )
+        )
 
         hybrid_results = self._hybrid_fusion.fuse(
             fts_hits,
@@ -443,22 +385,13 @@ class Orchestrator:
                 chunk_texts=chunk_texts,
             )
 
-            # Protect row-matched chunks: if query mentions specific day/row
-            # numbers, ensure those chunks survive reranking even if they
-            # were ranked below the top_k cutoff.
-            _ROW_NUM_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
-            query_numbers = _ROW_NUM_RE.findall(query)
-            if query_numbers:
-                reranked_ids = {r.chunk_id for r in hybrid_results}
-                for r in pre_rerank_results:
-                    if r.chunk_id in reranked_ids:
-                        continue
-                    ct = chunk_texts.get(r.chunk_id, "")
-                    for num in query_numbers:
-                        if f"Day={num} " in ct or f"Day={num}|" in ct:
-                            hybrid_results.append(r)
-                            reranked_ids.add(r.chunk_id)
-                            break
+            hybrid_results = strategy.protect_post_rerank(
+                analysis=analysis,
+                query=query,
+                hybrid_results=hybrid_results,
+                pre_rerank_results=pre_rerank_results,
+                chunk_texts=chunk_texts,
+            )
 
         evidence = self._evidence_builder.build(hybrid_results, fragments)
 
@@ -495,8 +428,10 @@ class Orchestrator:
             query,
             knowledge_base_path=self._knowledge_base_path,
         )
-        filenames = self._FILENAME_RE.findall(normalized_query)
+        filenames = self._FILENAME_RE.findall(query)
+        filenames.extend(self._FILENAME_RE.findall(normalized_query))
         # Also detect underscore-separated stems and space-separated variants
+        filenames.extend(_extract_filenames(query))
         filenames.extend(_extract_filenames(normalized_query))
         # Deduplicate
         filenames = list(dict.fromkeys(filenames))
@@ -579,47 +514,6 @@ class Orchestrator:
         # Sort by score descending, limit to top 5
         targeted.sort(key=lambda h: h.score, reverse=True)
         return targeted[:5]
-
-    @staticmethod
-    def _table_field_hints(query: str) -> list[str] | None:
-        lowered = query.lower()
-        field_aliases = {
-            "Breakfast": ("아침", "조식", "breakfast"),
-            "Lunch": ("점심", "중식", "lunch"),
-            "Dinner": ("저녁", "석식", "dinner"),
-            "Drinks": ("음료", "drink", "drinks"),
-            "Morning Supplements": ("아침 보충제", "morning supplement"),
-            "Lunch Supplements": ("점심 보충제", "lunch supplement"),
-            "Evening Supplements": ("저녁 보충제", "evening supplement"),
-        }
-        matched_fields: list[str] = []
-        for field, aliases in field_aliases.items():
-            if any(alias in lowered for alias in aliases):
-                matched_fields.append(field)
-        return matched_fields or None
-
-    @staticmethod
-    def _should_use_structured_row_lookup(query: str, meal_fields: list[str] | None) -> bool:
-        lowered = query.lower()
-        if meal_fields:
-            return True
-
-        table_context_terms = (
-            "식단표",
-            "식단",
-            "메뉴",
-            "표",
-            "행",
-            "열",
-            "row",
-            "column",
-            "day ",
-            "day=",
-        )
-        if any(term in lowered for term in table_context_terms):
-            return True
-
-        return False
 
     def _extract_user_knowledge(self, turn: ConversationTurn) -> None:
         """Extract and store user knowledge from a completed turn (Tier 3 memory)."""
@@ -717,11 +611,14 @@ class Orchestrator:
             query,
             knowledge_base_path=self._knowledge_base_path,
         )
-        has_filename = bool(self._FILENAME_RE.search(normalized_query))
+        has_filename = bool(self._FILENAME_RE.search(query) or self._FILENAME_RE.search(normalized_query))
         if not has_filename:
             return False
         return bool(
-            _CODE_SCOPE_HINT_RE.search(normalized_query)
+            _CODE_SCOPE_HINT_RE.search(query)
+            or _CLASS_HINT_RE.search(query)
+            or _FUNCTION_HINT_RE.search(query)
+            or _CODE_SCOPE_HINT_RE.search(normalized_query)
             or _CLASS_HINT_RE.search(normalized_query)
             or _FUNCTION_HINT_RE.search(normalized_query)
         )

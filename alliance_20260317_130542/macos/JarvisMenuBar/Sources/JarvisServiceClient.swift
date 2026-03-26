@@ -4,7 +4,8 @@ private func serviceClientLog(_ message: String) {
     fputs("[JarvisServiceClient] \(message)\n", stderr)
 }
 
-private let defaultMenuBarAskModels = ["qwen3.5:9b", "stub"]
+private let defaultMenuBarAskModels = ["stub"]
+private let menuBarAskTimeoutSeconds = 20.0
 
 private func resolveMenuBarAskModels() -> [String] {
     let raw = ProcessInfo.processInfo.environment["JARVIS_MENU_BAR_MODEL_CHAIN"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -437,7 +438,11 @@ actor JarvisServiceClient: JarvisBackendClient {
                 stderrPipe.fileHandleForReading.readDataToEndOfFile()
             }
 
-            process.waitUntilExit()
+            try await waitForProcessExit(
+                process,
+                timeoutSeconds: menuBarAskTimeoutSeconds,
+                timeoutMessage: "legacy ask timed out after \(Int(menuBarAskTimeoutSeconds))s"
+            )
 
             let output = await stdoutTask.value
             let stderr = await stderrTask.value
@@ -546,7 +551,11 @@ actor JarvisServiceClient: JarvisBackendClient {
             stderrPipe.fileHandleForReading.readDataToEndOfFile()
         }
 
-        process.waitUntilExit()
+        try await waitForProcessExit(
+            process,
+            timeoutSeconds: menuBarAskTimeoutSeconds,
+            timeoutMessage: "service \(requestType) timed out after \(Int(menuBarAskTimeoutSeconds))s"
+        )
 
         let output = await stdoutTask.value
         let stderr = await stderrTask.value

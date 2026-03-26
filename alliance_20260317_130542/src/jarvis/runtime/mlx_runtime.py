@@ -40,6 +40,7 @@ _SEGMENT_SPLIT_RE = re.compile(r"[\n\r]+|(?<=[.!?])\s+|\s+\|\s+")
 _BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
 _NOISE_TOKEN_RE = re.compile(r"^(?:오프셋|자료형|의미|설명|길이|바이트|입력시|table|columns?)$", re.IGNORECASE)
 _EXPLANATORY_PHRASE_RE = re.compile(r"(?:이다|있다|된다|한다|의미|설명|구조로 저장|때문에|가능하다|존재한다)")
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 _KOREAN_NUMBER_WORDS = {
     0: "영",
@@ -75,9 +76,13 @@ _KOREAN_UNIT_LABELS = {
 }
 _QUERY_STOPWORDS = {
     "알려줘", "알려주세요", "설명", "설명해", "설명해줘", "설명해주세요", "대해", "대해서",
-    "그리고", "에서", "형식", "문서", "자료", "구조", "기본", "개체", "중에", "해주세요",
+    "그리고", "에서", "중에", "해주세요",
     "요약", "정리", "좀", "관련", "반갑습니다", "안녕하세요", "만나서",
 }
+_KOREAN_POSTPOSITION_SUFFIXES = (
+    "에서", "으로", "에게", "까지", "부터", "처럼", "보다", "만", "도", "은", "는", "이", "가",
+    "을", "를", "에", "의", "와", "과", "로", "랑", "하고",
+)
 
 
 def strip_think_tags(text: str) -> str:
@@ -123,29 +128,19 @@ def build_stub_spoken_response(prompt: str, evidence: VerifiedEvidenceSet) -> st
 
 
 def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
-    sources = [item.source_path or item.document_id for item in evidence.items[:3]]
-    unique_sources = [source for index, source in enumerate(sources) if source and source not in sources[:index]]
-    primary_source = unique_sources[0] if unique_sources else "확인된 소스"
-    citation_labels = ", ".join(item.citation.label for item in evidence.items[:3])
     if table_response := _build_table_stub_response(prompt, evidence, spoken=False):
-        return f"확인된 근거는 [{primary_source}]에 있습니다.\n{table_response}\n근거: {citation_labels}"
+        return table_response
     head = _extract_best_stub_snippet(prompt, evidence)
     identifier = _extract_requested_identifier(prompt, evidence)
 
     if re.search(r"(?:\bclass\b|클래스)", prompt, re.IGNORECASE):
         if identifier:
-            intro = f"확인된 근거 기준으로 `{identifier}` 클래스는 [{primary_source}]에 정의되어 있습니다."
+            intro = f"`{identifier}` 클래스는 다음과 같이 정의되어 있습니다."
         else:
-            intro = f"확인된 근거 기준으로 요청하신 클래스는 [{primary_source}]에서 확인됩니다."
-        body = (
-            "현재 모델 생성 경로가 비활성이라 코드 근거를 그대로 요약합니다. "
-            f"첫 번째 확인 구간은 다음과 같습니다: {head}"
-        )
-        return f"{intro}\n{body}\n근거: {citation_labels}"
+            intro = "요청하신 클래스의 핵심 정의는 다음과 같습니다."
+        return f"{intro} {head}".strip()
 
-    intro = f"확인된 근거는 [{primary_source}]에 있습니다."
-    body = f"현재 모델 생성 경로가 비활성이라 검색 근거를 그대로 요약합니다: {head}"
-    return f"{intro}\n{body}\n근거: {citation_labels}"
+    return head
 
 
 def _build_table_stub_response(
@@ -336,7 +331,7 @@ def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> st
     wants_function = bool(re.search(r"(?:\bfunction\b|\bmethod\b|\bdef\b|함수|메서드|메소드)", prompt, re.IGNORECASE))
     identifier = _extract_requested_identifier(prompt, evidence)
 
-    if primary_source:
+    if primary_source and (wants_class or wants_function):
         extracted = _extract_source_snippet(
             source_path=primary_source,
             identifier=identifier,
@@ -362,24 +357,32 @@ def _extract_relevant_document_excerpt(prompt: str, evidence: VerifiedEvidenceSe
 
     best_segment = ""
     best_score = -1.0
+    best_segments: list[str] = []
+    best_segment_index = -1
     for item_index, item in enumerate(evidence.items[:5]):
-        for segment_index, segment in enumerate(_split_document_segments(item.text)):
+        item_segments = _split_document_segments(item.text)
+        for segment_index, segment in enumerate(item_segments):
             score = _score_document_segment(segment, query_terms)
             if score <= 0:
                 continue
+            score += _score_heading_match(item.heading_path, query_terms, segment)
             # Favor earlier high-ranking evidence items but still let content relevance dominate.
             score += max(0.0, 1.0 - (item_index * 0.1) - (segment_index * 0.02))
             if score > best_score:
                 best_score = score
                 best_segment = segment
+                best_segments = item_segments
+                best_segment_index = segment_index
 
-    return best_segment
+    if not best_segment:
+        return ""
+    return _expand_stub_excerpt(best_segment, best_segments, best_segment_index)
 
 
 def _extract_query_terms(prompt: str) -> list[str]:
     terms: list[str] = []
     for token in _QUERY_TERM_RE.findall(prompt):
-        normalized = token.strip().lower()
+        normalized = _normalize_query_token(token)
         if len(normalized) < 2:
             continue
         if normalized in _QUERY_STOPWORDS:
@@ -391,6 +394,15 @@ def _extract_query_terms(prompt: str) -> list[str]:
     return terms
 
 
+def _normalize_query_token(token: str) -> str:
+    normalized = token.strip().lower()
+    for suffix in _KOREAN_POSTPOSITION_SUFFIXES:
+        if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized
+
+
 def _split_document_segments(text: str) -> list[str]:
     normalized = _BRACKET_PREFIX_RE.sub("", text.strip())
     raw_segments = [segment.strip() for segment in _SEGMENT_SPLIT_RE.split(normalized) if segment.strip()]
@@ -399,8 +411,52 @@ def _split_document_segments(text: str) -> list[str]:
         collapsed = re.sub(r"\s+", " ", segment).strip(" -:")
         if len(collapsed) < 12:
             continue
-        cleaned_segments.append(collapsed[:260])
+        cleaned_segments.append(_truncate_stub_segment(collapsed))
     return cleaned_segments[:20]
+
+
+def _truncate_stub_segment(segment: str, *, max_chars: int = 320) -> str:
+    normalized = re.sub(r"\s+", " ", segment).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+
+    candidate = normalized[:max_chars].rstrip()
+    sentence_parts = [part.strip() for part in _SENTENCE_END_RE.split(candidate) if part.strip()]
+    if len(sentence_parts) >= 2:
+        rebuilt = " ".join(sentence_parts[:-1]).strip()
+        if len(rebuilt) >= 40:
+            return rebuilt
+
+    last_punct = max(candidate.rfind("."), candidate.rfind("!"), candidate.rfind("?"))
+    if last_punct >= 40:
+        return candidate[: last_punct + 1].strip()
+
+    last_space = candidate.rfind(" ")
+    if last_space >= 40:
+        return candidate[:last_space].strip()
+    return candidate
+
+
+def _expand_stub_excerpt(segment: str, segments: list[str], segment_index: int) -> str:
+    if not segment or not segments or segment_index < 0:
+        return segment
+    combined = segment
+    if segment_index + 1 < len(segments):
+        next_segment = segments[segment_index + 1]
+        if _is_useful_followup_segment(next_segment):
+            candidate = f"{combined} {next_segment}".strip()
+            if len(candidate) <= 320:
+                combined = candidate
+    return combined
+
+
+def _is_useful_followup_segment(segment: str) -> bool:
+    compact = segment.strip()
+    if len(compact) < 12 or _is_heading_like_segment(compact):
+        return False
+    if _NOISE_TOKEN_RE.match(compact.lower()):
+        return False
+    return bool(_EXPLANATORY_PHRASE_RE.search(compact)) or compact.endswith(".")
 
 
 def _is_heading_like_segment(segment: str) -> bool:
@@ -436,6 +492,18 @@ def _score_document_segment(segment: str, query_terms: list[str]) -> float:
         score += 4.0
 
     return score
+
+
+def _score_heading_match(heading_path: str, query_terms: list[str], segment: str = "") -> float:
+    if not heading_path:
+        return 0.0
+    lowered = heading_path.lower()
+    segment_lowered = segment.lower()
+    overlap_terms = [term for term in query_terms if term in lowered]
+    if not overlap_terms:
+        return 0.0
+    heading_only_terms = [term for term in overlap_terms if term not in segment_lowered]
+    return float(len(overlap_terms) * 6 + len(heading_only_terms) * 8)
 
 
 def _extract_source_snippet(

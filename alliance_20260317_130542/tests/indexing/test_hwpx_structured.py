@@ -13,12 +13,20 @@ _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HS_NS = "http://www.hancom.co.kr/hwpml/2011/section"
 
 
-def _create_hwpx_with_table(path: Path, *, text: str = "", table_rows: list[list[str]] | None = None) -> None:
+def _create_hwpx_with_table(
+    path: Path,
+    *,
+    text: str = "",
+    caption: str = "",
+    table_rows: list[list[str]] | None = None,
+) -> None:
     """Create a minimal HWPX file with optional text and table."""
     parts = []
     if text:
         parts.append(f'<hp:p><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>')
     if table_rows:
+        if caption:
+            parts.append(f'<hp:p><hp:run><hp:t>{caption}</hp:t></hp:run></hp:p>')
         rows_xml = []
         for row in table_rows:
             cells_xml = "".join(
@@ -52,6 +60,20 @@ class TestExtractHwpxTables:
         assert tables[0].metadata["headers"] == ("Name", "Score")
         assert ("Alice", "95") in tables[0].metadata["rows"]
         assert ("Bob", "87") in tables[0].metadata["rows"]
+
+    def test_uses_nearby_caption_as_sheet_name(self, tmp_path: Path) -> None:
+        hwpx = tmp_path / "caption.hwpx"
+        _create_hwpx_with_table(
+            hwpx,
+            caption="표 76 그리기 개체 공통 속성",
+            table_rows=[
+                ["항목", "값"],
+                ["크기", "348 바이트"],
+            ],
+        )
+        tables = _extract_hwpx_tables(hwpx)
+        assert len(tables) == 1
+        assert tables[0].metadata["sheet_name"] == "표 76 그리기 개체 공통 속성"
 
     def test_skips_single_row_tables(self, tmp_path: Path) -> None:
         hwpx = tmp_path / "small.hwpx"
