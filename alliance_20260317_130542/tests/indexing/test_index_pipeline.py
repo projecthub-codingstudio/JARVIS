@@ -27,9 +27,13 @@ class FakeEmbeddingRuntime:
 class FakeVectorIndex:
     def __init__(self) -> None:
         self.removed_chunk_ids: list[str] = []
+        self.removed_document_ids: list[str] = []
 
     def remove(self, chunk_ids: list[str]) -> None:
         self.removed_chunk_ids.extend(chunk_ids)
+
+    def remove_document(self, document_id: str) -> None:
+        self.removed_document_ids.append(document_id)
 
 
 @pytest.fixture
@@ -175,6 +179,28 @@ class TestReindexFile:
         ).fetchone()
         assert row is not None
         assert row[0] == "FAILED"
+
+    def test_reindex_prefers_document_vector_cleanup_when_available(
+        self, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        vector_index = FakeVectorIndex()
+        pipeline = IndexPipeline(
+            db=db,
+            parser=DocumentParser(),
+            chunker=Chunker(max_chunk_bytes=256, overlap_bytes=32),
+            tombstone_manager=TombstoneManager(db=db),
+            embedding_runtime=FakeEmbeddingRuntime(),
+            vector_index=vector_index,
+        )
+        f = tmp_path / "doc.md"
+        f.write_text("Original content that is long enough to survive minimum chunk size filtering requirements.")
+        record = pipeline.index_file(f)
+
+        f.write_text("Updated content with new information that also passes the minimum chunk size requirements.")
+        pipeline.reindex_file(f)
+
+        assert vector_index.removed_document_ids == [record.document_id]
+        assert vector_index.removed_chunk_ids == []
 
 
 class TestRemoveFile:

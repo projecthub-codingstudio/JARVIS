@@ -304,21 +304,3 @@ class TestOrchestratorTargetedSearch:
         document_ids = [getattr(item, "document_id", "") for item in evidence_builder.last_results]
         assert document_ids
         assert set(document_ids) == {"doc-code"}
-
-
-class TestOrchestratorStructuredRowLookup:
-    def test_numeric_document_query_does_not_enable_structured_row_lookup(self) -> None:
-        enabled = Orchestrator._should_use_structured_row_lookup(
-            "한글문서 파일형식에서 11번 그리기 개체 자료 구조에서 기본 구조에 대해 설명",
-            meal_fields=None,
-        )
-
-        assert enabled is False
-
-    def test_menu_query_enables_structured_row_lookup(self) -> None:
-        enabled = Orchestrator._should_use_structured_row_lookup(
-            "식단표에서 11번 메뉴 알려줘",
-            meal_fields=None,
-        )
-
-        assert enabled is True

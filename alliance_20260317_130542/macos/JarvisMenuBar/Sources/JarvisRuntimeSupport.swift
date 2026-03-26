@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 private func shellQuote(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -166,5 +167,40 @@ enum BridgeError: LocalizedError {
         case .serverNotReady:
             return "JARVIS 서버가 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
         }
+    }
+}
+
+func waitForProcessExit(
+    _ process: Process,
+    timeoutSeconds: Double,
+    timeoutMessage: String
+) async throws {
+    if !process.isRunning {
+        return
+    }
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask {
+            await withCheckedContinuation { continuation in
+                process.terminationHandler = { _ in
+                    continuation.resume()
+                }
+            }
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+            if process.isRunning {
+                process.terminate()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+            throw BridgeError.processFailed(timeoutMessage)
+        }
+
+        let result = try await group.next()
+        group.cancelAll()
+        _ = result
     }
 }

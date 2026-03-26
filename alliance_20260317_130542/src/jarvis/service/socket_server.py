@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import os
 import threading
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def _handle_client(client: socket.socket, service: JarvisApplicationService) -> 
 def main() -> int:
     service = JarvisApplicationService()
     socket_path = resolve_socket_path()
+    pid_path = Path(f"{socket_path}.pid")
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         socket_path.unlink(missing_ok=True)
@@ -50,6 +52,10 @@ def main() -> int:
     try:
         server.bind(str(socket_path))
         server.listen()
+        try:
+            pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        except Exception:
+            pass
         while True:
             client, _ = server.accept()
             thread = threading.Thread(
@@ -63,6 +69,10 @@ def main() -> int:
         server.close()
         try:
             socket_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            pid_path.unlink(missing_ok=True)
         except Exception:
             pass
 

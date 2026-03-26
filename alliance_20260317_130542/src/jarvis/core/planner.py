@@ -33,11 +33,18 @@ _FILENAME_RE = re.compile(
 _KOREAN_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
 _ASCII_RE = re.compile(r"[A-Za-z]+")
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_./-]+")
+_NEGATION_SUFFIX_RE = re.compile(r"(말고|제외하고|제외|아니라)")
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "to", "for", "of", "and", "or", "what", "how",
     "알려줘", "알려주세요", "보여줘", "보여주세요", "찾아줘", "찾아주세요",
     "설명해줘", "설명해주세요", "무엇", "뭐", "어디", "누구", "언제", "몇", "얼마",
 }
+_DOCUMENT_TOPIC_STOPWORDS = _STOPWORDS | {
+    "문서", "파일", "파일형식", "파일형식에서", "형식에서", "중", "중에", "대해", "대한",
+    "설명", "설명해", "설명해주세요", "설명해요", "알려", "알려줘", "알려주세요",
+    "해주세요", "주세요", "에서", "그", "이", "저", "것", "정보가", "말고", "아니라",
+}
+_TOPIC_SUFFIXES = ("에서", "으로", "를", "을", "은", "는", "이", "가", "와", "과", "의")
 _SMALLTALK_GREETING_RE = re.compile(
     r"(안녕(?:하세요|하세여|하십니까)?|하이|hello|hi|nice\s+to\s+meet\s+you|"
     r"만나서\s*반갑(?:습니다|네요|고요)?|반갑(?:습니다|네|고요)?)",
@@ -80,6 +87,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
 class QueryAnalysis:
     """Structured analysis of a user query."""
 
+    retrieval_task: str = "document_qa"
     intent: str = "qa"
     sub_intents: list[str] = field(default_factory=list)
     entities: dict[str, object] = field(default_factory=dict)
@@ -91,6 +99,7 @@ class QueryAnalysis:
 
     def to_payload(self) -> dict[str, object]:
         return {
+            "retrieval_task": self.retrieval_task,
             "intent": self.intent,
             "sub_intents": list(self.sub_intents),
             "entities": dict(self.entities),
@@ -109,6 +118,7 @@ class QueryAnalysis:
         fallback: "QueryAnalysis | None" = None,
     ) -> "QueryAnalysis":
         base = fallback or cls()
+        retrieval_task = str(payload.get("retrieval_task", base.retrieval_task) or base.retrieval_task)
         intent = str(payload.get("intent", base.intent) or base.intent)
         sub_intents_raw = payload.get("sub_intents", base.sub_intents)
         entities_raw = payload.get("entities", base.entities)
@@ -132,6 +142,7 @@ class QueryAnalysis:
             confidence = max(0.0, min(float(confidence_raw), 1.0))
 
         return cls(
+            retrieval_task=retrieval_task,
             intent=intent,
             sub_intents=sub_intents,
             entities=entities,
@@ -185,10 +196,18 @@ class HeuristicPlanner:
         target_file = ""
         if file_matches := _FILENAME_RE.findall(raw_text):
             target_file = file_matches[0]
+        elif normalized_matches := _FILENAME_RE.findall(normalize_spoken_code_query(raw_text)):
+            target_file = normalized_matches[0]
 
         tokens = _extract_tokens(raw_text)
         language = _detect_language(raw_text)
         intent = _classify_intent(raw_text, tokens=tokens, target_file=target_file)
+        retrieval_task, entities = _classify_retrieval_task(
+            raw_text,
+            intent=intent,
+            target_file=target_file,
+            tokens=tokens,
+        )
         confidence = 0.45
         if target_file:
             confidence += 0.35
@@ -198,9 +217,13 @@ class HeuristicPlanner:
             confidence -= 0.1
         if intent != "qa":
             confidence = max(confidence, 0.85)
+        if retrieval_task != "document_qa":
+            confidence = max(confidence, 0.82)
 
         return QueryAnalysis(
+            retrieval_task=retrieval_task,
             intent=intent,
+            entities=entities,
             search_terms=tokens,
             target_file=target_file,
             language="ko" if language == "mixed" else language,
@@ -238,7 +261,9 @@ class LightweightKeywordExpander:
             return None
 
         return QueryAnalysis(
+            retrieval_task=baseline.retrieval_task,
             intent=baseline.intent,
+            entities=dict(baseline.entities),
             search_terms=expanded_terms,
             target_file=baseline.target_file,
             language=baseline.language,
@@ -277,8 +302,9 @@ class LLMIntentJSONBackend:
     def _build_prompt(raw_text: str, baseline: QueryAnalysis) -> str:
         return (
             "다음 사용자 질의를 intent JSON으로만 분류하세요. 설명문 없이 JSON만 출력하세요.\n"
-            "필수 필드: intent, sub_intents, entities, search_terms, target_file, language, confidence, source.\n"
+            "필수 필드: retrieval_task, intent, sub_intents, entities, search_terms, target_file, language, confidence, source.\n"
             "intent는 하나의 주 의도만 넣고, 인사말 등 보조 의도는 sub_intents에 넣으세요.\n"
+            "retrieval_task는 document_qa, table_lookup, code_lookup, multi_doc_qa, live_data_request, smalltalk 중 하나를 사용하세요.\n"
             "entities에는 day_numbers, meal_slots 같은 구조화 슬롯이 있으면 포함하세요.\n"
             f"baseline={json.dumps(baseline.to_payload(), ensure_ascii=False)}\n"
             f"query={raw_text}"
@@ -331,7 +357,30 @@ class Planner:
             knowledge_base_path=self._knowledge_base_path,
         )
         baseline = self._heuristic.analyze(normalized_text)
-        if self._lightweight_backend is None or not self._should_use_lightweight(normalized_text, baseline):
+        raw_file_matches = _FILENAME_RE.findall(raw_text)
+        if raw_file_matches and not baseline.target_file:
+            baseline = QueryAnalysis(
+                retrieval_task=baseline.retrieval_task,
+                intent=baseline.intent,
+                sub_intents=list(baseline.sub_intents),
+                entities=dict(baseline.entities),
+                search_terms=list(baseline.search_terms),
+                target_file=raw_file_matches[0],
+                language=baseline.language,
+                confidence=baseline.confidence,
+                source=baseline.source,
+            )
+            if baseline.retrieval_task == "code_lookup" and "target_file" not in baseline.entities:
+                baseline.entities["target_file"] = raw_file_matches[0]
+        if self._lightweight_backend is None:
+            return baseline
+
+        if isinstance(self._lightweight_backend, LLMIntentJSONBackend):
+            should_use_lightweight = True
+        else:
+            should_use_lightweight = self._should_use_lightweight(normalized_text, baseline)
+
+        if not should_use_lightweight:
             return baseline
 
         try:
@@ -378,6 +427,7 @@ class Planner:
             search_terms.append(term)
 
         return QueryAnalysis(
+            retrieval_task=enriched.retrieval_task or baseline.retrieval_task,
             intent=enriched.intent or baseline.intent,
             sub_intents=list(dict.fromkeys([*baseline.sub_intents, *enriched.sub_intents])),
             entities={**baseline.entities, **enriched.entities},
@@ -454,8 +504,174 @@ def _classify_intent(raw_text: str, *, tokens: list[str], target_file: str) -> s
     if _SMALLTALK_GREETING_RE.search(normalized) or _SMALLTALK_POLITE_RE.search(normalized):
         if not any(marker in lowered for marker in informational_markers):
             return "smalltalk"
-    if _WEATHER_RE.search(normalized):
+    if _contains_non_negated_match(normalized, _WEATHER_RE):
         return "weather"
     if any(token in lowered for token in ("지하철", "버스", "경로", "길찾기", "가는 길", "가는길")):
         return "route_guidance"
     return "qa"
+
+
+def _classify_retrieval_task(
+    raw_text: str,
+    *,
+    intent: str,
+    target_file: str,
+    tokens: list[str],
+) -> tuple[str, dict[str, object]]:
+    normalized = raw_text.strip()
+    lowered = normalized.lower()
+    entities: dict[str, object] = {}
+    filename_match = _FILENAME_RE.search(normalized)
+    resolved_target_file = target_file or (filename_match.group(1) if filename_match else "")
+
+    if intent == "smalltalk":
+        return "smalltalk", entities
+
+    if intent == "weather":
+        return "live_data_request", {"capability": "weather"}
+
+    if any(term in lowered for term in ("오늘 일정", "캘린더", "calendar", "일정")):
+        return "live_data_request", {"capability": "calendar"}
+
+    row_ids = re.findall(r"(\d+)\s*(?:일\s*차|일차|day|번)", normalized, re.IGNORECASE)
+    meal_slots = _extract_meal_slots(lowered)
+    if any(term in lowered for term in ("식단표", "식단", "메뉴")) or meal_slots:
+        if row_ids:
+            entities["row_ids"] = row_ids
+        if meal_slots:
+            entities["fields"] = meal_slots
+        return "table_lookup", entities
+
+    if resolved_target_file:
+        if Path(resolved_target_file).suffix.lower() in {".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".java", ".kt", ".go", ".rs", ".cpp", ".c", ".h"}:
+            return "code_lookup", {"target_file": resolved_target_file}
+        return "document_qa", {"document": Path(resolved_target_file).name}
+
+    if any(term in lowered for term in ("소스", "코드", "클래스", "함수", "메서드", ".py", ".ts", ".js")):
+        return "code_lookup", {}
+
+    if any(term in lowered for term in ("문서", "파일형식", "형식", "자료 구조", "기본 구조", "설명")):
+        topic_terms = _extract_document_topic_terms(normalized, tokens)
+        negated_terms = _extract_negated_terms(normalized)
+        if negated_terms:
+            topic_terms = [
+                term for term in topic_terms
+                if not any(_topic_overlaps_negative(term, negated) for negated in negated_terms)
+            ]
+        if topic_terms:
+            entities["topic_terms"] = topic_terms[:6]
+        if negated_terms:
+            entities["negative_terms"] = negated_terms[:4]
+        return "document_qa", entities
+
+    return "document_qa", entities
+
+
+def _extract_meal_slots(lowered: str) -> list[str]:
+    field_aliases = {
+        "Breakfast": ("아침", "조식", "breakfast"),
+        "Lunch": ("점심", "중식", "lunch"),
+        "Dinner": ("저녁", "석식", "dinner"),
+        "Drinks": ("음료", "drink", "drinks"),
+    }
+    matched_fields: list[str] = []
+    for field, aliases in field_aliases.items():
+        if any(alias in lowered for alias in aliases):
+            matched_fields.append(field)
+    return matched_fields
+
+
+def _contains_non_negated_match(text: str, pattern: re.Pattern[str]) -> bool:
+    for match in pattern.finditer(text):
+        suffix = text[match.end():match.end() + 8]
+        if _NEGATION_SUFFIX_RE.match(suffix.strip()):
+            continue
+        return True
+    return False
+
+
+def _extract_document_topic_terms(raw_text: str, tokens: list[str]) -> list[str]:
+    cleaned_tokens = []
+    seen = set()
+    for token in tokens:
+        normalized_token = _strip_topic_suffix(token.strip())
+        compact = normalized_token.lower()
+        if compact in _DOCUMENT_TOPIC_STOPWORDS or len(compact) < 2:
+            continue
+        cleaned_tokens.append(normalized_token)
+
+    phrases: list[str] = []
+    raw_compact = " ".join(raw_text.split())
+    bigrams: list[str] = []
+    for index in range(0, len(cleaned_tokens) - 1):
+        phrase = " ".join(cleaned_tokens[index:index + 2]).strip()
+        compact = phrase.replace(" ", "")
+        if len(compact) < 4:
+            continue
+        if phrase not in bigrams and (phrase in raw_compact or compact in raw_text.replace(" ", "")):
+            bigrams.append(phrase)
+    for size in (3, 2):
+        for index in range(0, len(cleaned_tokens) - size + 1):
+            phrase = " ".join(cleaned_tokens[index:index + size]).strip()
+            compact = phrase.replace(" ", "")
+            if len(compact) < 4:
+                continue
+            if phrase in phrases:
+                continue
+            if phrase in raw_compact or compact in raw_text.replace(" ", ""):
+                phrases.append(phrase)
+
+    prioritized = []
+    for phrase in bigrams:
+        if any(keyword in phrase for keyword in ("기본 구조", "자료 구조", "저장 구조", "그리기 개체", "하이퍼 텍스트", "파일 형식", "파일형식")):
+            prioritized.append(phrase)
+    for phrase in phrases:
+        if any(keyword in phrase for keyword in ("기본 구조", "자료 구조", "저장 구조", "개체", "형식")):
+            if phrase not in prioritized:
+                prioritized.append(phrase)
+    for token in cleaned_tokens:
+        if token not in prioritized:
+            prioritized.append(token)
+    deduped: list[str] = []
+    for item in prioritized:
+        lowered = item.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(item)
+    return deduped
+
+
+def _extract_negated_terms(raw_text: str) -> list[str]:
+    patterns = [
+        re.compile(r"([A-Za-z0-9가-힣\s]{2,30}?)\s*말고"),
+        re.compile(r"([A-Za-z0-9가-힣\s]{2,30}?)\s*아니라"),
+    ]
+    terms: list[str] = []
+    for pattern in patterns:
+        for match in pattern.finditer(raw_text):
+            parts = [_strip_topic_suffix(part) for part in match.group(1).split()]
+            parts = [part for part in parts if part and part.lower() not in _DOCUMENT_TOPIC_STOPWORDS]
+            if len(parts) > 3:
+                parts = parts[-3:]
+            phrase = " ".join(parts).strip()
+            if len(phrase) < 2:
+                continue
+            if phrase not in terms:
+                terms.append(phrase)
+    return terms
+
+
+def _strip_topic_suffix(token: str) -> str:
+    for suffix in _TOPIC_SUFFIXES:
+        if token.endswith(suffix) and len(token) > len(suffix) + 1:
+            return token[: -len(suffix)]
+    return token
+
+
+def _topic_overlaps_negative(topic: str, negative: str) -> bool:
+    topic_tokens = {part for part in topic.split() if part}
+    negative_tokens = {part for part in negative.split() if part}
+    if not topic_tokens or not negative_tokens:
+        return False
+    return topic_tokens.issubset(negative_tokens) or bool(topic_tokens & negative_tokens and len(topic_tokens) <= 2)

@@ -1,0 +1,325 @@
+{
+  "version": "2026-03-27",
+  "description": "Initial retrieval regression set for planner routing and retriever separation",
+  "queries": [
+    {
+      "id": "doc-001",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조 중 기본 구조에 대해 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-002",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조 중 기본 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-003",
+      "query": "한글 문서 8형식에서 그리기 개체 자료 구조 기본 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-004",
+      "query": "한글문서 파일형식에서 11번 그리기 개체 자료 구조 기본 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "numeric_in_prose"
+    },
+    {
+      "id": "doc-005",
+      "query": "안녕하세요. 한글문서 파일형식에서 그리기 개체 자료 구조 기본 구조 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "doc-006",
+      "query": "흥글 문서 8형씨에서 그리기 개최 자료 구조 중에 기본 구조에 대해 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "stt_corruption"
+    },
+    {
+      "id": "doc-007",
+      "query": "한국 문서 8형식 중 그리기 개체 자료 구조 기본 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "stt_corruption"
+    },
+    {
+      "id": "doc-008",
+      "query": "그리기 개체 자료 구조에서 기본 구조는 파일상에 어떻게 저장되나요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "table-001",
+      "query": "다이어트 식단표에서 3일차 점심을 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=3",
+      "expected_field": "Lunch",
+      "category": "table_row_field_lookup"
+    },
+    {
+      "id": "table-002",
+      "query": "식단표에서 2일차 3일차 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_rows": ["Day=2", "Day=3"],
+      "category": "table_multi_row"
+    },
+    {
+      "id": "table-003",
+      "query": "다이어트 식단에서 4일차 5일차 아침 저녁 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_rows": ["Day=4", "Day=5"],
+      "expected_fields": ["Breakfast", "Dinner"],
+      "category": "table_multi_row_multi_field"
+    },
+    {
+      "id": "table-004",
+      "query": "안녕하세요. 만나서 반갑습니다. 다이어트 식단표에서 11일 차 아침, 12일 차 저녁, 그리고 3일 차 아침 메뉴를 알려주세요",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_rows": ["Day=3", "Day=11", "Day=12"],
+      "expected_fields": ["Breakfast", "Dinner"],
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "table-005",
+      "query": "식단표에서 11번 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=11",
+      "category": "numeric_table_lookup"
+    },
+    {
+      "id": "table-006",
+      "query": "오늘 날씨좀 알려주세요",
+      "expected_retrieval_task": "live_data_request",
+      "category": "live_data_request"
+    },
+    {
+      "id": "table-007",
+      "query": "만나서 반갑습니다. 다이어트 식단표에서 9일차 저녁 메뉴 알려주세요",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=9",
+      "expected_field": "Dinner",
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "table-008",
+      "query": "다이어트 식단표에서 11일차 식단 전체를 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=11",
+      "category": "table_row_lookup"
+    },
+    {
+      "id": "table-009",
+      "query": "다이어트 식단표에서 4일차 아침 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=4",
+      "expected_field": "Breakfast",
+      "category": "table_row_field_lookup"
+    },
+    {
+      "id": "table-010",
+      "query": "다이어트 식단표에서 5일차 저녁 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=5",
+      "expected_field": "Dinner",
+      "category": "table_row_field_lookup"
+    },
+    {
+      "id": "task-001",
+      "query": "안녕하세요",
+      "expected_retrieval_task": "smalltalk",
+      "category": "smalltalk"
+    },
+    {
+      "id": "task-002",
+      "query": "만나서 반갑습니다",
+      "expected_retrieval_task": "smalltalk",
+      "category": "smalltalk"
+    },
+    {
+      "id": "task-003",
+      "query": "안녕하세요. 반갑습니다. 한국 문서 8형식에서 그리기 개체 자료 구조 중 기본 구조에 대해 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "task-004",
+      "query": "식단표에서 2일차 아침 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=2",
+      "expected_field": "Breakfast",
+      "category": "table_row_field_lookup"
+    },
+    {
+      "id": "task-005",
+      "query": "한글문서 파일형식의 그리기 개체 자료 구조를 요약해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "task-006",
+      "query": "식단표에서 3일차 11일차 저녁 비교해줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_rows": ["Day=3", "Day=11"],
+      "expected_field": "Dinner",
+      "category": "table_multi_row"
+    },
+    {
+      "id": "task-007",
+      "query": "한글 문서 파일형식에서 11번 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "category": "numeric_in_prose"
+    },
+    {
+      "id": "task-008",
+      "query": "식단표 11번 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=11",
+      "category": "numeric_table_lookup"
+    },
+    {
+      "id": "task-009",
+      "query": "한글문서 파일형식에서 하이퍼 텍스트 정보가 아니라 기본 구조를 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "task-010",
+      "query": "날씨 말고 식단표에서 12일차 저녁 메뉴 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=12",
+      "expected_field": "Dinner",
+      "category": "mixed_task_disambiguation"
+    },
+    {
+      "id": "task-011",
+      "query": "오늘 일정 알려줘",
+      "expected_retrieval_task": "live_data_request",
+      "category": "live_data_request"
+    },
+    {
+      "id": "task-012",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조의 기본 구조와 저장 구조를 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-009",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조의 저장 구조를 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-010",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조 기본 구조 말고 저장 구조를 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "mixed_task_disambiguation"
+    },
+    {
+      "id": "doc-011",
+      "query": "한글문서 파일형식에서 그리기 개체 자료 구조가 파일상에 저장되는 방식 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "document_section_lookup"
+    },
+    {
+      "id": "doc-012",
+      "query": "안녕하세요. 한글문서 파일형식에서 하이퍼 텍스트 말고 그리기 개체 기본 구조 설명해 주세요",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "기본 구조"],
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "table-011",
+      "query": "식단표에서 12일차 저녁이랑 11일차 아침 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_rows": ["Day=11", "Day=12"],
+      "expected_fields": ["Breakfast", "Dinner"],
+      "category": "table_multi_row_multi_field"
+    },
+    {
+      "id": "table-012",
+      "query": "반갑습니다. 식단표에서 4일차 저녁이 아니라 4일차 아침 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=4",
+      "expected_field": "Breakfast",
+      "category": "mixed_task_disambiguation"
+    },
+    {
+      "id": "table-013",
+      "query": "식단표에서 9일차 메뉴 전체 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=9",
+      "category": "table_row_lookup"
+    },
+    {
+      "id": "task-013",
+      "query": "지금 날씨 말고 오늘 일정 알려줘",
+      "expected_retrieval_task": "live_data_request",
+      "category": "mixed_task_disambiguation"
+    },
+    {
+      "id": "task-014",
+      "query": "고마워요. 식단표에서 5일차 저녁 알려줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=5",
+      "expected_field": "Dinner",
+      "category": "mixed_greeting_task"
+    },
+    {
+      "id": "doc-013",
+      "query": "한글문서 파일형식에서 하이퍼 텍스트 정보 말고 그리기 개체 자료 구조 설명",
+      "expected_retrieval_task": "document_qa",
+      "expected_source_suffix": "한글문서파일형식_revision1.1_20110124.hwp",
+      "expected_heading_keywords": ["그리기 개체", "자료 구조"],
+      "category": "mixed_task_disambiguation"
+    }
+  ]
+}

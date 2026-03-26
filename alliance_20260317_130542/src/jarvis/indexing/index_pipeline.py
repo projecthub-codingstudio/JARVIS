@@ -82,6 +82,20 @@ class IndexPipeline:
             (document_id,),
         )
 
+    def _remove_vectors_for_document(self, document_id: str) -> None:
+        if self._vector_index is None:
+            return
+        remove_document = getattr(self._vector_index, "remove_document", None)
+        if callable(remove_document):
+            remove_document(document_id)
+            return
+        chunk_ids = [r[0] for r in self._db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (document_id,),
+        ).fetchall()]
+        if chunk_ids:
+            self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+
     def _mark_failed(self, record: DocumentRecord, *, reason: str) -> DocumentRecord:
         failed_record = replace(record, indexing_status=IndexingStatus.FAILED)
         self._write_document(failed_record)
@@ -203,6 +217,7 @@ class IndexPipeline:
         # Reuse document_id if path already exists
         if existing:
             record = replace(record, document_id=existing.document_id)
+            self._remove_vectors_for_document(existing.document_id)
             self._delete_chunks(existing.document_id)
 
         # Parse and chunk using structured pipeline
@@ -240,12 +255,7 @@ class IndexPipeline:
         existing = self._find_document_by_path(path)
         if existing:
             record = replace(record, document_id=existing.document_id)
-            # Remove old vectors from LanceDB before deleting chunks
-            chunk_ids = [r[0] for r in self._db.execute(
-                "SELECT chunk_id FROM chunks WHERE document_id = ?", (existing.document_id,)
-            ).fetchall()]
-            if chunk_ids and self._vector_index is not None:
-                self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+            self._remove_vectors_for_document(existing.document_id)
             self._delete_chunks(existing.document_id)
 
         parsed_doc = self._parser.parse_structured(path)
@@ -274,12 +284,7 @@ class IndexPipeline:
         existing = self._find_document_by_path(path)
         if existing is None:
             return
-        # Remove vectors from LanceDB
-        chunk_ids = [r[0] for r in self._db.execute(
-            "SELECT chunk_id FROM chunks WHERE document_id = ?", (existing.document_id,)
-        ).fetchall()]
-        if chunk_ids and self._vector_index is not None:
-            self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+        self._remove_vectors_for_document(existing.document_id)
         self._delete_chunks(existing.document_id)
         self._tombstone.create_tombstone(existing)
 
@@ -301,12 +306,7 @@ class IndexPipeline:
                 document_id=row[0], path=row[1], content_hash=row[2],
                 size_bytes=row[3], indexing_status=IndexingStatus(row[4]),
             )
-            # Remove vectors from LanceDB
-            chunk_ids = [r[0] for r in self._db.execute(
-                "SELECT chunk_id FROM chunks WHERE document_id = ?", (doc.document_id,)
-            ).fetchall()]
-            if chunk_ids and self._vector_index is not None:
-                self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+            self._remove_vectors_for_document(doc.document_id)
             self._delete_chunks(doc.document_id)
             self._tombstone.create_tombstone(doc)
             count += 1

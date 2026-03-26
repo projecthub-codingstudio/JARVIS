@@ -3,6 +3,7 @@ import Darwin
 
 struct JarvisSocketTransport {
     let socketPath: String
+    private let ioTimeoutSeconds: Int = 20
 
     func send(requestData: Data) throws -> Data {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -10,6 +11,7 @@ struct JarvisSocketTransport {
             throw BridgeError.processFailed("socket transport failed: socket()")
         }
         defer { close(fd) }
+        try configureTimeout(fd: fd)
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -45,6 +47,35 @@ struct JarvisSocketTransport {
         return try readUntilNewline(fd: fd)
     }
 
+    private func configureTimeout(fd: Int32) throws {
+        var timeout = timeval(tv_sec: ioTimeoutSeconds, tv_usec: 0)
+        let resultRead = withUnsafePointer(to: &timeout) {
+            setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+        guard resultRead == 0 else {
+            throw BridgeError.processFailed("socket transport failed: setsockopt(SO_RCVTIMEO) errno=\(errno)")
+        }
+        var writeTimeout = timeout
+        let resultWrite = withUnsafePointer(to: &writeTimeout) {
+            setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                $0,
+                socklen_t(MemoryLayout<timeval>.size)
+            )
+        }
+        guard resultWrite == 0 else {
+            throw BridgeError.processFailed("socket transport failed: setsockopt(SO_SNDTIMEO) errno=\(errno)")
+        }
+    }
+
     private func writeAll(fd: Int32, data: Data) throws {
         try data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
@@ -65,6 +96,9 @@ struct JarvisSocketTransport {
         while true {
             let count = Darwin.read(fd, &buffer, buffer.count)
             if count < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    throw BridgeError.processFailed("socket transport timed out waiting for response")
+                }
                 throw BridgeError.processFailed("socket transport failed: read errno=\(errno)")
             }
             if count == 0 {
