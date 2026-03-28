@@ -9,6 +9,7 @@ Backend selection: Qwen3-TTS preferred when available, macOS `say` fallback.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -21,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_GB = 2.0
 _QWEN3_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+_QWEN3_TTS_EN_SPEAKER = "Ryan"
+_QWEN3_TTS_KO_SPEAKER = "Ryan"
+_QWEN3_TTS_DEFAULT_INSTRUCT = (
+    "Speak like a calm, polished, male AI assistant with a subtle British-leaning tone. "
+    "Low-medium pitch, measured pacing, precise diction, understated wit, "
+    "never bubbly, never cartoonish, never exaggerated."
+)
+_HANGUL_RE = re.compile(r"[가-힣]")
 _CODE_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9]+)?\b")
 _KOREAN_TTS_ALIASES = {
     "pipeline": "파이프라인",
@@ -85,7 +94,7 @@ class LocalTTSRuntime:
         try:
             return _qwen3_synthesize(
                 text, output_path,
-                speaker_description=self._persona.speaker_description,
+                persona=self._persona,
                 model_router=self._model_router,
             )
         except Exception as exc:
@@ -164,7 +173,7 @@ class LocalTTSRuntime:
 # --- Qwen3-TTS Backend ---
 
 _qwen3_model = None
-_qwen3_processor = None
+_qwen3_model_path = ""
 _qwen3_available: bool | None = None
 
 
@@ -172,18 +181,24 @@ def _qwen3_synthesize(
     text: str,
     output_path: Path,
     *,
-    speaker_description: str = "",
+    persona: VoicePersona,
     model_router: ModelRouter | None = None,
 ) -> Path | None:
-    """Synthesize using Qwen3-TTS with custom voice persona."""
-    global _qwen3_model, _qwen3_processor, _qwen3_available
+    """Synthesize using qwen-tts with a locally cached custom voice model."""
+    global _qwen3_model, _qwen3_model_path, _qwen3_available
 
     if _qwen3_available is False:
         return None
 
+    model_path = _resolve_qwen3_tts_model_path()
+    if model_path is None:
+        _qwen3_available = False
+        return None
+
     try:
         import torch
-        from transformers import AutoProcessor, AutoModelForCausalLM
+        import soundfile as sf
+        from qwen_tts import Qwen3TTSModel
     except ImportError:
         _qwen3_available = False
         return None
@@ -195,64 +210,85 @@ def _qwen3_synthesize(
 
     try:
         # Lazy load model
-        if _qwen3_model is None:
+        if _qwen3_model is None or _qwen3_model_path != str(model_path):
             logger.info("Loading Qwen3-TTS model...")
-            _qwen3_processor = AutoProcessor.from_pretrained(
-                _QWEN3_TTS_MODEL, trust_remote_code=True,
-            )
-            _qwen3_model = AutoModelForCausalLM.from_pretrained(
-                _QWEN3_TTS_MODEL, trust_remote_code=True,
-                torch_dtype=torch.float32,
+            _qwen3_model = Qwen3TTSModel.from_pretrained(
+                str(model_path),
                 device_map="cpu",
+                dtype=torch.float32,
             )
+            _qwen3_model_path = str(model_path)
             _qwen3_available = True
             logger.info("Qwen3-TTS model loaded")
 
-        # Build conversation prompt with speaker description
-        conversation = [
-            {"role": "system", "content": "You are a text-to-speech assistant."},
-        ]
-        if speaker_description:
-            conversation.append({
-                "role": "user",
-                "content": f"[speaker: {speaker_description}] {text}",
-            })
-        else:
-            conversation.append({"role": "user", "content": text})
-
-        inputs = _qwen3_processor.apply_chat_template(
-            conversation, add_generation_prompt=True, tokenize=True,
-            return_tensors="pt",
+        wavs, sr = _qwen3_model.generate_custom_voice(
+            text=text,
+            language=_qwen3_language_for_text(text),
+            speaker=_qwen3_speaker_for_text(text),
+            instruct=_qwen3_instruction(persona),
         )
-
-        with torch.no_grad():
-            outputs = _qwen3_model.generate(
-                inputs, max_new_tokens=2048, do_sample=True,
-                temperature=0.7, top_p=0.9,
-            )
-
-        # Decode audio from tokens
-        audio = _qwen3_processor.decode(
-            outputs[0], skip_special_tokens=True,
-        )
-
-        if hasattr(audio, "save") or hasattr(audio, "numpy"):
-            # If the processor returns audio data, save it
-            import soundfile as sf
-            if hasattr(audio, "numpy"):
-                sf.write(str(output_path), audio.numpy(), 24000)
-            else:
-                Path(output_path).write_bytes(audio)
-            return output_path
-
-        # Fallback: if audio decoding not supported by this model version
-        _qwen3_available = False
-        return None
-
+        sf.write(str(output_path), wavs[0], sr)
+        return output_path
     except Exception as exc:
-        logger.debug("Qwen3-TTS synthesis failed: %s", exc)
-        _qwen3_available = False
+        logger.warning("Qwen3-TTS synthesis failed: %s", exc)
         return None
     finally:
         if model_router is not None:
             model_router.release("tts-qwen3")
+
+
+def _resolve_qwen3_tts_model_path() -> Path | None:
+    configured = os.getenv("JARVIS_QWEN_TTS_MODEL_PATH", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+
+    cache_root = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    )
+    main_ref = cache_root / "refs" / "main"
+    if main_ref.exists():
+        revision = main_ref.read_text(encoding="utf-8").strip()
+        if revision:
+            snapshot = cache_root / "snapshots" / revision
+            if snapshot.exists():
+                return snapshot
+
+    snapshots_dir = cache_root / "snapshots"
+    if snapshots_dir.exists():
+        snapshots = sorted(
+            (path for path in snapshots_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if snapshots:
+            return snapshots[0]
+    return None
+
+
+def _qwen3_language_for_text(text: str) -> str:
+    hangul_chars = len(_HANGUL_RE.findall(text))
+    if hangul_chars > max(1, len(text) // 8):
+        return "Korean"
+    return "English"
+
+
+def _qwen3_speaker_for_text(text: str) -> str:
+    language = _qwen3_language_for_text(text)
+    if language == "Korean":
+        return os.getenv("JARVIS_QWEN_TTS_SPEAKER_KO", _QWEN3_TTS_KO_SPEAKER).strip() or _QWEN3_TTS_KO_SPEAKER
+    return os.getenv("JARVIS_QWEN_TTS_SPEAKER_EN", _QWEN3_TTS_EN_SPEAKER).strip() or _QWEN3_TTS_EN_SPEAKER
+
+
+def _qwen3_instruction(persona: VoicePersona) -> str:
+    configured = os.getenv("JARVIS_QWEN_TTS_INSTRUCT", "").strip()
+    if configured:
+        return configured
+    if persona.speaker_description.strip():
+        return persona.speaker_description.strip()
+    return _QWEN3_TTS_DEFAULT_INSTRUCT

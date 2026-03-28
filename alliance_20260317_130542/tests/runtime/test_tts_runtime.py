@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from jarvis.runtime.model_router import ModelRouter
-from jarvis.runtime.tts_runtime import LocalTTSRuntime
+from jarvis.runtime.tts_runtime import (
+    LocalTTSRuntime,
+    _qwen3_language_for_text,
+    _qwen3_speaker_for_text,
+)
 from jarvis.runtime.voice_persona import JARVIS_PERSONA
 
 
@@ -53,3 +57,24 @@ class TestLocalTTSRuntime:
 
         assert voice == JARVIS_PERSONA.macos_voice_en
         assert voice == "Reed (영어(영국))"
+
+    def test_qwen_language_detection_prefers_korean_for_hangul_text(self) -> None:
+        assert _qwen3_language_for_text("안녕하세요. 시스템 점검을 시작합니다.") == "Korean"
+
+    def test_qwen_speaker_defaults_to_male_english_voice(self) -> None:
+        assert _qwen3_speaker_for_text("System status report.") == "Ryan"
+
+    def test_qwen_backend_short_circuits_when_monkeypatched(self, monkeypatch, tmp_path: Path) -> None:
+        written = tmp_path / "tts.wav"
+
+        def fake_qwen(text: str, output_path: Path, *, persona, model_router=None):  # type: ignore[no-untyped-def]
+            output_path.write_bytes(b"RIFF")
+            return output_path
+
+        monkeypatch.setattr("jarvis.runtime.tts_runtime._qwen3_synthesize", fake_qwen)
+        runtime = LocalTTSRuntime(backend="qwen3")
+
+        result = runtime.synthesize("JARVIS online", written)
+
+        assert result == written
+        assert written.read_bytes() == b"RIFF"
