@@ -538,11 +538,13 @@ class TestMenuBridge:
             def __init__(self, voice: str | None = None, backend: str = "auto") -> None:
                 self.voice = voice
                 self.backend = backend
+                observed["backend"] = backend
 
             def synthesize(self, text: str, output_path: Path) -> Path:
                 output_path.write_text(text, encoding="utf-8")
                 return output_path
 
+        observed: dict[str, str] = {}
         monkeypatch.setattr("jarvis.cli.menu_bridge.LocalTTSRuntime", FakeTTS)
         monkeypatch.setattr("jarvis.cli.menu_bridge._TTS_DIR", tmp_path)
 
@@ -550,6 +552,7 @@ class TestMenuBridge:
 
         assert result.audio_path.endswith(".aiff")
         assert Path(result.audio_path).read_text(encoding="utf-8") == "jarvis test"
+        assert observed["backend"] == "auto"
 
     def test_transcription_payload_serializes_text(self) -> None:
         payload = MenuBarTranscriptionResponse(transcript="회의 일정 정리해 줘")

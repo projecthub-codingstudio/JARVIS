@@ -91,6 +91,7 @@ def main() -> None:
             )
             tts_runtime = LocalTTSRuntime(
                 voice=os.getenv("JARVIS_TTS_VOICE"),
+                backend=os.getenv("JARVIS_TTS_BACKEND", "auto"),
                 model_router=context.model_router,
             )
             recorder = AudioRecorder(

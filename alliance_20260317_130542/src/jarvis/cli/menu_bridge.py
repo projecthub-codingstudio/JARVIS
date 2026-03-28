@@ -48,6 +48,13 @@ _MAX_CODE_PREVIEW_LINES = 6
 _MAX_CODE_PREVIEW_CHARS = 120
 
 
+def _tts_backend() -> str:
+    configured = __import__("os").getenv("JARVIS_TTS_BACKEND", "auto").strip().lower()
+    if configured in {"auto", "qwen3", "say"}:
+        return configured
+    return "auto"
+
+
 def _detect_source_type(path: str) -> str:
     if path.startswith(("http://", "https://")):
         return "web"
@@ -892,6 +899,7 @@ def _record_once(*, model_id: str, device: str | None = None) -> MenuBarResponse
         )
         tts_runtime = LocalTTSRuntime(
             voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
+            backend=_tts_backend(),
             model_router=context.model_router,
         )
         recorder = AudioRecorder(
@@ -962,7 +970,7 @@ def _synthesize_speech(*, text: str) -> MenuBarSpeechResponse:
 
     tts_runtime = LocalTTSRuntime(
         voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
-        backend="say",
+        backend=_tts_backend(),
     )
     _TTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = _TTS_DIR / f"speech_{int(time.time() * 1000)}.aiff"
@@ -982,6 +990,7 @@ def _record_once_in_context(*, context: object, device: str | None = None) -> Me
     )
     tts_runtime = LocalTTSRuntime(
         voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
+        backend=_tts_backend(),
         model_router=context.model_router,
     )
     recorder = AudioRecorder(

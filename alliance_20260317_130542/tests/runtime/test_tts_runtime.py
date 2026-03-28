@@ -7,6 +7,7 @@ import pytest
 
 from jarvis.runtime.model_router import ModelRouter
 from jarvis.runtime.tts_runtime import LocalTTSRuntime
+from jarvis.runtime.voice_persona import JARVIS_PERSONA
 
 
 class TestLocalTTSRuntime:
@@ -36,3 +37,19 @@ class TestLocalTTSRuntime:
 
         assert "파이프라인 dot p y" in prepared
         assert "Provider Result" in prepared
+
+    def test_select_voice_prefers_male_reed_for_korean(self) -> None:
+        runtime = LocalTTSRuntime()
+
+        voice = runtime._select_voice("안녕하세요. 시스템 상태를 보고드립니다.")
+
+        assert voice == JARVIS_PERSONA.macos_voice_ko
+        assert voice == "Reed (한국어(대한민국))"
+
+    def test_select_voice_prefers_british_male_reed_for_english(self) -> None:
+        runtime = LocalTTSRuntime()
+
+        voice = runtime._select_voice("System check complete. Awaiting your instruction.")
+
+        assert voice == JARVIS_PERSONA.macos_voice_en
+        assert voice == "Reed (영어(영국))"

@@ -1,7 +1,7 @@
 """Local text-to-speech runtime with JARVIS persona support.
 
 Supports two backends:
-  1. macOS `say` — fast, no model loading, uses Daniel (en_GB) for JARVIS
+  1. macOS `say` — fast, no model loading, uses Reed male voices for JARVIS
   2. Qwen3-TTS — neural TTS with custom voice persona (Phase 2)
 
 Backend selection: Qwen3-TTS preferred when available, macOS `say` fallback.
@@ -31,7 +31,7 @@ class LocalTTSRuntime:
     """Local TTS with persona support and multi-backend.
 
     Tries Qwen3-TTS first for high-quality neural voice, falls back
-    to macOS `say` with British voice (Daniel) for JARVIS persona.
+    to macOS `say` with male Reed voices for JARVIS persona.
     """
 
     def __init__(
