@@ -153,8 +153,12 @@ _MAX_TEXT_PROBE_BYTES = 1_048_576  # 1MB
 
 # Encoding probe order for text detection and reading.
 # Covers: macOS/Linux UTF-8, Windows 10/11 Korean (CP949/EUC-KR),
-# Windows Notepad "유니코드" (UTF-16 LE/BE), legacy Latin-1.
-_TEXT_ENCODINGS = ("utf-8", "cp949", "euc-kr", "utf-16", "latin-1")
+# BOM-identified UTF-16 LE/BE, and legacy Latin-1.
+#
+# Note: BOM-less UTF-16 is intentionally excluded from the fallback chain.
+# Python's utf-16 decoder can falsely "succeed" on normal UTF-8 Korean text
+# and poison the persisted search index with mojibake.
+_TEXT_ENCODINGS = ("utf-8", "cp949", "euc-kr", "latin-1")
 
 # BOM signatures for UTF encoding detection
 _BOM_MAP: list[tuple[bytes, str]] = [
@@ -180,7 +184,17 @@ def _detect_encoding(sample: bytes) -> str | None:
         try:
             sample.decode(enc)
             return enc
-        except (UnicodeDecodeError, UnicodeError):
+        except UnicodeDecodeError as exc:
+            # Sample-based detection can cut a multibyte character at the end.
+            # If the only failure is an incomplete trailing sequence, accept
+            # the encoding and let the caller decode the full file.
+            if exc.end == len(sample) and exc.start >= max(0, len(sample) - 4):
+                try:
+                    sample[:exc.start].decode(enc)
+                    return enc
+                except (UnicodeDecodeError, UnicodeError):
+                    pass
+        except UnicodeError:
             continue
 
     return None

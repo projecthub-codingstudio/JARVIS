@@ -8,6 +8,7 @@ import unicodedata
 from pathlib import Path
 
 from jarvis.identifier_restoration import build_identifier_lexicon
+from jarvis.runtime_paths import resolve_menubar_data_dir
 
 _MAX_TERMS = 120
 _MAX_PROMPT_CHARS = 900
@@ -70,9 +71,7 @@ def _resolve_workspace_root(knowledge_base_path: Path) -> Path:
 
 
 def load_indexed_vocabulary_terms(workspace_root: Path | None = None) -> list[str]:
-    if workspace_root is None:
-        workspace_root = Path.cwd()
-    db_path = workspace_root / ".jarvis-menubar" / "jarvis.db"
+    db_path = resolve_menubar_data_dir(workspace_root) / "jarvis.db"
     if not db_path.exists():
         return []
 

@@ -33,6 +33,11 @@ _CLASS_QUERY_RE = re.compile(r"(?:\bclass\b|클래스)\s+([A-Za-z_][A-Za-z0-9_]*
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
 _TABLE_KEY_VALUE_RE = re.compile(r"([A-Za-z][A-Za-z ]+)=([^|]+)")
 _DAY_QUERY_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|day|번)", re.IGNORECASE)
+_TABLE_REQUEST_TOKEN_RE = re.compile(
+    r"(?P<day>(?P<day_number>\d+)\s*(?:일\s*차|일차|day|번))"
+    r"|(?P<meal>아침|조식|breakfast|점심|중식|lunch|저녁|석식|dinner|음료|drink|drinks)",
+    re.IGNORECASE,
+)
 _TABLE_VALUE_TOKEN_RE = re.compile(r"^(.+?)(\d+)(장|개|알|잔|봉|봉지|팩|캡슐|정|스푼|큰술|작은술|g|kg|ml|l)?$")
 _FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 _QUERY_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}|[가-힣]{2,}")
@@ -171,6 +176,7 @@ def _build_table_stub_response(
 
     requested_days = [int(day) for day in _DAY_QUERY_RE.findall(prompt)]
     requested_fields = _requested_table_fields(prompt)
+    requested_pairs = _requested_table_field_pairs(prompt)
     rendered_rows: list[str] = []
 
     for item in table_items:
@@ -180,7 +186,16 @@ def _build_table_stub_response(
         day = parsed.get("Day", "").strip()
         if requested_days and day.isdigit() and int(day) not in requested_days:
             continue
-        rendered = _render_table_row(parsed, requested_fields=requested_fields, spoken=spoken)
+        pair_fields: list[str] | None = None
+        if requested_pairs and day.isdigit():
+            pair_fields = requested_pairs.get(int(day))
+            if pair_fields is None:
+                continue
+        rendered = _render_table_row(
+            parsed,
+            requested_fields=pair_fields if pair_fields is not None else requested_fields,
+            spoken=spoken,
+        )
         if rendered and rendered not in rendered_rows:
             rendered_rows.append(rendered)
 
@@ -208,6 +223,49 @@ def _requested_table_fields(prompt: str) -> list[str] | None:
         return matched_fields
     if "메뉴" in prompt:
         return ["Breakfast", "Lunch", "Dinner"]
+    return None
+
+
+def _requested_table_field_pairs(prompt: str) -> dict[int, list[str]] | None:
+    pending_days: list[int] = []
+    pairs: dict[int, list[str]] = {}
+    last_kind = ""
+
+    for match in _TABLE_REQUEST_TOKEN_RE.finditer(prompt):
+        day_number = match.group("day_number")
+        if day_number is not None:
+            day_value = int(day_number)
+            if last_kind == "field":
+                pending_days = [day_value]
+            elif day_value not in pending_days:
+                pending_days.append(day_value)
+            last_kind = "day"
+            continue
+
+        meal_alias = match.group("meal")
+        field = _table_field_for_alias(meal_alias or "")
+        if field is None or not pending_days:
+            continue
+        for day_value in pending_days:
+            day_fields = pairs.setdefault(day_value, [])
+            if field not in day_fields:
+                day_fields.append(field)
+        last_kind = "field"
+
+    return pairs or None
+
+
+def _table_field_for_alias(alias: str) -> str | None:
+    lowered = alias.lower()
+    field_aliases = {
+        "Breakfast": ("아침", "조식", "breakfast"),
+        "Lunch": ("점심", "중식", "lunch"),
+        "Dinner": ("저녁", "석식", "dinner"),
+        "Drinks": ("음료", "drink", "drinks"),
+    }
+    for field, aliases in field_aliases.items():
+        if lowered in aliases:
+            return field
     return None
 
 

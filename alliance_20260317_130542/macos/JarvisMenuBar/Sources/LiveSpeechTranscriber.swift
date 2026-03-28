@@ -62,11 +62,21 @@ final class LiveSpeechTranscriber {
         request?.append(buffer)
     }
 
+    @MainActor
+    func finish() async -> String {
+        request?.endAudio()
+        try? await Task.sleep(for: .milliseconds(250))
+        let transcript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        task?.cancel()
+        request = nil
+        task = nil
+        return transcript
+    }
+
     func stop() {
         request?.endAudio()
         task?.cancel()
         request = nil
         task = nil
-        latestTranscript = ""
     }
 }

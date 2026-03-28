@@ -9,6 +9,8 @@
 - Phase 1 tool surface stays limited to `read_file`, `search_files`, `draft_export`.
 - Writes remain approval-gated.
 - Voice and menu bar layers remain local wrappers over the Python core.
+- Voice/menu-bar regressions are handled by `stage classification -> single-owner fix -> regression fixture update`, not by scattering symptom patches across layers.
+- Transcript repair remains a Python-owned stage; Swift consumes repaired payloads and must not become a second source of truth for semantic STT fixes.
 
 ## Explicit Deferrals
 
@@ -24,3 +26,12 @@
 - Governor may reduce context and retrieved chunk count under pressure.
 - Repeated model/index failures can degrade generation or force search-only mode.
 - SQLite integrity failures force read-only behavior and rebuild recommendation.
+
+## Regression Policy
+
+- Wrong final answers are treated as pipeline bugs, not just UI/TTS bugs.
+- Failures should be classified into one primary stage:
+  `STT`, `transcript_repair`, `planner`, `retrieval`, `response_rendering`, `spoken_response`, or `tts_playback`.
+- Repeatable failures should be added to fixture-backed regression sets.
+- Retrieval/source regressions live in [`tests/fixtures/retrieval_regression_v1.json`](../tests/fixtures/retrieval_regression_v1.json).
+- End-user menu-bar voice regressions live in [`tests/fixtures/menu_acceptance_regression_v1.json`](../tests/fixtures/menu_acceptance_regression_v1.json).

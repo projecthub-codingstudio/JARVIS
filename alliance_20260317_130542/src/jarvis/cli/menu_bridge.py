@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
 import sys
 import tempfile
 import time
+import threading
 import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,6 +32,7 @@ from jarvis.contracts import (
 from jarvis.core.intent_policy import resolve_menu_intent_policy
 from jarvis.identifier_restoration import build_identifier_lexicon, score_identifier_candidates
 from jarvis.query_normalization import normalize_spoken_code_query
+from jarvis.runtime_paths import resolve_menubar_data_dir
 
 from jarvis.runtime.audio_recorder import AudioRecorder
 from jarvis.runtime.mlx_runtime import build_stub_spoken_response
@@ -42,6 +45,10 @@ from jarvis.tools.draft_export import DraftExportTool
 
 _MAX_QUOTE_CHARS = 160
 _TTS_DIR = Path(tempfile.gettempdir()) / "jarvis_tts"
+_TTS_WARMUP_SAMPLE_TEXT = "준비 완료."
+_TTS_INFLIGHT_LOCK = threading.Lock()
+_TTS_INFLIGHT: dict[str, threading.Event] = {}
+_TTS_CACHE_VERSION = "v5"
 _MAX_TEXT_PREVIEW_LINES = 3
 _MAX_TEXT_PREVIEW_CHARS = 88
 _MAX_CODE_PREVIEW_LINES = 6
@@ -49,10 +56,71 @@ _MAX_CODE_PREVIEW_CHARS = 120
 
 
 def _tts_backend() -> str:
-    configured = __import__("os").getenv("JARVIS_TTS_BACKEND", "auto").strip().lower()
+    configured = __import__("os").getenv("JARVIS_TTS_BACKEND", "say").strip().lower()
     if configured in {"auto", "qwen3", "say"}:
         return configured
-    return "auto"
+    return "say"
+
+
+def _tts_cache_key(text: str) -> str:
+    env = __import__("os").environ
+    resolved_tail_pad_ms = env.get("JARVIS_TTS_TAIL_PAD_MS", "").strip() or "220"
+    resolved_en_speaker = env.get("JARVIS_QWEN_TTS_SPEAKER_EN", "").strip() or "Ryan"
+    resolved_ko_speaker = env.get("JARVIS_QWEN_TTS_SPEAKER_KO", "").strip() or "Ryan"
+    resolved_instruct = env.get("JARVIS_QWEN_TTS_INSTRUCT", "").strip() or (
+        "Speak like a calm, polished, male AI assistant with a subtle British-leaning tone. "
+        "Low-medium pitch, measured pacing, precise diction, understated wit, "
+        "never bubbly, never cartoonish, never exaggerated."
+    )
+    resolved_shared_voice = env.get("JARVIS_QWEN_TTS_SHARED_VOICE", "").strip() or "1"
+    resolved_clone_mode = env.get("JARVIS_QWEN_TTS_CLONE_MODE", "").strip() or "xvector"
+    resolved_ref_text_en = env.get("JARVIS_QWEN_TTS_REF_TEXT_EN", "").strip() or env.get("JARVIS_QWEN_TTS_REF_TEXT", "").strip() or (
+        "Good evening. All systems are stable and ready for your command."
+    )
+    resolved_ref_text_ko = env.get("JARVIS_QWEN_TTS_REF_TEXT_KO", "").strip() or env.get("JARVIS_QWEN_TTS_REF_TEXT", "").strip() or (
+        "안녕하세요. 모든 시스템이 안정적으로 작동 중이며 명령을 기다리고 있습니다."
+    )
+    signature = "|".join(
+        [
+            _TTS_CACHE_VERSION,
+            _tts_backend(),
+            env.get("JARVIS_TTS_VOICE", ""),
+            resolved_en_speaker,
+            resolved_ko_speaker,
+            resolved_instruct,
+            resolved_shared_voice,
+            resolved_clone_mode,
+            resolved_ref_text_en,
+            resolved_ref_text_ko,
+            resolved_tail_pad_ms,
+            text,
+        ]
+    )
+    return hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
+
+def _tts_cache_path_for(text: str) -> Path:
+    return _TTS_DIR / f"speech_cache_{_tts_cache_key(text)}.aiff"
+
+
+def _claim_tts_generation(cache_path: Path) -> tuple[bool, threading.Event]:
+    key = str(cache_path)
+    with _TTS_INFLIGHT_LOCK:
+        existing = _TTS_INFLIGHT.get(key)
+        if existing is not None:
+            return False, existing
+        event = threading.Event()
+        _TTS_INFLIGHT[key] = event
+        return True, event
+
+
+def _release_tts_generation(cache_path: Path, event: threading.Event) -> None:
+    key = str(cache_path)
+    with _TTS_INFLIGHT_LOCK:
+        current = _TTS_INFLIGHT.get(key)
+        if current is event:
+            _TTS_INFLIGHT.pop(key, None)
+    event.set()
 
 
 def _detect_source_type(path: str) -> str:
@@ -427,11 +495,21 @@ def build_menu_response(
         response_type=response_type,
         primary_source_type=primary_source_type,
     )
-    exploration = _build_exploration_state(
-        query=turn.user_input,
-        interaction_mode=interaction_mode,
-        knowledge_base_path=knowledge_base_path,
+    exploration = (
+        _build_cited_document_exploration_state(
+            citations=citations,
+            source_presentation=source_presentation,
+            knowledge_base_path=knowledge_base_path,
+        )
+        if interaction_mode == "document_exploration" and citation_count > 0
+        else None
     )
+    if exploration is None:
+        exploration = _build_exploration_state(
+            query=turn.user_input,
+            interaction_mode=interaction_mode,
+            knowledge_base_path=knowledge_base_path,
+        )
     guide_directive = _build_guide_directive(
         query=turn.user_input,
         response_text=full_text,
@@ -550,6 +628,65 @@ def _build_exploration_state(
         file_candidates=files[:4],
         class_candidates=classes[:4],
         function_candidates=functions[:4],
+    )
+
+
+def _relative_exploration_path(full_path: str, knowledge_base_path: Path | None) -> str:
+    if not full_path:
+        return ""
+    candidate = Path(full_path)
+    if knowledge_base_path is not None:
+        try:
+            return candidate.resolve().relative_to(knowledge_base_path.resolve()).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            pass
+    return candidate.name or full_path
+
+
+def _build_cited_document_exploration_state(
+    *,
+    citations: list[MenuBarCitation],
+    source_presentation: MenuBarSourcePresentation | None,
+    knowledge_base_path: Path | None,
+) -> MenuBarExplorationState | None:
+    document_citations = [
+        citation for citation in citations
+        if citation.source_type == "document" and citation.full_source_path
+    ]
+    if not document_citations:
+        return None
+
+    preview_by_path: dict[str, str] = {}
+    if source_presentation is not None and source_presentation.full_source_path:
+        preview_by_path[source_presentation.full_source_path] = "\n".join(
+            line.strip() for line in source_presentation.preview_lines if line.strip()
+        ).strip()
+
+    ranked: list[MenuBarExplorationItem] = []
+    seen_paths: set[str] = set()
+    for citation in document_citations:
+        full_path = citation.full_source_path
+        if full_path in seen_paths:
+            continue
+        seen_paths.add(full_path)
+        preview = preview_by_path.get(full_path) or citation.quote
+        ranked.append(
+            MenuBarExplorationItem(
+                label=citation.source_path,
+                kind="document",
+                path=_relative_exploration_path(full_path, knowledge_base_path),
+                score=round(citation.relevance_score, 3),
+                preview=preview,
+            )
+        )
+
+    if not ranked:
+        return None
+
+    return MenuBarExplorationState(
+        mode="document_exploration",
+        target_document=ranked[0].label,
+        document_candidates=ranked[:4],
     )
 
 
@@ -773,7 +910,7 @@ def _build_context(*, model_id: str, reporter=None):
         start_watcher_enabled=False,
         start_background_backfill=False,
         allow_mlx=model_id.strip().lower() != "stub",
-        data_dir=Path.cwd() / ".jarvis-menubar",
+        data_dir=resolve_menubar_data_dir(),
         reporter=reporter,
     )
 
@@ -803,6 +940,14 @@ def _response_from_context(*, context: object, turn: ConversationTurn) -> MenuBa
         knowledge_base_path=context.knowledge_base_path,
         planner_analysis=planner_analysis,
     )
+
+
+def _normalize_bridge_query(query: str) -> str:
+    normalized = normalize_spoken_code_query(
+        query,
+        knowledge_base_path=_resolve_bridge_knowledge_base_path(),
+    ).strip()
+    return normalized or query.strip()
 
 
 def _build_navigation_window(*, query: str, model_id: str) -> MenuBarExplorationState:
@@ -875,14 +1020,27 @@ def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse |
 
 
 def _run_query(*, query: str, model_id: str) -> MenuBarResponse:
-    if override := _intent_override_response(query, model_id=model_id):
+    normalized_query = _normalize_bridge_query(query)
+    if override := _intent_override_response(normalized_query, model_id=model_id):
         return override
     context = _build_context(model_id=model_id)
     try:
-        turn = context.orchestrator.handle_turn(query)
-        return _response_from_context(context=context, turn=turn)
+        return _run_query_in_context(
+            query=query,
+            model_id=model_id,
+            context=context,
+        )
     finally:
         shutdown_runtime_context(context)
+
+
+def _run_query_in_context(*, query: str, model_id: str, context: object) -> MenuBarResponse:
+    normalized_query = _normalize_bridge_query(query)
+    if override := _intent_override_response(normalized_query, model_id=model_id):
+        return override
+    turn = context.orchestrator.handle_turn(normalized_query)
+    turn.user_input = query
+    return _response_from_context(context=context, turn=turn)
 
 
 def _record_once(*, model_id: str, device: str | None = None) -> MenuBarResponse:
@@ -973,9 +1131,50 @@ def _synthesize_speech(*, text: str) -> MenuBarSpeechResponse:
         backend=_tts_backend(),
     )
     _TTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = _TTS_DIR / f"speech_{int(time.time() * 1000)}.aiff"
-    result = tts_runtime.synthesize(clean_text, output_path)
-    return MenuBarSpeechResponse(audio_path=str(result))
+    cache_path = _tts_cache_path_for(clean_text)
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return MenuBarSpeechResponse(audio_path=str(cache_path))
+
+    owner, event = _claim_tts_generation(cache_path)
+    if not owner:
+        event.wait(timeout=180)
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            return MenuBarSpeechResponse(audio_path=str(cache_path))
+        owner, event = _claim_tts_generation(cache_path)
+        if not owner:
+            event.wait(timeout=30)
+            if cache_path.exists() and cache_path.stat().st_size > 0:
+                return MenuBarSpeechResponse(audio_path=str(cache_path))
+            raise RuntimeError("기존 TTS 생성이 끝나지 않았습니다.")
+
+    try:
+        temp_output_path = _TTS_DIR / f"speech_{int(time.time() * 1000)}.aiff"
+        result = tts_runtime.synthesize(clean_text, temp_output_path)
+        if result != cache_path:
+            result.replace(cache_path)
+        return MenuBarSpeechResponse(audio_path=str(cache_path))
+    finally:
+        _release_tts_generation(cache_path, event)
+
+
+def _warmup_tts() -> bool:
+    tts_runtime = LocalTTSRuntime(
+        voice=__import__("os").getenv("JARVIS_TTS_VOICE"),
+        backend=_tts_backend(),
+    )
+    warmed = tts_runtime.warmup()
+    if not warmed:
+        return False
+    if _tts_backend() == "say":
+        return True
+    try:
+        _TTS_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _tts_cache_path_for(_TTS_WARMUP_SAMPLE_TEXT)
+        if not cache_path.exists() or cache_path.stat().st_size <= 0:
+            tts_runtime.synthesize(_TTS_WARMUP_SAMPLE_TEXT, cache_path)
+    except Exception:
+        logging.getLogger(__name__).debug("full TTS warmup probe failed", exc_info=True)
+    return True
 
 
 def _record_once_in_context(*, context: object, device: str | None = None) -> MenuBarResponse:
@@ -1167,7 +1366,7 @@ def _health_light() -> dict[str, object]:
     from jarvis.retrieval.vector_index import VectorIndex
 
     kb_path = resolve_knowledge_base_path()
-    data_dir = Path.cwd() / ".jarvis-menubar"
+    data_dir = resolve_menubar_data_dir()
     config = JarvisConfig(
         data_dir=data_dir,
         watched_folders=[kb_path] if kb_path.exists() else [],

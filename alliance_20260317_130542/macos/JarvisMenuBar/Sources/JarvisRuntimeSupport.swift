@@ -5,6 +5,40 @@ private func shellQuote(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
+private let bridgeFallbackExecutableDirectories = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+]
+
+private func configuredExecutablePath(
+    from basePath: String?,
+    configuration: BridgeConfiguration
+) -> String {
+    let fileManager = FileManager.default
+    let preferredDirectories = [
+        configuration.allianceRoot.appendingPathComponent(".venv/bin", isDirectory: true).path,
+    ] + bridgeFallbackExecutableDirectories
+
+    var orderedEntries: [String] = []
+    var seen = Set<String>()
+    for candidate in preferredDirectories {
+        guard fileManager.fileExists(atPath: candidate) else { continue }
+        if seen.insert(candidate).inserted {
+            orderedEntries.append(candidate)
+        }
+    }
+    for candidate in (basePath ?? "").split(separator: ":").map(String.init) where !candidate.isEmpty {
+        if seen.insert(candidate).inserted {
+            orderedEntries.append(candidate)
+        }
+    }
+    return orderedEntries.joined(separator: ":")
+}
+
 struct BridgeConfiguration {
     let allianceRoot: URL
     let pythonExecutable: String
@@ -103,7 +137,12 @@ func configuredBridgeEnvironment(
     knowledgeBaseOverridePath: String? = nil
 ) -> [String: String] {
     var env = base
+    env["JARVIS_ALLIANCE_ROOT"] = configuration.allianceRoot.path
+    env["JARVIS_MENUBAR_DATA_DIR"] = configuration.allianceRoot
+        .appendingPathComponent(".jarvis-menubar", isDirectory: true)
+        .path
     env["PYTHONPATH"] = configuration.pythonPath
+    env["PATH"] = configuredExecutablePath(from: env["PATH"], configuration: configuration)
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = env["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
     env["TRANSFORMERS_VERBOSITY"] = env["TRANSFORMERS_VERBOSITY"] ?? "error"
     env["TOKENIZERS_PARALLELISM"] = env["TOKENIZERS_PARALLELISM"] ?? "false"
@@ -124,6 +163,23 @@ func configuredBridgeEnvironment(
         env["JARVIS_STT_MODEL"] = env["JARVIS_STT_MODEL"] ?? sttModel
     }
     return env
+}
+
+func configuredTTSBackend(from environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+    let configured = (environment["JARVIS_TTS_BACKEND"] ?? "say")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    switch configured {
+    case "auto", "qwen3", "say":
+        return configured
+    default:
+        return "say"
+    }
+}
+
+func ttsPrefetchEnabled(from environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    let backend = configuredTTSBackend(from: environment)
+    return backend == "qwen3" || backend == "auto"
 }
 
 func configureShellPythonProcess(

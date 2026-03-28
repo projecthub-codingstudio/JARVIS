@@ -19,6 +19,7 @@ _CLASS_DEF_RE = re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE
 _FUNC_DEF_RE = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 _CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
 _QUERY_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_.-]+")
+_ASCII_IDENTIFIER_HINT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.-]{2,}\b")
 _MAX_FILES = 80
 _MAX_FILE_BYTES = 256_000
 _MAX_REWRITE_CANDIDATES = 4
@@ -156,6 +157,24 @@ def score_identifier_candidates(
             evidence=tuple(entry.tokens[:3] or (entry.canonical,)),
         ))
 
+    has_code_anchor = _query_has_code_anchor(query, category_hints=category_hints)
+    if not has_code_anchor:
+        has_strong_code_context = any(
+            candidate.kind in {"filename", "class", "function"} and candidate.score >= 0.82
+            for candidate in candidates
+        )
+        filtered: list[IdentifierCandidate] = []
+        for candidate in candidates:
+            if candidate.kind == "symbol" and not has_strong_code_context:
+                continue
+            if (
+                candidate.kind in {"filename", "class", "function"}
+                and candidate.score < 0.82
+            ):
+                continue
+            filtered.append(candidate)
+        candidates = filtered
+
     ranked = sorted(candidates, key=lambda item: (item.score, len(item.canonical)), reverse=True)
     deduped: list[IdentifierCandidate] = []
     seen: set[tuple[str, str]] = set()
@@ -288,6 +307,13 @@ def _detect_category_hints(query: str) -> dict[str, float]:
         if any(word.lower() in lowered for word in words):
             hints[kind] += 0.16
     return hints
+
+
+def _query_has_code_anchor(query: str, *, category_hints: dict[str, float] | None = None) -> bool:
+    if _ASCII_IDENTIFIER_HINT_RE.search(query):
+        return True
+    hints = category_hints if category_hints is not None else _detect_category_hints(query)
+    return any(boost > 0.0 for boost in hints.values())
 
 
 def _best_phrase_score(query_forms: tuple[str, ...], aliases: tuple[str, ...]) -> float:

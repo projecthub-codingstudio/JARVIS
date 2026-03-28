@@ -7,6 +7,22 @@ func appLog(_ message: String) {
     fputs("[JarvisMenuBar] \(message)\n", stderr)
 }
 
+private final class SpeechSynthDelegateBox: NSObject, NSSpeechSynthesizerDelegate {
+    var onFinish: ((Bool) -> Void)?
+
+    func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
+        onFinish?(finishedSpeaking)
+    }
+}
+
+private func monotonicSeconds() -> Double {
+    Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+}
+
+private func formatElapsed(_ seconds: Double) -> String {
+    String(format: "%.2fs", seconds)
+}
+
 enum MenuBarIconFactory {
     static let image: NSImage = {
         let size = NSSize(width: 18, height: 18)
@@ -277,7 +293,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
     private var wakeWordSession: WakeWordSession?
     @Published var voiceLoopPhase: VoiceLoopPhase = .idle
-    @Published var isSpeaking = false
+    @Published var isSpeaking = false {
+        didSet { syncGuideRuntimeState() }
+    }
     @Published var lastTranscript = ""
     @Published var health: HealthResponse?
     @Published var healthMessage = "health pending"
@@ -312,6 +330,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     @Published var inputDeviceStatusMessage = "시스템 기본 입력 장치를 사용합니다."
 
     private let bridge: any JarvisBackendClient
+    private let ttsPrefetchBridge: any JarvisBackendClient
     let guide = JarvisGuideState()
     private let bypassMonitor = AudioBypassMonitor()
     private let liveTranscriber = LiveSpeechTranscriber()
@@ -334,8 +353,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     @Published var microphoneReady = false
 
-    init(bridge: any JarvisBackendClient = JarvisServiceClient()) {
+    init(
+        bridge: any JarvisBackendClient = JarvisServiceClient(),
+        ttsPrefetchBridge: any JarvisBackendClient = JarvisServiceClient()
+    ) {
         self.bridge = bridge
+        self.ttsPrefetchBridge = ttsPrefetchBridge
         self.pttDurationSeconds = Double(ProcessInfo.processInfo.environment["JARVIS_PTT_SECONDS"] ?? "20") ?? 20
         self.selectedInputDeviceID = UserDefaults.standard.string(forKey: Self.selectedInputDeviceDefaultsKey) ?? ""
         let restoredKnowledgeBaseURL = Self.restoreKnowledgeBaseDirectoryURL()
@@ -352,6 +375,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
         refreshAudioInputDevices()
         Task {
             await bridge.updateKnowledgeBasePath(defaultKnowledgeBasePath)
+            await ttsPrefetchBridge.updateKnowledgeBasePath(defaultKnowledgeBasePath)
+            await bridge.warmup()
             await refreshHealth()
         }
 
@@ -363,9 +388,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
                     self.guideTurnPreparedForCurrentRecording = true
                 }
                 self.lastTranscript = transcript
-                self.query = transcript
-                self.normalizeLiveQuery(transcript)
-                self.refreshNavigationWindow(for: transcript, immediate: true)
+                self.query = Self.compactInputText(transcript)
             }
         }
 
@@ -395,6 +418,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
     }
 
+    private func finishLiveTranscription() async -> String {
+        partialTranscriptionActive = false
+        guideTurnPreparedForCurrentRecording = false
+        syncGuideRuntimeState()
+        queryNormalizationTask?.cancel()
+        nativeRecorder.onLiveAudioBuffer = nil
+        return await liveTranscriber.finish()
+    }
+
     private func stopLiveTranscription() {
         partialTranscriptionActive = false
         guideTurnPreparedForCurrentRecording = false
@@ -408,6 +440,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         guide.updateRuntimeState(
             isLoading: isLoading,
             isStreaming: isStreaming,
+            isSpeaking: isSpeaking,
             voiceLoopEnabled: voiceLoopEnabled,
             wakeWordEnabled: wakeWordEnabled,
             partialTranscriptionActive: partialTranscriptionActive
@@ -415,23 +448,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     private func normalizeLiveQuery(_ rawQuery: String) {
-        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         queryNormalizationTask?.cancel()
-        guard !trimmed.isEmpty else { return }
-        queryNormalizationTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let normalized = try await bridge.normalizeQuery(trimmed)
-                await MainActor.run {
-                    guard self.partialTranscriptionActive else { return }
-                    if self.lastTranscript == rawQuery {
-                        self.query = normalized
-                    }
-                }
-            } catch {
-                // Keep raw partial transcript if normalization fails.
-            }
-        }
+        let normalized = Self.compactInputText(rawQuery)
+        guard partialTranscriptionActive, lastTranscript == rawQuery else { return }
+        query = normalized
     }
 
     func refreshNavigationWindow(for rawQuery: String, immediate: Bool = false) {
@@ -530,7 +550,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     func submit() {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = Self.compactInputText(query)
         guard !trimmed.isEmpty else {
             return
         }
@@ -545,6 +565,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         isStreaming = true
         errorMessage = nil
         transitionToAnswering()
+        startTTSPrefetchIfSupported(for: resolvedQuery)
         Task {
             let stream = await bridge.askStreaming(resolvedQuery)
             for await event in stream {
@@ -591,29 +612,43 @@ final class JarvisMenuBarViewModel: ObservableObject {
     func recordOnce() {
         Task {
             do {
+                let turnStart = monotonicSeconds()
                 isLoading = true
                 errorMessage = nil
                 beginRecordingPhase()
                 // Step 1: Native recording via AVCaptureDevice (no ffmpeg)
                 let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
                 startLiveTranscription()
+                let recordingStart = monotonicSeconds()
                 let audioURL = try await nativeRecorder.record(
                     deviceID: deviceID,
                     duration: pttDurationSeconds
                 )
-                stopLiveTranscription()
-                appLog("Recording done: \(audioURL.path)")
+                let liveTranscript = await finishLiveTranscription()
+                appLog("Recording done in \(formatElapsed(monotonicSeconds() - recordingStart)): \(audioURL.path)")
 
                 cancelPhaseTransition()
                 voiceLoopPhase = .transcribing
 
                 // Step 2: Transcribe via Python whisper-cli
-                let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
-                let normalizedTranscript = await normalizeSubmissionQuery(transcript.transcript)
-                lastTranscript = transcript.transcript
-                query = normalizedTranscript
-                refreshNavigationWindow(for: normalizedTranscript)
-                guard let resolvedQuery = prepareQueryForSubmission(normalizedTranscript) else {
+                let transcriptionStart = monotonicSeconds()
+                let transcriptText: String
+                let transcriptSource: String
+                if !liveTranscript.isEmpty {
+                    transcriptText = liveTranscript
+                    transcriptSource = "live"
+                } else {
+                    appLog("Live transcription unavailable; falling back to whisper-cli")
+                    let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
+                    transcriptText = transcript.transcript
+                    transcriptSource = "whisper"
+                }
+                let repairedTranscript = try await repairTranscriptForSubmission(transcriptText)
+                appLog("Transcription ready in \(formatElapsed(monotonicSeconds() - transcriptionStart)) [\(transcriptSource)]: \(Self.logPreview(for: repairedTranscript.displayText))")
+                lastTranscript = repairedTranscript.rawText
+                query = repairedTranscript.displayText
+                refreshNavigationWindow(for: repairedTranscript.displayText)
+                guard let resolvedQuery = prepareQueryForSubmission(repairedTranscript.finalQuery) else {
                     isLoading = false
                     if !voiceLoopEnabled {
                         cancelPhaseTransition()
@@ -626,8 +661,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 guide.prepareForNewTurn(mode: currentInteractionMode)
                 voiceLoopPhase = .answering
                 submittedQueryForPendingContext = resolvedQuery
+                let answerStart = monotonicSeconds()
+                startTTSPrefetchIfSupported(for: resolvedQuery)
                 let payload = try await bridge.ask(resolvedQuery)
-                applyResponsePayload(payload, rawUserQuery: normalizedTranscript)
+                appLog("Answer ready in \(formatElapsed(monotonicSeconds() - answerStart)) / total \(formatElapsed(monotonicSeconds() - turnStart))")
+                applyResponsePayload(payload, rawUserQuery: repairedTranscript.displayText)
                 exportMessage = nil
 
                 // Step 4: TTS — speak the response
@@ -676,7 +714,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     // MARK: - TTS Playback
 
-    private var ttsProcess: Process?
+    private var audioPlayer: AVAudioPlayer?
+    private var speechSynthesizer: NSSpeechSynthesizer?
+    private var speechSynthDelegateBox: SpeechSynthDelegateBox?
 
     private func dismissGuideAfterSpeechIfNeeded() {
         guard !guide.hasClarification else { return }
@@ -712,48 +752,163 @@ final class JarvisMenuBarViewModel: ObservableObject {
     func speakResponse(_ text: String) {
         let stripped = Self.stripForTTS(text)
         guard !stripped.isEmpty else { return }
+        let segments = Self.ttsSegments(for: stripped)
 
         stopTTS()
         isSpeaking = true
+        let ttsStart = monotonicSeconds()
+        appLog("TTS source text (\(stripped.count) chars): \(Self.logPreview(for: stripped))")
 
-        let playbackTask = Task.detached(priority: .userInitiated) { [weak self] in
+        let playbackTask = Task(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let speech = try await self.bridge.synthesizeSpeech(text: stripped)
-                try Task.checkCancellation()
-
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
-                process.arguments = [speech.audioPath]
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                await MainActor.run {
-                    self.ttsProcess = process
+                appLog("TTS request started")
+                let completed: Bool
+                if configuredTTSBackend() == "say" {
+                    let directText = segments.joined(separator: ". ")
+                    completed = try await self.playDirectSpeech(directText)
+                } else if segments.count > 1 {
+                    completed = try await self.playSegmentedSpeech(
+                        segments,
+                        overallStart: ttsStart
+                    )
+                } else {
+                    let speech = try await self.bridge.synthesizeSpeech(text: stripped)
+                    completed = try await self.playSpeechFile(
+                        speech,
+                        startedAt: ttsStart,
+                        segmentLabel: nil
+                    )
                 }
-                try process.run()
-                process.waitUntilExit()
-                let terminatedNormally = process.terminationReason == .exit
-                    && process.terminationStatus == 0
                 await MainActor.run {
                     self.isSpeaking = false
-                    self.ttsProcess = nil
-                    if terminatedNormally {
+                    if completed {
                         self.dismissGuideAfterSpeechIfNeeded()
                     }
                 }
+                if completed {
+                    appLog("TTS playback finished")
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.audioPlayer?.stop()
+                    self.audioPlayer = nil
+                    self.isSpeaking = false
+                }
+                appLog("TTS playback cancelled")
             } catch {
                 appLog("TTS failed: \(error.localizedDescription)")
                 await MainActor.run {
+                    self.audioPlayer?.stop()
+                    self.audioPlayer = nil
                     self.isSpeaking = false
-                    self.ttsProcess = nil
                 }
             }
         }
         ttsPlaybackTask = playbackTask
     }
 
+    @MainActor
+    private func directSpeechVoiceIdentifier(for text: String) -> NSSpeechSynthesizer.VoiceName? {
+        let env = ProcessInfo.processInfo.environment
+        let override = env["JARVIS_TTS_VOICE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let desiredName: String
+        if !override.isEmpty {
+            desiredName = override
+        } else {
+            let containsHangul = text.unicodeScalars.contains { scalar in
+                (0xAC00...0xD7A3).contains(scalar.value) || (0x3131...0x3163).contains(scalar.value)
+            }
+            desiredName = containsHangul ? "Yuna (Premium)" : "Reed (영어(영국))"
+        }
+
+        let voices = NSSpeechSynthesizer.availableVoices
+        func resolve(_ targetName: String) -> NSSpeechSynthesizer.VoiceName? {
+            for identifier in voices {
+                let attributes = NSSpeechSynthesizer.attributes(forVoice: identifier)
+                let name = (attributes[.name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if name == targetName {
+                    return identifier
+                }
+            }
+            return nil
+        }
+
+        if let identifier = resolve(desiredName) {
+            return identifier
+        }
+        if desiredName == "Yuna (Premium)", let identifier = resolve("Yuna") {
+            return identifier
+        }
+        if text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }),
+           let identifier = resolve("Reed (한국어(대한민국))") {
+            return identifier
+        }
+        return resolve("Reed (영어(영국))")
+    }
+
+    @MainActor
+    private func playDirectSpeech(_ text: String) async throws -> Bool {
+        let synthesizer = NSSpeechSynthesizer()
+        if let voiceIdentifier = directSpeechVoiceIdentifier(for: text) {
+            synthesizer.setVoice(voiceIdentifier)
+        }
+        synthesizer.rate = 155
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let delegate = SpeechSynthDelegateBox()
+            delegate.onFinish = { [weak self, weak synthesizer] finishedSpeaking in
+                if let self, self.speechSynthesizer === synthesizer {
+                    self.speechSynthesizer = nil
+                    self.speechSynthDelegateBox = nil
+                }
+                continuation.resume(returning: finishedSpeaking)
+            }
+
+            self.speechSynthDelegateBox = delegate
+            self.speechSynthesizer = synthesizer
+            synthesizer.delegate = delegate
+            guard synthesizer.startSpeaking(text) else {
+                self.speechSynthesizer = nil
+                self.speechSynthDelegateBox = nil
+                continuation.resume(
+                    throwing: NSError(
+                        domain: "JarvisMenuBar",
+                        code: 6,
+                        userInfo: [NSLocalizedDescriptionKey: "NSSpeechSynthesizer가 재생을 시작하지 못했습니다."]
+                    )
+                )
+                return
+            }
+            appLog("TTS direct playback started")
+        }
+    }
+
     /// Normalize lightweight formatting before TTS.
     /// Backend should provide spoken text; this only removes presentation markup.
+    static func sanitizeRecognizedQuery(_ text: String) -> String {
+        compactInputText(text)
+    }
+
+    static func compactInputText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func logPreview(for text: String, limit: Int = 96) -> String {
+        let compact = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard compact.count > limit else { return compact }
+        let endIndex = compact.index(compact.startIndex, offsetBy: limit)
+        return String(compact[..<endIndex]) + "..."
+    }
+
     static func stripForTTS(_ text: String) -> String {
         var result = text
 
@@ -792,12 +947,186 @@ final class JarvisMenuBarViewModel: ObservableObject {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func ttsSegments(for text: String) -> [String] {
+        let parts = text
+            .components(separatedBy: " / ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? [] : parts
+    }
+
+    private func playSegmentedSpeech(
+        _ segments: [String],
+        overallStart: Double
+    ) async throws -> Bool {
+        var speeches: [SpeechResponse] = []
+        speeches.reserveCapacity(segments.count)
+
+        for (index, segment) in segments.enumerated() {
+            let speech = try await bridge.synthesizeSpeech(text: segment)
+            speeches.append(speech)
+            try logSpeechReady(
+                speech,
+                startedAt: overallStart,
+                segmentLabel: "\(index + 1)/\(segments.count)"
+            )
+        }
+
+        let stitchedSpeech = try stitchSpeechFiles(speeches, startedAt: overallStart)
+        return try await playSpeechFile(
+            stitchedSpeech,
+            startedAt: overallStart,
+            segmentLabel: nil
+        )
+    }
+
+    private func logSpeechReady(
+        _ speech: SpeechResponse,
+        startedAt: Double,
+        segmentLabel: String?
+    ) throws {
+        let audioURL = URL(fileURLWithPath: speech.audioPath)
+        let attributes = try FileManager.default.attributesOfItem(atPath: audioURL.path)
+        let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        if let segmentLabel {
+            appLog("TTS segment \(segmentLabel) ready in \(formatElapsed(monotonicSeconds() - startedAt)): \(audioURL.path) (\(fileSize) bytes)")
+        } else {
+            appLog("TTS file ready in \(formatElapsed(monotonicSeconds() - startedAt)): \(audioURL.path) (\(fileSize) bytes)")
+        }
+    }
+
+    private func stitchSpeechFiles(
+        _ speeches: [SpeechResponse],
+        startedAt: Double
+    ) throws -> SpeechResponse {
+        guard let firstSpeech = speeches.first else {
+            throw NSError(
+                domain: "JarvisMenuBar",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "이어붙일 음성 파일이 없습니다."]
+            )
+        }
+        if speeches.count == 1 {
+            try logSpeechReady(firstSpeech, startedAt: startedAt, segmentLabel: nil)
+            return firstSpeech
+        }
+
+        let outputDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("jarvis_tts", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outputDirectory,
+            withIntermediateDirectories: true
+        )
+        let stitchedURL = outputDirectory.appendingPathComponent(
+            "speech_stitched_\(UUID().uuidString).aiff"
+        )
+
+        let firstURL = URL(fileURLWithPath: firstSpeech.audioPath)
+        let firstFile = try AVAudioFile(forReading: firstURL)
+        let outputFile = try AVAudioFile(
+            forWriting: stitchedURL,
+            settings: firstFile.fileFormat.settings,
+            commonFormat: firstFile.processingFormat.commonFormat,
+            interleaved: firstFile.processingFormat.isInterleaved
+        )
+
+        for speech in speeches {
+            let inputURL = URL(fileURLWithPath: speech.audioPath)
+            let inputFile = try AVAudioFile(forReading: inputURL)
+            let inputFormat = inputFile.processingFormat
+            let referenceFormat = firstFile.processingFormat
+            guard inputFormat.sampleRate == referenceFormat.sampleRate,
+                  inputFormat.channelCount == referenceFormat.channelCount,
+                  inputFormat.commonFormat == referenceFormat.commonFormat,
+                  inputFormat.isInterleaved == referenceFormat.isInterleaved else {
+                throw NSError(
+                    domain: "JarvisMenuBar",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "세그먼트 음성 포맷이 서로 달라 이어붙일 수 없습니다."]
+                )
+            }
+
+            while true {
+                guard let buffer = AVAudioPCMBuffer(
+                    pcmFormat: inputFormat,
+                    frameCapacity: 4096
+                ) else {
+                    throw NSError(
+                        domain: "JarvisMenuBar",
+                        code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "오디오 버퍼를 생성할 수 없습니다."]
+                    )
+                }
+                try inputFile.read(into: buffer)
+                if buffer.frameLength == 0 {
+                    break
+                }
+                try outputFile.write(from: buffer)
+            }
+        }
+
+        let stitchedSpeech = SpeechResponse(audioPath: stitchedURL.path)
+        try logSpeechReady(stitchedSpeech, startedAt: startedAt, segmentLabel: nil)
+        return stitchedSpeech
+    }
+
+    private func playSpeechFile(
+        _ speech: SpeechResponse,
+        startedAt: Double,
+        segmentLabel: String?
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        let audioURL = URL(fileURLWithPath: speech.audioPath)
+
+        if segmentLabel != nil {
+            try logSpeechReady(speech, startedAt: startedAt, segmentLabel: segmentLabel)
+        } else if !speech.audioPath.contains("speech_stitched_") {
+            try logSpeechReady(speech, startedAt: startedAt, segmentLabel: nil)
+        }
+
+        let player = try AVAudioPlayer(contentsOf: audioURL)
+        player.prepareToPlay()
+        guard player.play() else {
+            throw NSError(
+                domain: "JarvisMenuBar",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer가 재생을 시작하지 못했습니다."]
+            )
+        }
+        await MainActor.run {
+            self.audioPlayer = player
+        }
+        appLog("TTS playback started")
+
+        while !Task.isCancelled {
+            let stillPlaying = await MainActor.run {
+                self.audioPlayer === player && player.isPlaying
+            }
+            if !stillPlaying {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+
+        let completed = await MainActor.run {
+            let finished = self.audioPlayer === player && !player.isPlaying
+            if self.audioPlayer === player {
+                self.audioPlayer = nil
+            }
+            return finished
+        }
+        return completed
+    }
+
     /// Stop any currently playing TTS.
     func stopTTS() {
         ttsPlaybackTask?.cancel()
         ttsPlaybackTask = nil
-        ttsProcess?.terminate()
-        ttsProcess = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        speechSynthesizer?.stopSpeaking()
+        speechSynthesizer = nil
+        speechSynthDelegateBox = nil
         isSpeaking = false
     }
 
@@ -1013,6 +1342,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         Task {
             self.startMonitoringKnowledgeBaseSetup()
             await bridge.updateKnowledgeBasePath(normalized)
+            await ttsPrefetchBridge.updateKnowledgeBasePath(normalized)
             await bridge.warmup()
             await refreshHealth()
         }
@@ -1252,22 +1582,29 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 deviceID: deviceID,
                 duration: pttDurationSeconds
             )
-            stopLiveTranscription()
+            let liveTranscript = await finishLiveTranscription()
             if Task.isCancelled {
                 return nil
             }
             cancelPhaseTransition()
             voiceLoopPhase = .transcribing
 
-            let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
-            let normalizedTranscript = await normalizeSubmissionQuery(transcript.transcript)
+            let transcriptText: String
+            if !liveTranscript.isEmpty {
+                transcriptText = liveTranscript
+            } else {
+                appLog("Voice loop live transcription unavailable; falling back to whisper-cli")
+                let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
+                transcriptText = transcript.transcript
+            }
+            let repairedTranscript = try await repairTranscriptForSubmission(transcriptText)
             if !guideTurnPreparedForCurrentRecording {
                 guideTurnPreparedForCurrentRecording = true
             }
-            lastTranscript = transcript.transcript
-            query = normalizedTranscript
-            refreshNavigationWindow(for: normalizedTranscript)
-            guard let resolvedQuery = prepareQueryForSubmission(normalizedTranscript) else {
+            lastTranscript = repairedTranscript.rawText
+            query = repairedTranscript.displayText
+            refreshNavigationWindow(for: repairedTranscript.displayText)
+            guard let resolvedQuery = prepareQueryForSubmission(repairedTranscript.finalQuery) else {
                 isLoading = false
                 voiceLoopPhase = .cooldown
                 return successLoopDelay
@@ -1276,11 +1613,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
             voiceLoopPhase = .answering
             guide.prepareForNewTurn(mode: currentInteractionMode)
             submittedQueryForPendingContext = resolvedQuery
+            startTTSPrefetchIfSupported(for: resolvedQuery)
             let payload = try await bridge.ask(resolvedQuery)
             if Task.isCancelled {
                 return nil
             }
-            applyResponsePayload(payload, rawUserQuery: normalizedTranscript)
+            applyResponsePayload(payload, rawUserQuery: repairedTranscript.displayText)
             exportMessage = nil
             errorMessage = nil
             consecutiveLoopErrors = 0
@@ -1377,6 +1715,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
         return .generalQuery
     }
 
+    var isLiveVoicePreviewActive: Bool {
+        partialTranscriptionActive
+    }
+
     var currentExplorationItems: [MenuExplorationItem] {
         guide.currentItems
     }
@@ -1390,7 +1732,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     var shouldShowGuidePanel: Bool {
-        guide.shouldShowPanel()
+        guide.shouldShowPanel(isSpeaking: isSpeaking)
     }
 
     func candidateNumber(for item: MenuExplorationItem) -> Int? {
@@ -1419,17 +1761,31 @@ final class JarvisMenuBarViewModel: ObservableObject {
         if let mergedClarificationQuery = consumePendingClarificationAnswer(rawQuery) {
             return resolvedSubmissionQuery(mergedClarificationQuery)
         }
+        guard sourceExplorationSessionActive || documentExplorationSessionActive else {
+            return rawQuery
+        }
         return resolvedSubmissionQuery(rawQuery)
     }
 
-    private func normalizeSubmissionQuery(_ rawQuery: String) async -> String {
-        let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return trimmed }
-        do {
-            return try await bridge.normalizeQuery(trimmed)
-        } catch {
-            appLog("query normalization failed: \(error.localizedDescription)")
-            return trimmed
+    private func repairTranscriptForSubmission(_ rawQuery: String) async throws -> TranscriptRepairPayload {
+        try await bridge.repairTranscript(rawQuery)
+    }
+
+    private func startTTSPrefetchIfSupported(for query: String) {
+        let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        guard ttsPrefetchEnabled() else { return }
+        let prefetchBridge = self.ttsPrefetchBridge
+        Task.detached(priority: .background) {
+            appLog("TTS prefetch request started")
+            do {
+                let result = try await prefetchBridge.prefetchQueryTTS(cleaned)
+                if result.started {
+                    appLog("TTS prefetch queued (\(result.predictedText.count) chars)")
+                }
+            } catch {
+                // Best-effort only; prefetch should never disrupt ask/TTS flow.
+            }
         }
     }
 
@@ -2345,7 +2701,9 @@ struct JarvisMenuContentView: View {
                         TextField("질문을 입력하세요", text: $viewModel.query)
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: viewModel.query) { _, newValue in
-                                viewModel.refreshNavigationWindow(for: newValue)
+                                if !viewModel.isLiveVoicePreviewActive {
+                                    viewModel.refreshNavigationWindow(for: newValue)
+                                }
                             }
                             .onSubmit {
                                 viewModel.submit()

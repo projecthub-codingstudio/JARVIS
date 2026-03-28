@@ -4,8 +4,12 @@ private func serviceClientLog(_ message: String) {
     fputs("[JarvisServiceClient] \(message)\n", stderr)
 }
 
-private let defaultMenuBarAskModels = ["qwen3.5:9b", "stub"]
+private let defaultMenuBarAskModels = ["stub"]
 private let menuBarAskTimeoutSeconds = 20.0
+private let defaultServiceRequestTimeoutSeconds = 20.0
+private let ttsServiceRequestTimeoutSeconds = 180.0
+private let warmupServiceRequestTimeoutSeconds = 120.0
+private let prefetchServiceRequestTimeoutSeconds = 5.0
 
 private func resolveMenuBarAskModels() -> [String] {
     let raw = ProcessInfo.processInfo.environment["JARVIS_MENU_BAR_MODEL_CHAIN"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -19,13 +23,30 @@ private func resolveMenuBarAskModels() -> [String] {
     return models.isEmpty ? defaultMenuBarAskModels : models
 }
 
+private func serviceRequestTimeoutSeconds(for requestType: String) -> Double {
+    switch requestType {
+    case "synthesize_speech":
+        return ttsServiceRequestTimeoutSeconds
+    case "warmup_tts":
+        return warmupServiceRequestTimeoutSeconds
+    case "prefetch_query_tts":
+        return prefetchServiceRequestTimeoutSeconds
+    case "ask_text":
+        return menuBarAskTimeoutSeconds
+    default:
+        return defaultServiceRequestTimeoutSeconds
+    }
+}
+
 protocol JarvisBackendClient: Sendable {
     func ask(_ query: String) async throws -> ServiceAskResponse
     func askStreaming(_ query: String) async -> AsyncStream<StreamEvent>
     func transcribeFile(audioPath: String) async throws -> TranscriptionResponse
+    func repairTranscript(_ text: String) async throws -> TranscriptRepairPayload
     func navigationWindow(query: String) async throws -> MenuExplorationState
     func normalizeQuery(_ query: String) async throws -> String
     func synthesizeSpeech(text: String) async throws -> SpeechResponse
+    func prefetchQueryTTS(_ query: String) async throws -> TTSPrefetchResponse
     func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse
     func health() async throws -> HealthResponse
     func runtimeState() async -> JarvisRuntimeState
@@ -206,7 +227,7 @@ actor JarvisServiceClient: JarvisBackendClient {
         case .stdio:
             self.serviceManager = nil
         case .unixSocket(let socketPath):
-            self.serviceManager = JarvisServiceManager(
+            self.serviceManager = JarvisServiceManagerRegistry.sharedManager(
                 configuration: configuration,
                 socketPath: socketPath,
                 knowledgeBaseOverridePath: knowledgeBaseOverridePath
@@ -253,6 +274,17 @@ actor JarvisServiceClient: JarvisBackendClient {
         return TranscriptionResponse(transcript: transcript)
     }
 
+    func repairTranscript(_ text: String) async throws -> TranscriptRepairPayload {
+        let envelope = try await runServiceRequest(
+            requestType: "repair_transcript",
+            payload: ["text": .string(text)]
+        )
+        guard let repairValue = envelope.payload["transcript_repair"] else {
+            throw BridgeError.decodeFailed("missing payload.transcript_repair")
+        }
+        return try repairValue.toObject(TranscriptRepairPayload.self)
+    }
+
     func navigationWindow(query: String) async throws -> MenuExplorationState {
         let envelope = try await runServiceRequest(
             requestType: "navigation_window",
@@ -284,6 +316,17 @@ actor JarvisServiceClient: JarvisBackendClient {
             throw BridgeError.decodeFailed("missing payload.speech")
         }
         return try speechValue.toObject(SpeechResponse.self)
+    }
+
+    func prefetchQueryTTS(_ query: String) async throws -> TTSPrefetchResponse {
+        let envelope = try await runServiceRequest(
+            requestType: "prefetch_query_tts",
+            payload: ["text": .string(query)]
+        )
+        guard let prefetchValue = envelope.payload["tts_prefetch"] else {
+            throw BridgeError.decodeFailed("missing payload.tts_prefetch")
+        }
+        return try prefetchValue.toObject(TTSPrefetchResponse.self)
     }
 
     func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse {
@@ -334,9 +377,8 @@ actor JarvisServiceClient: JarvisBackendClient {
     func warmup() async {
         if let serviceManager {
             try? await serviceManager.ensureRunning()
-            return
         }
-        _ = try? await runServiceRequest(requestType: "health")
+        _ = try? await runServiceRequest(requestType: "warmup_tts")
     }
 
     func shutdown() async {
@@ -362,14 +404,25 @@ actor JarvisServiceClient: JarvisBackendClient {
                     payload: payload
                 )
                 let requestData = try JSONEncoder().encode(request)
-                let responseData = try JarvisSocketTransport(socketPath: socketPath).send(requestData: requestData)
+                let responseData = try JarvisSocketTransport(
+                    socketPath: socketPath,
+                    ioTimeoutSeconds: Int(serviceRequestTimeoutSeconds(for: requestType))
+                ).send(requestData: requestData)
                 return try decodeServiceResponse(
                     responseData,
                     stderr: Data(),
                     requestType: requestType,
                 )
             } catch {
-                serviceClientLog("UDS request failed for \(requestType); falling back to stdio: \(error.localizedDescription)")
+                let description = error.localizedDescription
+                serviceClientLog("UDS request failed for \(requestType); falling back to stdio: \(description)")
+                if requestType == "warmup_tts" || requestType == "prefetch_query_tts" {
+                    throw error
+                }
+                if requestType == "synthesize_speech",
+                   description.contains("timed out waiting for response") {
+                    throw error
+                }
                 return try await runStdioServiceRequest(
                     requestType: requestType,
                     payload: payload
@@ -553,8 +606,8 @@ actor JarvisServiceClient: JarvisBackendClient {
 
         try await waitForProcessExit(
             process,
-            timeoutSeconds: menuBarAskTimeoutSeconds,
-            timeoutMessage: "service \(requestType) timed out after \(Int(menuBarAskTimeoutSeconds))s"
+            timeoutSeconds: serviceRequestTimeoutSeconds(for: requestType),
+            timeoutMessage: "service \(requestType) timed out after \(Int(serviceRequestTimeoutSeconds(for: requestType)))s"
         )
 
         let output = await stdoutTask.value
@@ -604,22 +657,11 @@ actor JarvisServiceClient: JarvisBackendClient {
     }
 
     private func serviceEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = configuration.pythonPath
-        env["HF_HUB_DISABLE_PROGRESS_BARS"] = env["HF_HUB_DISABLE_PROGRESS_BARS"] ?? "1"
-        env["TRANSFORMERS_VERBOSITY"] = env["TRANSFORMERS_VERBOSITY"] ?? "error"
-        env["TOKENIZERS_PARALLELISM"] = env["TOKENIZERS_PARALLELISM"] ?? "false"
-        env["HF_HUB_DISABLE_TELEMETRY"] = env["HF_HUB_DISABLE_TELEMETRY"] ?? "1"
-        env["TRUST_REMOTE_CODE"] = env["TRUST_REMOTE_CODE"] ?? "1"
-        if let knowledgeBaseOverridePath,
-           !knowledgeBaseOverridePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            env["JARVIS_KNOWLEDGE_BASE"] = knowledgeBaseOverridePath
-        } else if let configured = env["JARVIS_KNOWLEDGE_BASE"],
-                  !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            env["JARVIS_KNOWLEDGE_BASE"] = configured
-        } else {
-            env["JARVIS_KNOWLEDGE_BASE"] = configuration.defaultKnowledgeBasePath
-        }
+        var env = configuredBridgeEnvironment(
+            from: ProcessInfo.processInfo.environment,
+            configuration: configuration,
+            knowledgeBaseOverridePath: knowledgeBaseOverridePath
+        )
         if let sttBinary = configuration.defaultSTTBinary {
             env["JARVIS_STT_BINARY"] = env["JARVIS_STT_BINARY"] ?? sttBinary
         }

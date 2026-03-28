@@ -3,7 +3,12 @@ import Darwin
 
 struct JarvisSocketTransport {
     let socketPath: String
-    private let ioTimeoutSeconds: Int = 20
+    private let ioTimeoutSeconds: Int
+
+    init(socketPath: String, ioTimeoutSeconds: Int = 20) {
+        self.socketPath = socketPath
+        self.ioTimeoutSeconds = ioTimeoutSeconds
+    }
 
     func send(requestData: Data) throws -> Data {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
