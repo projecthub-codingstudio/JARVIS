@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from jarvis.service.application import JarvisApplicationService
+from jarvis.service.application import JarvisApplicationService, _menu_bridge_timeout_seconds
 from jarvis.service.protocol import RpcRequest, error_response, ok_response
 
 
@@ -263,8 +263,15 @@ def test_application_service_ask_text_falls_back_to_stub_model(monkeypatch) -> N
     response = service.handle(request)
 
     assert response.ok is True
-    assert observed_models == ["stub"]
+    assert observed_models == ["qwen3.5:9b", "stub"]
     assert response.payload["answer"]["text"] == "9일차 저녁은 순두부와 방울토마토입니다."
+
+
+def test_menu_bridge_timeout_prefers_longer_budget_for_model_backed_ask(monkeypatch) -> None:
+    monkeypatch.delenv("JARVIS_MENU_BRIDGE_TIMEOUT_SECONDS", raising=False)
+
+    assert _menu_bridge_timeout_seconds("ask", model_id="qwen3.5:9b") == 50
+    assert _menu_bridge_timeout_seconds("ask", model_id="stub") == 18
 
 
 def test_application_service_handles_synthesize_speech(monkeypatch, tmp_path: Path) -> None:

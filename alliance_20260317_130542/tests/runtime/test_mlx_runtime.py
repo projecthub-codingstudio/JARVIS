@@ -34,6 +34,13 @@ class TestMLXRuntime:
 
         assert runtime.model_id == "stub-backend"
 
+    def test_stub_generate_appends_primary_citation(self) -> None:
+        runtime = MLXRuntime()
+
+        answer = runtime.generate("설명해줘", _evidence_set())
+
+        assert "[1]" in answer.content
+
     def test_generate_records_verification_warnings(self) -> None:
         runtime = MLXRuntime(backend=_Backend())
 

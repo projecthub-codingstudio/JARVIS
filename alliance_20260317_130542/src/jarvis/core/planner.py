@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from jarvis.identifier_restoration import rewrite_query_with_identifiers
 from jarvis.query_normalization import normalize_spoken_code_query
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,17 @@ _WEATHER_RE = re.compile(
     r"(오늘|지금|내일|이번\s*주)?\s*(날씨|기온|비\s*오|눈\s*오|weather|forecast|temperature)",
     re.IGNORECASE,
 )
+_CODE_NORMALIZATION_HINT_RE = re.compile(
+    r"(소스|코드|클래스|함수|메서드|메소드|변수|필드|심볼|식별자|모듈|임포트|"
+    r"파이썬|자바스크립트|타입스크립트|스위프트|러스트|고랭|경로|path|"
+    r"\bclass\b|\bdef\b|\bfunction\b|\bmethod\b|\bmodule\b|\bimport\b|"
+    r"\.py\b|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.sql\b|\.java\b|\.kt\b|\.go\b|\.rs\b|\.cpp\b)",
+    re.IGNORECASE,
+)
 _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "아키텍처": ("architecture",),
     "구조": ("architecture", "structure"),
+    "브로셔": ("brochure",),
     "검색": ("search", "retrieval"),
     "검색기": ("search", "retrieval"),
     "검색엔진": ("search", "retrieval"),
@@ -245,10 +254,15 @@ class LightweightKeywordExpander:
         seen = {term.lower() for term in expanded_terms}
 
         for token in _extract_tokens(raw_text):
-            for alias in _BILINGUAL_EXPANSIONS.get(token, ()):
-                if alias.lower() not in seen:
-                    expanded_terms.append(alias)
-                    seen.add(alias.lower())
+            candidates = [token]
+            stripped = _strip_topic_suffix(token)
+            if stripped != token:
+                candidates.append(stripped)
+            for candidate in candidates:
+                for alias in _BILINGUAL_EXPANSIONS.get(candidate, ()):
+                    if alias.lower() not in seen:
+                        expanded_terms.append(alias)
+                        seen.add(alias.lower())
 
         if baseline.target_file:
             stem = baseline.target_file.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
@@ -345,18 +359,18 @@ class Planner:
         self._model_id = model_id
         self._knowledge_base_path = knowledge_base_path
         self._heuristic = HeuristicPlanner()
+        self._keyword_expander = LightweightKeywordExpander()
         if lightweight_backend is _DEFAULT_LIGHTWEIGHT:
-            self._lightweight_backend: LightweightPlannerBackend | None = LightweightKeywordExpander()
+            self._lightweight_backend: LightweightPlannerBackend | None = self._keyword_expander
         else:
             self._lightweight_backend = lightweight_backend
 
     def analyze(self, raw_text: str) -> QueryAnalysis:
         """Analyze a user query using heuristic baseline plus optional enrichment."""
-        normalized_text = normalize_spoken_code_query(
-            raw_text,
-            knowledge_base_path=self._knowledge_base_path,
-        )
-        baseline = self._heuristic.analyze(normalized_text)
+        baseline = self._heuristic.analyze(raw_text)
+        normalized_text = self._maybe_normalize_with_identifiers(raw_text, baseline)
+        if normalized_text != raw_text:
+            baseline = self._heuristic.analyze(normalized_text)
         raw_file_matches = _FILENAME_RE.findall(raw_text)
         if raw_file_matches and not baseline.target_file:
             baseline = QueryAnalysis(
@@ -378,7 +392,7 @@ class Planner:
         if isinstance(self._lightweight_backend, LLMIntentJSONBackend):
             should_use_lightweight = True
         else:
-            should_use_lightweight = self._should_use_lightweight(normalized_text, baseline)
+            should_use_lightweight = self._should_use_lightweight(raw_text, baseline)
 
         if not should_use_lightweight:
             return baseline
@@ -387,11 +401,44 @@ class Planner:
             enriched = self._lightweight_backend.analyze(normalized_text, baseline)
         except Exception as exc:
             logger.warning("Lightweight planner failed, keeping heuristic baseline: %s", exc)
-            return baseline
+            enriched = None
 
-        if enriched is None:
-            return baseline
-        return self._merge_analysis(baseline, enriched)
+        result = baseline if enriched is None else self._merge_analysis(baseline, enriched)
+        if isinstance(self._lightweight_backend, LLMIntentJSONBackend):
+            return self._merge_keyword_expansion(
+                raw_text=normalized_text,
+                baseline=baseline,
+                analysis=result,
+            )
+        return result
+
+    def _maybe_normalize_with_identifiers(self, raw_text: str, baseline: QueryAnalysis) -> str:
+        normalized = raw_text.strip()
+        if not normalized:
+            return raw_text
+        if baseline.target_file:
+            return normalize_spoken_code_query(
+                raw_text,
+                knowledge_base_path=self._knowledge_base_path,
+            )
+        if baseline.retrieval_task == "code_lookup":
+            return normalize_spoken_code_query(
+                raw_text,
+                knowledge_base_path=self._knowledge_base_path,
+            )
+        if _CODE_NORMALIZATION_HINT_RE.search(normalized):
+            return normalize_spoken_code_query(
+                raw_text,
+                knowledge_base_path=self._knowledge_base_path,
+            )
+
+        rewrite = rewrite_query_with_identifiers(
+            raw_text,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        if any(candidate.kind == "filename" for candidate in rewrite.candidates):
+            return rewrite.rewritten_query
+        return raw_text
 
     def classify_complexity(self, query: str) -> QueryComplexity:
         """Classify query complexity using fast heuristics (no LLM call).
@@ -436,6 +483,47 @@ class Planner:
             language=enriched.language or baseline.language,
             confidence=max(baseline.confidence, enriched.confidence),
             source=enriched.source,
+        )
+
+    def _merge_keyword_expansion(
+        self,
+        *,
+        raw_text: str,
+        baseline: QueryAnalysis,
+        analysis: QueryAnalysis,
+    ) -> QueryAnalysis:
+        try:
+            keyword_enriched = self._keyword_expander.analyze(raw_text, baseline)
+        except Exception as exc:
+            logger.warning("Keyword planner fallback failed, keeping current analysis: %s", exc)
+            return analysis
+
+        if keyword_enriched is None:
+            return analysis
+
+        search_terms: list[str] = []
+        seen: set[str] = set()
+        for term in [*analysis.search_terms, *keyword_enriched.search_terms]:
+            lowered = term.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            search_terms.append(term)
+
+        source = analysis.source
+        if analysis.source == baseline.source and search_terms != analysis.search_terms:
+            source = keyword_enriched.source
+
+        return QueryAnalysis(
+            retrieval_task=analysis.retrieval_task,
+            intent=analysis.intent,
+            sub_intents=list(analysis.sub_intents),
+            entities=dict(analysis.entities),
+            search_terms=search_terms,
+            target_file=analysis.target_file,
+            language=analysis.language,
+            confidence=max(analysis.confidence, keyword_enriched.confidence),
+            source=source,
         )
 
 
