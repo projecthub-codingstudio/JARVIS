@@ -189,3 +189,53 @@ class TestEvidenceBuilderWithDb:
         evidence = builder.build(results, fragments)
 
         assert evidence.items[0].chunk_id == "chunk-body"
+
+    def test_does_not_apply_table_row_number_boost_in_generic_evidence_layer(self) -> None:
+        db = sqlite3.connect(":memory:")
+        db.execute(
+            "CREATE TABLE documents ("
+            " document_id TEXT PRIMARY KEY,"
+            " path TEXT,"
+            " content_hash TEXT,"
+            " size_bytes INTEGER,"
+            " indexing_status TEXT"
+            ")"
+        )
+        db.execute(
+            "CREATE TABLE chunks ("
+            " chunk_id TEXT PRIMARY KEY,"
+            " document_id TEXT,"
+            " text TEXT,"
+            " heading_path TEXT"
+            ")"
+        )
+        db.execute(
+            "INSERT INTO documents VALUES (?, ?, ?, ?, ?)",
+            ("doc-table", "/tmp/diet.xlsx", "hash-table", 10, "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO documents VALUES (?, ?, ?, ?, ?)",
+            ("doc-body", "/tmp/body.txt", "hash-body", 10, "INDEXED"),
+        )
+        db.execute(
+            "INSERT INTO chunks VALUES (?, ?, ?, ?)",
+            ("chunk-row", "doc-table", "Day=9 | Breakfast=요거트 | Dinner=두부", "table-row-Diet-8"),
+        )
+        db.execute(
+            "INSERT INTO chunks VALUES (?, ?, ?, ?)",
+            ("chunk-body", "doc-body", "소개 문단", "section-body"),
+        )
+        db.commit()
+
+        builder = EvidenceBuilder(db=db)
+        results = [
+            HybridSearchResult(chunk_id="chunk-body", document_id="doc-body", rrf_score=0.60),
+            HybridSearchResult(chunk_id="chunk-row", document_id="doc-table", rrf_score=0.50),
+        ]
+        fragments = [
+            TypedQueryFragment(text="9일차 알려줘", language="ko", query_type="keyword"),
+        ]
+
+        evidence = builder.build(results, fragments)
+
+        assert [item.chunk_id for item in evidence.items] == ["chunk-body", "chunk-row"]

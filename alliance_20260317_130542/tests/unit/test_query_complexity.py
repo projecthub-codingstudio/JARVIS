@@ -78,6 +78,13 @@ class TestPlannerAnalysis:
         assert analysis.target_file == "runtime_context.py"
         assert "runtime" in analysis.search_terms
 
+    def test_planner_expands_brochure_queries_for_document_lookup(self) -> None:
+        planner = Planner()
+        analysis = planner.analyze("ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?")
+        assert "projecthub" in analysis.search_terms
+        assert "brochure" in analysis.search_terms
+        assert analysis.source == "lightweight"
+
     def test_planner_falls_back_when_lightweight_fails(self) -> None:
         class FailingBackend:
             def analyze(self, raw_text: str, baseline: QueryAnalysis) -> QueryAnalysis | None:
@@ -110,3 +117,22 @@ class TestPlannerAnalysis:
         analysis = planner.analyze("다시 파이선 소스인 파이프라인에서 클래스 파이프라인에 대해 설명해 줘")
         assert analysis.target_file == "pipeline.py"
         assert "pipeline" in analysis.search_terms
+
+    def test_planner_does_not_pollute_document_query_with_code_identifiers(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class StageDesign:\n"
+            "    project_path = 'demo'\n"
+            "    def _parse_research_section(self) -> None:\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+        planner = Planner(knowledge_base_path=kb)
+
+        analysis = planner.analyze("ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?")
+
+        assert analysis.retrieval_task == "document_qa"
+        assert "projecthub" in analysis.search_terms
+        assert "project_path" not in analysis.search_terms
+        assert "_parse_research_section" not in analysis.search_terms

@@ -7,11 +7,15 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from jarvis.contracts import HybridSearchResult, SearchHit, TypedQueryFragment, VectorHit
-from jarvis.core.planner import QueryAnalysis
+from jarvis.core.planner import QueryAnalysis, _BILINGUAL_EXPANSIONS, _strip_topic_suffix
 
 _ROW_ID_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|day|번)", re.IGNORECASE)
 _EXPLANATORY_RE = re.compile(r"(?:이다|있다|한다|된다|저장된다|설명|구조)")
 _TABLE_METADATA_RE = re.compile(r"(?:자료형\s+길이\(바이트\)\s+설명|\|\s*길이\(바이트\)\s*\|\s*설명)")
+_DOCUMENT_PATH_STOPWORDS = {
+    "projecthub", "jarvis", "document", "docs", "file", "files", "source", "code",
+    "문서", "파일", "코드", "설명", "구조",
+}
 
 
 @dataclass
@@ -58,6 +62,21 @@ class DocumentStrategy:
                 fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in targeted_chunk_ids]
 
         if db is not None:
+            path_terms = _resolve_document_path_terms(inputs.analysis)
+            if path_terms:
+                matched_docs = _find_document_path_matches(db=db, path_terms=path_terms)
+                fts_hits = _prepend_document_path_hits(
+                    db=db,
+                    path_terms=path_terms,
+                    existing_hits=fts_hits,
+                    matched_docs=matched_docs,
+                )
+                if matched_docs and len(matched_docs) <= 3:
+                    matched_doc_ids = set(matched_docs)
+                    vector_hits = [
+                        hit for hit in vector_hits
+                        if hit.document_id in matched_doc_ids
+                    ]
             topic_terms = _resolve_topic_terms(inputs.analysis)
             if topic_terms:
                 scoped_doc_ids = None
@@ -81,6 +100,7 @@ class DocumentStrategy:
         pre_rerank_results: list[HybridSearchResult],
         chunk_texts: dict[str, str],
     ) -> list[HybridSearchResult]:
+        del analysis, query, pre_rerank_results, chunk_texts
         return hybrid_results
 
 
@@ -221,6 +241,50 @@ def _resolve_negative_terms(analysis: QueryAnalysis | None) -> list[str]:
     return []
 
 
+def _resolve_document_path_terms(analysis: QueryAnalysis | None) -> list[str]:
+    if analysis is None:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw_term in analysis.search_terms:
+        for term in _expand_document_path_terms(str(raw_term).strip()):
+            normalized = _normalize_match_text(term)
+            if len(normalized) < 4:
+                continue
+            if normalized in _DOCUMENT_PATH_STOPWORDS:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(term)
+    return terms
+
+
+def _expand_document_path_terms(term: str) -> list[str]:
+    if not term:
+        return []
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    candidates = [term]
+    stripped = _strip_topic_suffix(term)
+    if stripped != term:
+        candidates.append(stripped)
+
+    for candidate in candidates:
+        lowered = candidate.casefold()
+        if lowered not in seen:
+            expanded.append(candidate)
+            seen.add(lowered)
+        for alias in _BILINGUAL_EXPANSIONS.get(candidate, ()):
+            alias_lowered = alias.casefold()
+            if alias_lowered in seen:
+                continue
+            expanded.append(alias)
+            seen.add(alias_lowered)
+    return expanded
+
+
 def _prepend_document_section_hits(
     *,
     db: object,
@@ -290,5 +354,89 @@ def _prepend_document_section_hits(
     return supplemental + [hit for hit in existing_hits if hit.chunk_id not in {item.chunk_id for item in supplemental}]
 
 
+def _prepend_document_path_hits(
+    *,
+    db: object,
+    path_terms: list[str],
+    existing_hits: list[SearchHit],
+    matched_docs: dict[str, str] | None = None,
+) -> list[SearchHit]:
+    if not path_terms:
+        return existing_hits
+
+    existing_ids = {hit.chunk_id for hit in existing_hits}
+    supplemental: list[SearchHit] = []
+    try:
+        effective_matches = matched_docs if matched_docs is not None else _find_document_path_matches(
+            db=db,
+            path_terms=path_terms,
+        )
+        if not effective_matches:
+            return existing_hits
+
+        for term in path_terms:
+            variants = _path_term_variants(term)
+            term_matches = {
+                document_id: path
+                for document_id, path in effective_matches.items()
+                if any(variant in path.casefold() for variant in variants)
+            }
+            if not term_matches or len(term_matches) > 3:
+                continue
+
+            for document_id, path in term_matches.items():
+                chunk_rows = db.execute(
+                    "SELECT chunk_id, document_id, text FROM chunks WHERE document_id = ?",
+                    (document_id,),
+                ).fetchall()
+                normalized_path = path.casefold()
+                exact_name_match = any(variant in normalized_path for variant in variants)
+                for chunk_id, doc_id, text in chunk_rows:
+                    if chunk_id in existing_ids:
+                        continue
+                    score = 46.0 + min(len(term), 12)
+                    if exact_name_match:
+                        score += 8.0
+                    supplemental.append(SearchHit(
+                        chunk_id=chunk_id,
+                        document_id=doc_id,
+                        score=score,
+                        snippet=(text or "")[:200],
+                    ))
+                    existing_ids.add(chunk_id)
+    except Exception:
+        return existing_hits
+
+    if not supplemental:
+        return existing_hits
+    supplemental.sort(key=lambda hit: hit.score, reverse=True)
+    return supplemental + [hit for hit in existing_hits if hit.chunk_id not in {item.chunk_id for item in supplemental}]
+
+
 def _normalize_match_text(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold().replace(" ", "")
+
+
+def _path_term_variants(term: str) -> set[str]:
+    return {
+        term.casefold(),
+        term.replace(" ", "_").casefold(),
+        term.replace(" ", "-").casefold(),
+    }
+
+
+def _find_document_path_matches(*, db: object, path_terms: list[str]) -> dict[str, str]:
+    matched_docs: dict[str, str] = {}
+    for term in path_terms:
+        for variant in _path_term_variants(term):
+            rows = db.execute(
+                "SELECT document_id, path FROM documents"
+                " WHERE indexing_status = 'INDEXED'"
+                " AND LOWER(path) LIKE ?",
+                (f"%{variant}%",),
+            ).fetchall()
+            for document_id, path in rows:
+                matched_docs[str(document_id)] = str(path)
+    if len(matched_docs) > 3:
+        return {}
+    return matched_docs

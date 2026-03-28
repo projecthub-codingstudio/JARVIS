@@ -192,3 +192,77 @@ def test_stub_document_response_prefers_basic_structure_excerpt_over_related_sec
     assert "하나의 그림 코드에 하나 이상의 개체가 존재할 수 있다." in response
     assert "preorder traversal" not in response
     assert "파일상에는 다음과 같은 구조로 저장된다." in response
+
+
+def test_stub_document_response_skips_path_heavy_segments_when_brand_term_overlaps() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-brochure",
+                document_id="doc-brochure",
+                text=(
+                    "[Slide 1] DEVELOPER PRODUCTIVITY TOOL ProjectHub macOS용 올인원 프로젝트 관리 도구 "
+                    "AI 기반 자율 코딩 시스템 내장 프로젝트 관리 AI 코드 생성 내장 터미널"
+                ),
+                citation=CitationRecord(document_id="doc-brochure", chunk_id="chunk-brochure", label="[1]", state=CitationState.VALID),
+                relevance_score=0.16,
+                source_path="/tmp/ProjectHub_Brochure.pptx",
+                heading_path="",
+            ),
+            EvidenceItem(
+                chunk_id="chunk-json",
+                document_id="doc-json",
+                text=(
+                    "codingstudio/__PROJECTHUB__/JARVIS/.projecthub/workspace/TASK/round_2/claude_opinion.md#L470)).\", "
+                    "\"The analysis mixes security/access-control facts with performance sizing and presents some quantitative thresholds as if measured truth."
+                ),
+                citation=CitationRecord(document_id="doc-json", chunk_id="chunk-json", label="[2]", state=CitationState.VALID),
+                relevance_score=0.09,
+                source_path="/tmp/TASK-E93DF600.json",
+                heading_path="",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="projecthub brochure introduction", language="en", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?",
+        evidence,
+    )
+
+    assert "ProjectHub macOS용 올인원 프로젝트 관리 도구" in response
+    assert "claude_opinion.md#L470" not in response
+
+
+def test_stub_document_response_uses_query_fragment_path_match_for_brochure_file() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-brochure",
+                document_id="doc-brochure",
+                text="[Slide 1] DEVELOPER PRODUCTIVITY TOOL ProjectHub macOS용 올인원 프로젝트 관리 도구 AI 기반 자율 코딩 시스템 내장",
+                citation=CitationRecord(document_id="doc-brochure", chunk_id="chunk-brochure", label="[1]", state=CitationState.VALID),
+                relevance_score=0.16,
+                source_path="/tmp/ProjectHub_Brochure.pptx",
+                heading_path="",
+            ),
+            EvidenceItem(
+                chunk_id="chunk-help",
+                document_id="doc-swift",
+                text='Button(String(localized: "ProjectHub Help")) {',
+                citation=CitationRecord(document_id="doc-swift", chunk_id="chunk-help", label="[2]", state=CitationState.VALID),
+                relevance_score=0.11,
+                source_path="/tmp/ProjectHubApp.swift",
+                heading_path="",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="projecthub brochure", language="en", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?",
+        evidence,
+    )
+
+    assert "ProjectHub macOS용 올인원 프로젝트 관리 도구" in response
+    assert 'ProjectHub Help' not in response

@@ -19,17 +19,24 @@ _KOREAN_RE = re.compile(r"[가-힣]")
 
 def build_vocabulary_hint(knowledge_base_path: Path | None) -> str:
     """Extract a compact STT vocabulary hint from local indexed source files."""
+    if knowledge_base_path is None:
+        return ""
+
+    resolved_kb_path = knowledge_base_path.expanduser().resolve()
+    if not resolved_kb_path.exists():
+        return ""
+
     terms: list[str] = []
     seen: set[str] = set()
 
-    for entry in build_identifier_lexicon(knowledge_base_path):
+    for entry in build_identifier_lexicon(resolved_kb_path):
         _add_term(entry.canonical, terms, seen)
         for token in entry.tokens:
             _add_term(token, terms, seen)
         if len(terms) >= _MAX_TERMS:
             break
 
-    for term in load_indexed_vocabulary_terms():
+    for term in load_indexed_vocabulary_terms(_resolve_workspace_root(resolved_kb_path)):
         _add_term(term, terms, seen)
         if len(terms) >= _MAX_TERMS:
             break
@@ -54,8 +61,18 @@ def _add_term(term: str, terms: list[str], seen: set[str]) -> None:
     terms.append(cleaned)
 
 
-def load_indexed_vocabulary_terms() -> list[str]:
-    db_path = Path.cwd() / ".jarvis-menubar" / "jarvis.db"
+def _resolve_workspace_root(knowledge_base_path: Path) -> Path:
+    if knowledge_base_path.is_dir() and knowledge_base_path.name == "knowledge_base":
+        return knowledge_base_path.parent
+    if knowledge_base_path.is_file():
+        return knowledge_base_path.parent
+    return knowledge_base_path
+
+
+def load_indexed_vocabulary_terms(workspace_root: Path | None = None) -> list[str]:
+    if workspace_root is None:
+        workspace_root = Path.cwd()
+    db_path = workspace_root / ".jarvis-menubar" / "jarvis.db"
     if not db_path.exists():
         return []
 
@@ -69,13 +86,16 @@ def load_indexed_vocabulary_terms() -> list[str]:
         path_rows = conn.execute(
             "SELECT path FROM documents ORDER BY document_id LIMIT 80"
         ).fetchall()
+    except sqlite3.Error:
+        path_rows = []
+
+    try:
         rows = conn.execute(
             "SELECT text FROM chunks ORDER BY chunk_id LIMIT ?",
             (_MAX_CHUNK_ROWS,),
         ).fetchall()
     except sqlite3.Error:
-        conn.close()
-        return []
+        rows = []
 
     try:
         for (path_text,) in path_rows:

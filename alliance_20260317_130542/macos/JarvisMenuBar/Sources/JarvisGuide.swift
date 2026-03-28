@@ -1012,12 +1012,16 @@ struct JarvisGuideView: View {
     }
 
     private func openSourcePresentation(_ source: MenuSourcePresentation) {
-        guard !source.fullSourcePath.isEmpty else { return }
-        if source.sourceType == "web", let url = URL(string: source.fullSourcePath) {
+        openSourcePath(source.fullSourcePath, sourceType: source.sourceType)
+    }
+
+    private func openSourcePath(_ path: String, sourceType: String) {
+        guard !path.isEmpty else { return }
+        if sourceType == "web", let url = URL(string: path) {
             NSWorkspace.shared.open(url)
             return
         }
-        NSWorkspace.shared.open(URL(fileURLWithPath: source.fullSourcePath))
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @ViewBuilder
@@ -1048,8 +1052,8 @@ struct JarvisGuideView: View {
                                 }
                                 Spacer()
                                 if !citation.fullSourcePath.isEmpty {
-                                    Button("열기") {
-                                        NSWorkspace.shared.open(URL(fileURLWithPath: citation.fullSourcePath))
+                                    Button(citation.sourceType == "web" ? "링크 열기" : "열기") {
+                                        openSourcePath(citation.fullSourcePath, sourceType: citation.sourceType)
                                     }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)

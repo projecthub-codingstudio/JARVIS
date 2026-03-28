@@ -42,6 +42,10 @@ from jarvis.tools.draft_export import DraftExportTool
 
 _MAX_QUOTE_CHARS = 160
 _TTS_DIR = Path(tempfile.gettempdir()) / "jarvis_tts"
+_MAX_TEXT_PREVIEW_LINES = 3
+_MAX_TEXT_PREVIEW_CHARS = 88
+_MAX_CODE_PREVIEW_LINES = 6
+_MAX_CODE_PREVIEW_CHARS = 120
 
 
 def _detect_source_type(path: str) -> str:
@@ -86,11 +90,19 @@ def _source_presentation_title(item: EvidenceItem, *, kind: str, heading_path: s
         if heading_path:
             return heading_path.split(">")[-1].strip()
         return "표 항목"
+    if kind == "code_symbol":
+        if heading_path:
+            return heading_path.split(">")[-1].strip()
+        return Path(item.source_path or item.document_id).name
+    if kind == "document_section":
+        if heading_path:
+            return heading_path.split(">")[-1].strip()
+        return Path(item.source_path or item.document_id).name
     if kind == "web_page":
         if heading_path:
             return heading_path.split(">")[-1].strip()
         return Path(item.source_path or item.document_id).name
-    return heading_path.split(">")[-1].strip() if heading_path else ""
+    return heading_path.split(">")[-1].strip() if heading_path else Path(item.source_path or item.document_id).name
 
 
 def _parse_table_preview_lines(text: str) -> list[str]:
@@ -102,9 +114,14 @@ def _parse_table_preview_lines(text: str) -> list[str]:
         "Breakfast": "아침",
         "Lunch": "점심",
         "Dinner": "저녁",
+        "Snack": "간식",
         "Drinks": "음료",
+        "Calories": "칼로리",
+        "Supplements": "보충제",
         "Morning Supplements": "오전 보충제",
+        "Evening Supplements": "저녁 보충제",
         "Pre-Workout": "운동 전",
+        "Post-Workout": "운동 후",
     }
     lines: list[str] = []
     day_value = ""
@@ -121,6 +138,58 @@ def _parse_table_preview_lines(text: str) -> list[str]:
     if day_value:
         lines.insert(0, f"일차: {day_value}")
     return lines[:6]
+
+
+def _wrap_preview_text(
+    text: str,
+    *,
+    max_lines: int = _MAX_TEXT_PREVIEW_LINES,
+    max_chars: int = _MAX_TEXT_PREVIEW_CHARS,
+) -> list[str]:
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return []
+
+    lines: list[str] = []
+    remaining = normalized
+    while remaining and len(lines) < max_lines:
+        if len(remaining) <= max_chars:
+            lines.append(remaining)
+            break
+        split_at = remaining.rfind(" ", 0, max_chars + 1)
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        chunk = remaining[:split_at].rstrip(",;: ")
+        remaining = remaining[split_at:].lstrip()
+        if len(lines) == max_lines - 1 and remaining:
+            lines.append(chunk + "...")
+            break
+        lines.append(chunk)
+    return lines
+
+
+def _parse_code_preview_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        cleaned = raw_line.rstrip()
+        if not cleaned.strip():
+            continue
+        if len(cleaned) > _MAX_CODE_PREVIEW_CHARS:
+            cleaned = cleaned[:_MAX_CODE_PREVIEW_CHARS].rstrip() + "..."
+        lines.append(cleaned)
+        if len(lines) >= _MAX_CODE_PREVIEW_LINES:
+            break
+    return lines
+
+
+def _source_presentation_preview_lines(item: EvidenceItem, *, kind: str) -> list[str]:
+    if kind == "table_row":
+        return _parse_table_preview_lines(item.text)
+    if kind == "code_symbol":
+        return _parse_code_preview_lines(item.text)
+    if kind in {"document_section", "web_page"}:
+        return _wrap_preview_text(item.text)
+    return []
 
 
 def _response_mode(turn: ConversationTurn, answer: AnswerDraft | None) -> str:
@@ -304,7 +373,7 @@ def build_menu_response(
             top_source_type = _detect_source_type(top_full_path)
             heading_path = _heading_path_text(top_item.heading_path)
             source_kind = _detect_source_presentation_kind(top_item, top_source_type)
-            preview_lines = _parse_table_preview_lines(top_item.text) if source_kind == "table_row" else []
+            preview_lines = _source_presentation_preview_lines(top_item, kind=source_kind)
             source_presentation = MenuBarSourcePresentation(
                 kind=source_kind,
                 source_path=Path(top_full_path).name if top_full_path else top_item.document_id,
@@ -754,8 +823,7 @@ def _normalize_query(*, query: str) -> MenuBarNormalizationResponse:
 
 
 def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse | None:
-    if model_id.strip().lower() != "stub":
-        return None
+    del model_id
     resolution = resolve_menu_intent_policy(
         query,
         knowledge_base_path=_resolve_bridge_knowledge_base_path(),

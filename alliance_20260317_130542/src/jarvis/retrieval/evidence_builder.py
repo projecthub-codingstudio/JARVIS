@@ -45,7 +45,6 @@ _CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class name
 _FILENAME_MATCH_BOOST = 0.20   # document path contains queried filename
 _FILENAME_STEM_BOOST = 0.15    # document stem matches without extension
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
-_ROW_NUMBER_MATCH_BOOST = 0.18  # chunk contains exact row number from query (e.g., Day=9)
 _CODE_SOURCE_BOOST = 0.28
 _NON_CODE_PENALTY = 0.14
 _CLASS_SIGNATURE_BOOST = 0.16
@@ -55,8 +54,6 @@ _DOCUMENT_EXPLANATORY_BOOST = 0.05
 _DOCUMENT_REFERENCE_PENALTY = 0.12
 MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
 
-# Pattern to extract numbers referenced in queries (e.g., "9일차", "day 5", "13일")
-_QUERY_NUMBER_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|day|번)", re.IGNORECASE)
 _CLASS_QUERY_RE = re.compile(r"(클래스|class)", re.IGNORECASE)
 _FUNCTION_QUERY_RE = re.compile(r"(함수|메서드|메소드|function|method)", re.IGNORECASE)
 _CODE_QUERY_RE = re.compile(
@@ -194,19 +191,7 @@ class EvidenceBuilder:
                     chunk_text=chunk_text,
                 )
 
-            # Row number match boost: query mentions a specific number (e.g., "9일차")
-            # and chunk contains that exact row (e.g., "Day=9 |")
-            query_numbers = _QUERY_NUMBER_RE.findall(query_text)
             heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
-            if query_numbers and chunk_text and "table-row" in heading_path.lower():
-                for num in query_numbers:
-                    # Match table row patterns: "Day=N", "N |", row-N
-                    if (f"Day={num} " in chunk_text
-                            or f"Day={num}|" in chunk_text
-                            or f"={num} |" in chunk_text
-                            or f"row-{num}" in chunk_text.lower()):
-                        boost += _ROW_NUMBER_MATCH_BOOST
-                        break
 
             boosted_score = result.rrf_score + boost
 
