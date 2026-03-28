@@ -26,6 +26,8 @@ Local-first workspace AI agent for Apple Silicon.
 
 ## Docs
 
+- [Agent Notes](AGENTS.md)
+- [Decisions](docs/DECISIONS.md)
 - [Release Notes](docs/RELEASE_NOTES_BETA_1.md)
 - [Known Issues](docs/KNOWN_ISSUES_BETA_1.md)
 - [Beta Checklist](docs/BETA_1_CHECKLIST.md)

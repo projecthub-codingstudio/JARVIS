@@ -253,6 +253,16 @@ struct ServiceAskResponse: Codable {
     let guide: ServiceGuidePayload?
 }
 
+struct TTSPrefetchResponse: Codable {
+    let started: Bool
+    let predictedText: String
+
+    private enum CodingKeys: String, CodingKey {
+        case started
+        case predictedText = "predicted_text"
+    }
+}
+
 struct ExportResponse: Codable {
     let destination: String
     let approved: Bool
@@ -284,6 +294,20 @@ struct NormalizationResponse: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case normalizedQuery = "normalized_query"
+    }
+}
+
+struct TranscriptRepairPayload: Codable {
+    let rawText: String
+    let repairedText: String
+    let displayText: String
+    let finalQuery: String
+
+    private enum CodingKeys: String, CodingKey {
+        case rawText = "raw_text"
+        case repairedText = "repaired_text"
+        case displayText = "display_text"
+        case finalQuery = "final_query"
     }
 }
 

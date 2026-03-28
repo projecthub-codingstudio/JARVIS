@@ -30,11 +30,11 @@ final class NativeAudioRecorder: @unchecked Sendable {
     private var silenceStartTime: CFAbsoluteTime = 0
     private var recordingStartTime: CFAbsoluteTime = 0
     private let tentativeSilenceSec: Double =
-        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_TENTATIVE_SILENCE_SECONDS"] ?? "1.5") ?? 1.5
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_TENTATIVE_SILENCE_SECONDS"] ?? "0.9") ?? 0.9
     private let confirmedSilenceSec: Double =
-        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_CONFIRMED_SILENCE_SECONDS"] ?? "5.0") ?? 5.0
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_CONFIRMED_SILENCE_SECONDS"] ?? "1.8") ?? 1.8
     private let minRecordingSec: Double =
-        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_MIN_RECORDING_SECONDS"] ?? "2.5") ?? 2.5
+        Double(ProcessInfo.processInfo.environment["JARVIS_VAD_MIN_RECORDING_SECONDS"] ?? "1.2") ?? 1.2
     private var totalFramesWritten = 0
     private var noSpeechWarned = false
 

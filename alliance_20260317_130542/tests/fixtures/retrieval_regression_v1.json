@@ -151,6 +151,33 @@
       "category": "table_row_field_lookup"
     },
     {
+      "id": "table-011",
+      "query": "다이어트 메뉴 표 에서 육 일자 점심 메뉴 알려 주세요",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=6",
+      "expected_field": "Lunch",
+      "category": "stt_slot_corruption"
+    },
+    {
+      "id": "table-012",
+      "query": "안녕하세요 다이어트 식단표 에서 9일 회차 아침 메뉴 알려 주세요",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=9",
+      "expected_field": "Breakfast",
+      "category": "stt_slot_corruption"
+    },
+    {
+      "id": "table-013",
+      "query": "다이어트 식단표에서 3일차 저녁 메뉴 알려줘요 min_debate_rounds opinion_id DebateRound",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "expected_row": "Day=3",
+      "expected_field": "Dinner",
+      "category": "transcript_tail_noise"
+    },
+    {
       "id": "task-001",
       "query": "안녕하세요",
       "expected_retrieval_task": "smalltalk",

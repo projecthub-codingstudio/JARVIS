@@ -13,6 +13,7 @@ from jarvis.cli.menu_bridge import (
     _health_payload,
     _run_query,
     _synthesize_speech,
+    _tts_backend,
     build_menu_response,
 )
 from jarvis.contracts import (
@@ -197,6 +198,111 @@ class TestMenuBridge:
         assert payload.source_presentation.title == "3일차 표 항목"
         assert payload.source_presentation.preview_lines[0] == "일차: 3"
         assert any(line.startswith("점심: ") for line in payload.source_presentation.preview_lines)
+
+    def test_builds_paired_table_response_without_cross_product_for_multi_day_multi_meal_query(self) -> None:
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-row-6",
+                    document_id="diet-sheet",
+                    text="Day=6 | Breakfast=구운계란2+토마토 | Lunch=닭가슴살+샐러드+레몬 | Dinner=계란2+두부반모+김",
+                    citation=CitationRecord(
+                        document_id="diet-sheet",
+                        chunk_id="chunk-row-6",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.97,
+                    source_path="/tmp/14day_diet_supplements_final.xlsx",
+                    heading_path=("table-row",),
+                ),
+                EvidenceItem(
+                    chunk_id="chunk-row-11",
+                    document_id="diet-sheet",
+                    text="Day=11 | Breakfast=구운계란2+아몬드 | Lunch=닭가슴살+현미밥1/3 | Dinner=두부+아보카도",
+                    citation=CitationRecord(
+                        document_id="diet-sheet",
+                        chunk_id="chunk-row-11",
+                        label="[2]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.96,
+                    source_path="/tmp/14day_diet_supplements_final.xlsx",
+                    heading_path=("table-row",),
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="6일차 점심 11일차 저녁", language="ko", query_type="keyword"),),
+        )
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="다이어트 식단표 에서 6일차 점심 하고 11일차 저녁 메뉴 알려줘",
+                assistant_output="6일차 점심은 닭가슴살+샐러드+레몬입니다. / 11일차 저녁은 두부+아보카도입니다. [1][2]",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="irrelevant display wrapper", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.spoken_response == "6일차 점심은 닭가슴살과 샐러드와 레몬입니다. / 11일차 저녁은 두부와 아보카도입니다."
+
+    def test_anchors_document_exploration_to_cited_document_for_grounded_table_answer(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        cited = kb / "14day_diet_supplements_final.xlsx"
+        cited.write_text("stub", encoding="utf-8")
+        (kb / "한글문서파일형식_revision1.1_20110124.hwp").write_text(
+            "binary-ish placeholder",
+            encoding="utf-8",
+        )
+
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-row-3",
+                    document_id="diet-sheet",
+                    text="Day=3 | Breakfast=구운계란2+요거트+베리 | Lunch=닭가슴살+현미밥1/3+김2장 | Dinner=순두부+방울토마토",
+                    citation=CitationRecord(
+                        document_id="diet-sheet",
+                        chunk_id="chunk-row-3",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.98,
+                    source_path=str(cited),
+                    heading_path=("table-row",),
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="3일차 저녁", language="ko", query_type="keyword"),),
+        )
+
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="다이어트 식단표에서 3일차 저녁 메뉴 알려줘요",
+                assistant_output="3일차 저녁은 순두부+방울토마토입니다. [1]",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="3일차 저녁은 순두부+방울토마토입니다. [1]", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=kb,
+        )
+
+        assert payload.exploration is not None
+        assert payload.exploration.target_document == "14day_diet_supplements_final.xlsx"
+        assert payload.exploration.document_candidates
+        assert payload.exploration.document_candidates[0].path == "14day_diet_supplements_final.xlsx"
+        assert payload.exploration.document_candidates[0].preview.startswith("일차: 3")
 
     def test_table_source_presentation_maps_extended_field_labels(self) -> None:
         evidence = VerifiedEvidenceSet(
@@ -535,7 +641,7 @@ class TestMenuBridge:
 
     def test_synthesize_speech_returns_audio_path(self, monkeypatch, tmp_path: Path) -> None:
         class FakeTTS:
-            def __init__(self, voice: str | None = None, backend: str = "auto") -> None:
+            def __init__(self, voice: str | None = None, backend: str = "say") -> None:
                 self.voice = voice
                 self.backend = backend
                 observed["backend"] = backend
@@ -552,7 +658,40 @@ class TestMenuBridge:
 
         assert result.audio_path.endswith(".aiff")
         assert Path(result.audio_path).read_text(encoding="utf-8") == "jarvis test"
-        assert observed["backend"] == "auto"
+        assert observed["backend"] == "say"
+
+    def test_synthesize_speech_reuses_cached_audio(self, monkeypatch, tmp_path: Path) -> None:
+        synth_calls = {"count": 0}
+
+        class FakeTTS:
+            def __init__(self, voice: str | None = None, backend: str = "say") -> None:
+                self.voice = voice
+                self.backend = backend
+
+            def synthesize(self, text: str, output_path: Path) -> Path:
+                synth_calls["count"] += 1
+                output_path.write_text(text, encoding="utf-8")
+                return output_path
+
+        monkeypatch.setattr("jarvis.cli.menu_bridge.LocalTTSRuntime", FakeTTS)
+        monkeypatch.setattr("jarvis.cli.menu_bridge._TTS_DIR", tmp_path)
+
+        first = _synthesize_speech(text="cache me")
+        second = _synthesize_speech(text="cache me")
+
+        assert first.audio_path == second.audio_path
+        assert synth_calls["count"] == 1
+        assert Path(second.audio_path).read_text(encoding="utf-8") == "cache me"
+
+    def test_tts_backend_defaults_to_say(self, monkeypatch) -> None:
+        monkeypatch.delenv("JARVIS_TTS_BACKEND", raising=False)
+
+        assert _tts_backend() == "say"
+
+    def test_tts_backend_allows_explicit_auto_fallback(self, monkeypatch) -> None:
+        monkeypatch.setenv("JARVIS_TTS_BACKEND", "auto")
+
+        assert _tts_backend() == "auto"
 
     def test_transcription_payload_serializes_text(self) -> None:
         payload = MenuBarTranscriptionResponse(transcript="회의 일정 정리해 줘")

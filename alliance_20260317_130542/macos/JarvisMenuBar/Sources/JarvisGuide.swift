@@ -59,6 +59,7 @@ final class JarvisGuideState: ObservableObject {
     @Published var selectedExplorationItemID = ""
     @Published private(set) var isLoading = false
     @Published private(set) var isStreaming = false
+    @Published private(set) var isSpeaking = false
     @Published private(set) var voiceLoopEnabled = false
     @Published private(set) var wakeWordEnabled = false
     @Published private(set) var partialTranscriptionActive = false
@@ -303,7 +304,8 @@ final class JarvisGuideState: ObservableObject {
         voiceLoopEnabled _: Bool = false,
         wakeWordEnabled _: Bool = false,
         partialTranscriptionActive _: Bool = false,
-        isStreaming _: Bool = false
+        isStreaming _: Bool = false,
+        isSpeaking _: Bool = false
     ) -> Bool {
         let hasCandidates = hasCandidates(activeExplorationState)
         let hasResponseContent = !liveResponseText.isEmpty || !finalResponseText.isEmpty
@@ -328,7 +330,7 @@ final class JarvisGuideState: ObservableObject {
         guard hasCandidates || hasResponseContent || hasClarification || shouldShowLoadingState || (hasPresentationState && hasVisibleSession) else {
             return false
         }
-        if isLoading || voiceLoopEnabled || wakeWordEnabled || partialTranscriptionActive || isStreaming {
+        if isLoading || voiceLoopEnabled || wakeWordEnabled || partialTranscriptionActive || isStreaming || isSpeaking {
             return true
         }
         if !finalResponseText.isEmpty {
@@ -349,12 +351,14 @@ final class JarvisGuideState: ObservableObject {
     func updateRuntimeState(
         isLoading: Bool,
         isStreaming: Bool,
+        isSpeaking: Bool,
         voiceLoopEnabled: Bool,
         wakeWordEnabled: Bool,
         partialTranscriptionActive: Bool
     ) {
         self.isLoading = isLoading
         self.isStreaming = isStreaming
+        self.isSpeaking = isSpeaking
         self.voiceLoopEnabled = voiceLoopEnabled
         self.wakeWordEnabled = wakeWordEnabled
         self.partialTranscriptionActive = partialTranscriptionActive
@@ -653,6 +657,7 @@ final class JarvisGuideController {
     private let panel: NSPanel
     private let host: NSHostingController<JarvisGuideView>
     private var cancellables: Set<AnyCancellable> = []
+    private var refreshScheduled = false
     private unowned let viewModel: JarvisMenuBarViewModel
 
     init(viewModel: JarvisMenuBarViewModel) {
@@ -691,11 +696,19 @@ final class JarvisGuideController {
         viewModel.guide.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in
-                DispatchQueue.main.async {
-                    self?.refresh()
-                }
+                self?.scheduleRefresh()
             }
             .store(in: &cancellables)
+    }
+
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
     }
 
     func refresh() {
@@ -710,9 +723,7 @@ final class JarvisGuideController {
             return
         }
         positionPanel()
-        panel.orderFront(nil)
         panel.orderFrontRegardless()
-        panel.makeKey()
     }
 
     private func positionPanel() {
