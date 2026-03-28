@@ -4,7 +4,7 @@ private func serviceClientLog(_ message: String) {
     fputs("[JarvisServiceClient] \(message)\n", stderr)
 }
 
-private let defaultMenuBarAskModels = ["stub"]
+private let defaultMenuBarAskModels = ["qwen3.5:9b", "stub"]
 private let menuBarAskTimeoutSeconds = 20.0
 
 private func resolveMenuBarAskModels() -> [String] {

@@ -75,13 +75,13 @@ class TestMenuBridge:
 
         assert observed["allow_mlx"] is False
 
-    def test_run_query_short_circuits_smalltalk(self, monkeypatch) -> None:
+    def test_run_query_short_circuits_smalltalk_even_with_model_backed_default(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jarvis.cli.menu_bridge._build_context",
             lambda model_id: (_ for _ in ()).throw(AssertionError("runtime context should not build")),
         )
 
-        payload = _run_query(query="안녕하세요", model_id="stub")
+        payload = _run_query(query="안녕하세요", model_id="qwen3.5:9b")
 
         assert payload.response == "안녕하세요. 무엇을 도와드릴까요?"
         assert payload.has_evidence is False
@@ -90,13 +90,13 @@ class TestMenuBridge:
         assert payload.guide_directive is not None
         assert payload.guide_directive.intent == "smalltalk"
 
-    def test_run_query_short_circuits_weather_intent(self, monkeypatch) -> None:
+    def test_run_query_short_circuits_weather_intent_even_with_model_backed_default(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jarvis.cli.menu_bridge._build_context",
             lambda model_id: (_ for _ in ()).throw(AssertionError("runtime context should not build")),
         )
 
-        payload = _run_query(query="오늘 날씨좀 알려주세요", model_id="stub")
+        payload = _run_query(query="오늘 날씨좀 알려주세요", model_id="qwen3.5:9b")
 
         assert "실시간 날씨 데이터" in payload.response
         assert payload.has_evidence is False
@@ -142,6 +142,10 @@ class TestMenuBridge:
         assert payload.render_hints.truncated is False
         assert payload.exploration is not None
         assert payload.exploration.target_file == "pipeline.py"
+        assert payload.source_presentation is not None
+        assert payload.source_presentation.kind == "code_symbol"
+        assert payload.source_presentation.title == "pipeline.py"
+        assert payload.source_presentation.preview_lines == ["def run_pipeline(): return True"]
         assert payload.guide_directive is not None
         assert payload.guide_directive.skill == "source_exploration"
         assert payload.guide_directive.should_hold is True
@@ -194,6 +198,54 @@ class TestMenuBridge:
         assert payload.source_presentation.preview_lines[0] == "일차: 3"
         assert any(line.startswith("점심: ") for line in payload.source_presentation.preview_lines)
 
+    def test_table_source_presentation_maps_extended_field_labels(self) -> None:
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-row-2",
+                    document_id="diet-sheet",
+                    text=(
+                        "Day=5 | Snack=아몬드10알 | Calories=350 | "
+                        "Supplements=오메가3 | Evening Supplements=마그네슘"
+                    ),
+                    citation=CitationRecord(
+                        document_id="diet-sheet",
+                        chunk_id="chunk-row-2",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.91,
+                    source_path="/tmp/14day_diet_supplements_final.xlsx",
+                    heading_path="table-row-Diet-4",
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="5일차 간식", language="ko", query_type="keyword"),),
+        )
+
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="5일차 간식 보여줘",
+                assistant_output="5일차 표 항목입니다. [1]",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="5일차 표 항목입니다. [1]", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.source_presentation is not None
+        assert payload.source_presentation.preview_lines == [
+            "일차: 5",
+            "간식: 아몬드10알",
+            "칼로리: 350",
+            "보충제: 오메가3",
+            "저녁 보충제: 마그네슘",
+        ]
+
     def test_builds_web_source_presentation(self) -> None:
         evidence = VerifiedEvidenceSet(
             items=(
@@ -233,6 +285,54 @@ class TestMenuBridge:
         assert payload.source_presentation is not None
         assert payload.source_presentation.kind == "web_page"
         assert payload.source_presentation.source_type == "web"
+        assert payload.source_presentation.title == "Overview"
+        assert payload.source_presentation.preview_lines == ["OpenAI API guide overview"]
+
+    def test_builds_document_section_source_presentation_preview(self) -> None:
+        evidence = VerifiedEvidenceSet(
+            items=(
+                EvidenceItem(
+                    chunk_id="chunk-doc-1",
+                    document_id="doc-hwp",
+                    text=(
+                        "그리기 개체는 여러 개의 개체를 하나의 틀로 묶을 수 있기 때문에, "
+                        "하나의 그림 코드에 하나 이상의 개체가 존재할 수 있다. "
+                        "파일상에는 다음과 같은 구조로 저장된다."
+                    ),
+                    citation=CitationRecord(
+                        document_id="doc-hwp",
+                        chunk_id="chunk-doc-1",
+                        label="[1]",
+                        state=CitationState.VALID,
+                    ),
+                    relevance_score=0.91,
+                    source_path="/tmp/한글문서파일형식_revision1.1_20110124.hwp",
+                    heading_path="문서 구조 > 그리기 개체 자료 구조 > 기본 구조",
+                ),
+            ),
+            query_fragments=(TypedQueryFragment(text="그리기 개체 기본 구조", language="ko", query_type="keyword"),),
+        )
+
+        payload = build_menu_response(
+            turn=ConversationTurn(
+                user_input="그리기 개체 기본 구조 설명해줘",
+                assistant_output="그리기 개체는 여러 개의 개체를 하나의 틀로 묶을 수 있습니다. [1]",
+                has_evidence=True,
+            ),
+            answer=AnswerDraft(content="그리기 개체는 여러 개의 개체를 하나의 틀로 묶을 수 있습니다. [1]", evidence=evidence, model_id="stub"),
+            safe_mode=False,
+            degraded_mode=False,
+            generation_blocked=False,
+            write_blocked=False,
+            rebuild_index_required=False,
+            knowledge_base_path=None,
+        )
+
+        assert payload.source_presentation is not None
+        assert payload.source_presentation.kind == "document_section"
+        assert payload.source_presentation.title == "기본 구조"
+        assert payload.source_presentation.preview_lines
+        assert payload.source_presentation.preview_lines[0].startswith("그리기 개체는 여러 개의 개체를")
 
     def test_marks_safe_mode_from_answer_model(self) -> None:
         payload = build_menu_response(

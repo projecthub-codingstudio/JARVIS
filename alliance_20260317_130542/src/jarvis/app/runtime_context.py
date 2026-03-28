@@ -669,11 +669,13 @@ def build_runtime_context(
     if llm_backend is not None:
         planner_backend = LLMIntentJSONBackend(llm_backend=llm_backend)
 
-    planner = Planner(
-        model_id="qwen3.5:9b",
-        lightweight_backend=planner_backend,
-        knowledge_base_path=resolved_kb_path,
-    )
+    planner_kwargs: dict[str, object] = {
+        "model_id": "qwen3.5:9b",
+        "knowledge_base_path": resolved_kb_path,
+    }
+    if planner_backend is not None:
+        planner_kwargs["lightweight_backend"] = planner_backend
+    planner = Planner(**planner_kwargs)
 
     # Cross-encoder reranker (lazy-loaded on first query)
     if lightweight_query_mode:

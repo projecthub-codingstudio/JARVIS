@@ -136,3 +136,43 @@ def test_planner_accepts_llm_intent_json_backend() -> None:
     assert analysis.entities["day_numbers"] == [9]
     assert analysis.entities["meal_slots"] == ["dinner"]
     assert analysis.source == "llm_json"
+
+
+def test_planner_merges_keyword_expansion_into_llm_analysis() -> None:
+    class FakeBackend:
+        def generate(self, prompt: str, context: str, intent: str) -> str:
+            assert intent == "planner_intent_json"
+            return """
+            {
+              "retrieval_task": "document_qa",
+              "intent": "qa",
+              "sub_intents": [],
+              "entities": {},
+              "search_terms": ["projecthub", "브로셔"],
+              "target_file": "",
+              "language": "ko",
+              "confidence": 0.91,
+              "source": "llm_json"
+            }
+            """
+
+    planner = Planner(lightweight_backend=LLMIntentJSONBackend(llm_backend=FakeBackend()))
+
+    analysis = planner.analyze("ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?")
+
+    assert "brochure" in analysis.search_terms
+    assert analysis.source == "llm_json"
+
+
+def test_planner_falls_back_to_keyword_expansion_when_llm_intent_json_is_invalid() -> None:
+    class FakeBackend:
+        def generate(self, prompt: str, context: str, intent: str) -> str:
+            assert intent == "planner_intent_json"
+            return "not-json"
+
+    planner = Planner(lightweight_backend=LLMIntentJSONBackend(llm_backend=FakeBackend()))
+
+    analysis = planner.analyze("ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?")
+
+    assert "brochure" in analysis.search_terms
+    assert analysis.source == "lightweight"

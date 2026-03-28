@@ -11,11 +11,19 @@ import re
 from pathlib import Path
 
 from jarvis.contracts import TypedQueryFragment
+from jarvis.identifier_restoration import rewrite_query_with_identifiers
 from jarvis.query_normalization import normalize_spoken_code_query
 
 _KOREAN_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
 _CODE_RE = re.compile(
     r"(?:def |class |import |from |function |const |let |var |=>|->|\(\)|\.py|\.ts|\.js)"
+)
+_CODE_NORMALIZATION_HINT_RE = re.compile(
+    r"(소스|코드|클래스|함수|메서드|메소드|변수|필드|심볼|식별자|모듈|임포트|"
+    r"파이썬|자바스크립트|타입스크립트|스위프트|러스트|고랭|경로|path|"
+    r"\bclass\b|\bdef\b|\bfunction\b|\bmethod\b|\bmodule\b|\bimport\b|"
+    r"\.py\b|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.sql\b|\.java\b|\.kt\b|\.go\b|\.rs\b|\.cpp\b)",
+    re.IGNORECASE,
 )
 
 # Matches filenames with extensions
@@ -110,10 +118,7 @@ class QueryDecomposer:
         if not query.strip():
             return []
 
-        normalized_query = normalize_spoken_code_query(
-            query,
-            knowledge_base_path=self._knowledge_base_path,
-        )
+        normalized_query = self._normalize_query(query)
         language = _detect_language(normalized_query)
         filenames = _extract_filenames(normalized_query)
         keywords = _extract_keywords(normalized_query, filenames)
@@ -139,3 +144,20 @@ class QueryDecomposer:
             ))
 
         return fragments
+
+    def _normalize_query(self, query: str) -> str:
+        normalized = query.strip()
+        if not normalized:
+            return query
+        if _CODE_NORMALIZATION_HINT_RE.search(normalized):
+            return normalize_spoken_code_query(
+                query,
+                knowledge_base_path=self._knowledge_base_path,
+            )
+        rewrite = rewrite_query_with_identifiers(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        if any(candidate.kind == "filename" for candidate in rewrite.candidates):
+            return rewrite.rewritten_query
+        return query

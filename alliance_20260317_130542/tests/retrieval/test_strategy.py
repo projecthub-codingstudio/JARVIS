@@ -170,3 +170,89 @@ def test_document_strategy_penalizes_negated_topic_hits() -> None:
     )
 
     assert fts_hits[0].chunk_id == "chunk-target"
+
+
+def test_document_strategy_prepends_document_path_hits_for_brochure_terms() -> None:
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE documents (document_id TEXT PRIMARY KEY, path TEXT, indexing_status TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, document_id TEXT, text TEXT, heading_path TEXT, line_start INTEGER, line_end INTEGER)"
+    )
+    db.execute(
+        "INSERT INTO documents VALUES (?, ?, ?)",
+        ("doc-brochure", "/tmp/ProjectHub_Brochure.pptx", "INDEXED"),
+    )
+    db.execute(
+        "INSERT INTO documents VALUES (?, ?, ?)",
+        ("doc-other", "/tmp/pipeline.py", "INDEXED"),
+    )
+    db.execute(
+        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?)",
+        ("chunk-brochure", "doc-brochure", "ProjectHub macOS용 올인원 프로젝트 관리 도구", "", 0, 0),
+    )
+    db.execute(
+        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?)",
+        ("chunk-other", "doc-other", "class Pipeline: pass", "code:python", 1, 1),
+    )
+    db.commit()
+
+    strategy = DocumentStrategy()
+    analysis = QueryAnalysis(
+        retrieval_task="document_qa",
+        search_terms=["projecthub", "brochure"],
+    )
+    fts_hits, _ = strategy.augment_candidates(
+        RetrievalInputs(
+            query="ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?",
+            analysis=analysis,
+            fragments=[],
+            fts_hits=[SearchHit(chunk_id="chunk-other", document_id="doc-other", score=2.0, snippet="class Pipeline: pass")],
+            vector_hits=[],
+            db=db,
+            targeted_file_search=lambda query, fragments: [],
+            explicit_file_scoped_query=lambda query: False,
+        )
+    )
+
+    assert fts_hits[0].chunk_id == "chunk-brochure"
+
+
+def test_document_strategy_normalizes_korean_brochure_path_terms() -> None:
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE documents (document_id TEXT PRIMARY KEY, path TEXT, indexing_status TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, document_id TEXT, text TEXT, heading_path TEXT, line_start INTEGER, line_end INTEGER)"
+    )
+    db.execute(
+        "INSERT INTO documents VALUES (?, ?, ?)",
+        ("doc-brochure", "/tmp/ProjectHub_Brochure.pptx", "INDEXED"),
+    )
+    db.execute(
+        "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?)",
+        ("chunk-brochure", "doc-brochure", "ProjectHub macOS용 올인원 프로젝트 관리 도구", "", 0, 0),
+    )
+    db.commit()
+
+    strategy = DocumentStrategy()
+    analysis = QueryAnalysis(
+        retrieval_task="document_qa",
+        search_terms=["projecthub", "브로셔에서", "projecthub를", "어떻게", "소개하나요", "브로셔"],
+    )
+    fts_hits, _ = strategy.augment_candidates(
+        RetrievalInputs(
+            query="ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?",
+            analysis=analysis,
+            fragments=[],
+            fts_hits=[],
+            vector_hits=[],
+            db=db,
+            targeted_file_search=lambda query, fragments: [],
+            explicit_file_scoped_query=lambda query: False,
+        )
+    )
+
+    assert fts_hits[0].chunk_id == "chunk-brochure"

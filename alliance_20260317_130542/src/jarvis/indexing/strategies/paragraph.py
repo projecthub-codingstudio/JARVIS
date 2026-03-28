@@ -23,6 +23,10 @@ class ParagraphChunkStrategy:
             return []
         chunks = self._chunker.chunk(element.text, document_id=document_id)
         heading = element.metadata.get("heading_path", "")
+        if not heading:
+            page = element.metadata.get("page")
+            if isinstance(page, int) and page > 0:
+                heading = f"Page {page}"
         if heading:
             chunks = [replace(c, heading_path=heading) if not c.heading_path else c for c in chunks]
         # Filter out noise chunks (page numbers, short headers, etc.)

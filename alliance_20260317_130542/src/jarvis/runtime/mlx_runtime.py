@@ -41,6 +41,7 @@ _BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
 _NOISE_TOKEN_RE = re.compile(r"^(?:오프셋|자료형|의미|설명|길이|바이트|입력시|table|columns?)$", re.IGNORECASE)
 _EXPLANATORY_PHRASE_RE = re.compile(r"(?:이다|있다|된다|한다|의미|설명|구조로 저장|때문에|가능하다|존재한다)")
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+_PATH_LIKE_SEGMENT_RE = re.compile(r"(?:/[^/\s]+){2,}|\\[^\\\s]+(?:\\[^\\\s]+){1,}|]\(|workspace/|#L\d+", re.IGNORECASE)
 
 _KOREAN_NUMBER_WORDS = {
     0: "영",
@@ -129,7 +130,7 @@ def build_stub_spoken_response(prompt: str, evidence: VerifiedEvidenceSet) -> st
 
 def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
     if table_response := _build_table_stub_response(prompt, evidence, spoken=False):
-        return table_response
+        return _append_primary_citation_if_missing(table_response, evidence)
     head = _extract_best_stub_snippet(prompt, evidence)
     identifier = _extract_requested_identifier(prompt, evidence)
 
@@ -138,9 +139,24 @@ def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) ->
             intro = f"`{identifier}` 클래스는 다음과 같이 정의되어 있습니다."
         else:
             intro = "요청하신 클래스의 핵심 정의는 다음과 같습니다."
-        return f"{intro} {head}".strip()
+        return _append_primary_citation_if_missing(f"{intro} {head}".strip(), evidence)
 
-    return head
+    return _append_primary_citation_if_missing(head, evidence)
+
+
+def _append_primary_citation_if_missing(text: str, evidence: VerifiedEvidenceSet) -> str:
+    rendered = text.strip()
+    if not rendered:
+        return text
+    if re.search(r"\[\d+\]", rendered):
+        return rendered
+    if evidence.is_empty:
+        return rendered
+
+    primary_label = evidence.items[0].citation.label.strip()
+    if not primary_label:
+        return rendered
+    return f"{rendered} {primary_label}"
 
 
 def _build_table_stub_response(
@@ -341,6 +357,10 @@ def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> st
         if extracted:
             return extracted
 
+    primary_excerpt = _extract_primary_evidence_excerpt(prompt, evidence)
+    if primary_excerpt:
+        return primary_excerpt
+
     document_excerpt = _extract_relevant_document_excerpt(prompt, evidence)
     if document_excerpt:
         return document_excerpt
@@ -351,7 +371,7 @@ def _extract_best_stub_snippet(prompt: str, evidence: VerifiedEvidenceSet) -> st
 
 
 def _extract_relevant_document_excerpt(prompt: str, evidence: VerifiedEvidenceSet) -> str:
-    query_terms = _extract_query_terms(prompt)
+    query_terms = _extract_stub_query_terms(prompt, evidence)
     if not query_terms:
         return ""
 
@@ -366,6 +386,7 @@ def _extract_relevant_document_excerpt(prompt: str, evidence: VerifiedEvidenceSe
             if score <= 0:
                 continue
             score += _score_heading_match(item.heading_path, query_terms, segment)
+            score += _score_source_path_match(item.source_path, query_terms)
             # Favor earlier high-ranking evidence items but still let content relevance dominate.
             score += max(0.0, 1.0 - (item_index * 0.1) - (segment_index * 0.02))
             if score > best_score:
@@ -377,6 +398,52 @@ def _extract_relevant_document_excerpt(prompt: str, evidence: VerifiedEvidenceSe
     if not best_segment:
         return ""
     return _expand_stub_excerpt(best_segment, best_segments, best_segment_index)
+
+
+def _extract_primary_evidence_excerpt(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    if not evidence.items:
+        return ""
+    query_terms = _extract_stub_query_terms(prompt, evidence)
+    if not query_terms:
+        return ""
+
+    primary_item = evidence.items[0]
+    if (
+        _score_source_path_match(primary_item.source_path, query_terms) <= 0
+        and _score_heading_match(primary_item.heading_path, query_terms) <= 0
+    ):
+        return ""
+
+    segments = _split_document_segments(primary_item.text)
+    if not segments:
+        return re.sub(r"\s+", " ", primary_item.text.strip())[:220].rstrip()
+
+    best_segment = ""
+    best_score = -1.0
+    best_index = -1
+    for index, segment in enumerate(segments):
+        score = _score_document_segment(segment, query_terms)
+        if score <= 0:
+            continue
+        score += _score_heading_match(primary_item.heading_path, query_terms, segment)
+        score += _score_source_path_match(primary_item.source_path, query_terms)
+        if score > best_score:
+            best_score = score
+            best_segment = segment
+            best_index = index
+
+    if not best_segment:
+        return re.sub(r"\s+", " ", primary_item.text.strip())[:220].rstrip()
+    return _expand_stub_excerpt(best_segment, segments, best_index)
+
+
+def _extract_stub_query_terms(prompt: str, evidence: VerifiedEvidenceSet) -> list[str]:
+    query_terms = _extract_query_terms(prompt)
+    for fragment in evidence.query_fragments:
+        for term in _extract_query_terms(fragment.text):
+            if term not in query_terms:
+                query_terms.append(term)
+    return query_terms
 
 
 def _extract_query_terms(prompt: str) -> list[str]:
@@ -476,6 +543,8 @@ def _score_document_segment(segment: str, query_terms: list[str]) -> float:
     overlap_terms = [term for term in query_terms if term in lowered]
     if not overlap_terms:
         return 0.0
+    if _is_path_like_segment(segment) and len(overlap_terms) <= 1:
+        return 0.0
 
     score = float(len(overlap_terms) * 12)
     if len(segment) <= 180:
@@ -494,6 +563,10 @@ def _score_document_segment(segment: str, query_terms: list[str]) -> float:
     return score
 
 
+def _is_path_like_segment(segment: str) -> bool:
+    return bool(_PATH_LIKE_SEGMENT_RE.search(segment))
+
+
 def _score_heading_match(heading_path: str, query_terms: list[str], segment: str = "") -> float:
     if not heading_path:
         return 0.0
@@ -504,6 +577,16 @@ def _score_heading_match(heading_path: str, query_terms: list[str], segment: str
         return 0.0
     heading_only_terms = [term for term in overlap_terms if term not in segment_lowered]
     return float(len(overlap_terms) * 6 + len(heading_only_terms) * 8)
+
+
+def _score_source_path_match(source_path: str, query_terms: list[str]) -> float:
+    if not source_path:
+        return 0.0
+    lowered = Path(source_path).name.lower()
+    overlap_terms = [term for term in query_terms if term in lowered]
+    if not overlap_terms:
+        return 0.0
+    return float(len(overlap_terms) * 10)
 
 
 def _extract_source_snippet(

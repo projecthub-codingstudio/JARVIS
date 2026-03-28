@@ -71,3 +71,23 @@ class TestQueryDecomposer:
 
         assert any("pipeline.py" in text for text in texts)
         assert any("Pipeline" in text for text in texts)
+
+    def test_does_not_pollute_document_query_with_code_identifiers(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class StageDesign:\n"
+            "    project_path = 'demo'\n"
+            "    def _parse_research_section(self) -> None:\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+
+        fragments = QueryDecomposer(knowledge_base_path=kb).decompose(
+            "ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?"
+        )
+        texts = [f.text for f in fragments]
+
+        assert any("ProjectHub 브로셔에서" in text or "projecthub 브로셔에서" in text for text in texts)
+        assert all("project_path" not in text for text in texts)
+        assert all("_parse_research_section" not in text for text in texts)

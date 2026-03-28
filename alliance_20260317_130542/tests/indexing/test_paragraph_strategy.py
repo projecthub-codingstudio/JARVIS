@@ -34,6 +34,16 @@ class TestParagraphChunkStrategy:
         chunks = strategy.chunk(el, document_id="d1")
         assert chunks[0].heading_path == "Architecture"
 
+    def test_page_metadata_falls_back_to_page_heading(self) -> None:
+        el = DocumentElement(
+            element_type="text",
+            text="PDF body text that is long enough to pass the paragraph chunk threshold.",
+            metadata={"page": 3},
+        )
+        strategy = ParagraphChunkStrategy()
+        chunks = strategy.chunk(el, document_id="d1")
+        assert chunks[0].heading_path == "Page 3"
+
     def test_empty_text_returns_empty(self) -> None:
         el = DocumentElement(element_type="text", text="")
         strategy = ParagraphChunkStrategy()
