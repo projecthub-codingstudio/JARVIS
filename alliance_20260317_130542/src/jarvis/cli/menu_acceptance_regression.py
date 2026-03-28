@@ -1,4 +1,4 @@
-"""Run retrieval regression suites against a real JARVIS runtime."""
+"""Run menu bar acceptance regressions against the local runtime."""
 
 from __future__ import annotations
 
@@ -6,21 +6,26 @@ import argparse
 import json
 from pathlib import Path
 
+from jarvis.acceptance.regression_runner import (
+    load_menu_acceptance_cases,
+    run_menu_acceptance_suite,
+)
 from jarvis.app.runtime_context import build_runtime_context, shutdown_runtime_context
-from jarvis.retrieval.regression_runner import load_regression_cases, run_regression_suite
+from jarvis.cli.menu_bridge import _run_query_in_context
+from jarvis.transcript_repair import build_transcript_repair
 
 
 def _default_fixture_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "retrieval_regression_v1.json"
+    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "menu_acceptance_regression_v1.json"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run JARVIS retrieval regression suite")
+    parser = argparse.ArgumentParser(description="Run JARVIS menu acceptance regression suite")
     parser.add_argument(
         "--fixture",
         type=Path,
         default=_default_fixture_path(),
-        help="Path to retrieval regression fixture JSON",
+        help="Path to menu acceptance regression fixture JSON",
     )
     parser.add_argument(
         "--output",
@@ -52,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    cases = load_regression_cases(args.fixture)
+    cases = load_menu_acceptance_cases(args.fixture)
     context = build_runtime_context(
         model_id=args.model,
         knowledge_base_path=args.knowledge_base,
@@ -62,10 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         data_dir=args.data_dir,
     )
     try:
-        report = run_regression_suite(
+        report = run_menu_acceptance_suite(
             cases=cases,
-            planner=context.orchestrator._planner,  # type: ignore[attr-defined]
-            retrieve_fn=lambda query, analysis: context.orchestrator._retrieve_evidence(query, analysis=analysis),
+            repair_fn=build_transcript_repair,
+            ask_fn=lambda query: _run_query_in_context(query=query, model_id=args.model, context=context),
         )
     finally:
         shutdown_runtime_context(context)
@@ -84,10 +89,10 @@ def main(argv: list[str] | None = None) -> int:
                 "total_cases": report.total_cases,
                 "passed_cases": report.passed_cases,
                 "pass_rate": payload["pass_rate"],
-                "task_accuracy": report.task_accuracy,
+                "display_accuracy": report.display_accuracy,
+                "final_query_accuracy": report.final_query_accuracy,
+                "spoken_accuracy": report.spoken_accuracy,
                 "source_accuracy": report.source_accuracy,
-                "section_accuracy": report.section_accuracy,
-                "row_accuracy": report.row_accuracy,
                 "output_path": str(args.output) if args.output is not None else "",
             },
             ensure_ascii=False,

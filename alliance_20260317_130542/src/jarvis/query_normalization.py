@@ -13,6 +13,7 @@ from jarvis.identifier_restoration import (
     rewrite_query_with_identifiers,
 )
 from jarvis.runtime.stt_biasing import load_indexed_vocabulary_terms
+from jarvis.transcript_repair import prepare_transcript_for_query
 
 _CLAUSE_SPLIT_RE = re.compile(r"[.!?\n]+")
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}|[가-힣]{2,}")
@@ -25,6 +26,67 @@ _TRAILING_NOISE_HINT_RE = re.compile(r"(뭐지|뭔가|왜.*?가|어쩌.*?가|웬
 _KOREAN_TOKEN_RE = re.compile(r"[가-힣]{2,}")
 _KOREAN_STOPWORDS = {"안녕하세요", "반갑습니다", "설명", "알려", "주세요", "문서", "구조", "기본"}
 _MIN_FUZZY_SCORE = 0.88
+_LEADING_GREETING_RE = re.compile(
+    r"^\s*(?:안녕하세요|안녕(?:하세요)?|반갑습니다|반가워요|반가워|저기요|자비스야)\s*[,.! ]*",
+    re.IGNORECASE,
+)
+_DAY_NUMBER_WORD_RE = re.compile(
+    r"(?P<number>열한|열두|열세|열세|열네|열다섯|열여섯|열일곱|열여덟|열아홉|스물|스무|"
+    r"하나|한|둘|두|셋|세|넷|네|다섯|여섯|일곱|여덟|아홉|열|"
+    r"십구|십팔|십칠|십육|십오|십사|십삼|십이|십일|십|"
+    r"구|팔|칠|육|오|사|삼|이|일)\s*(?:일|1)\s*차",
+    re.IGNORECASE,
+)
+_DAY_NUMBER_DIGIT_RE = re.compile(
+    r"(?P<number>\d{1,2})\s*(?:일|1)\s*차",
+    re.IGNORECASE,
+)
+_DAY_NUMBER_WORDS = {
+    "한": 1,
+    "하나": 1,
+    "일": 1,
+    "두": 2,
+    "둘": 2,
+    "이": 2,
+    "세": 3,
+    "셋": 3,
+    "삼": 3,
+    "네": 4,
+    "넷": 4,
+    "사": 4,
+    "다섯": 5,
+    "오": 5,
+    "여섯": 6,
+    "육": 6,
+    "일곱": 7,
+    "칠": 7,
+    "여덟": 8,
+    "팔": 8,
+    "아홉": 9,
+    "구": 9,
+    "열": 10,
+    "십": 10,
+    "열한": 11,
+    "십일": 11,
+    "열두": 12,
+    "십이": 12,
+    "열세": 13,
+    "십삼": 13,
+    "열네": 14,
+    "십사": 14,
+    "열다섯": 15,
+    "십오": 15,
+    "열여섯": 16,
+    "십육": 16,
+    "열일곱": 17,
+    "십칠": 17,
+    "열여덟": 18,
+    "십팔": 18,
+    "열아홉": 19,
+    "십구": 19,
+    "스무": 20,
+    "스물": 20,
+}
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -120,6 +182,30 @@ def _restore_korean_vocabulary_terms(text: str) -> str:
     return _KOREAN_TOKEN_RE.sub(replace, text)
 
 
+def _strip_leading_conversational_prefix(text: str) -> str:
+    normalized = _normalize_whitespace(text)
+    if not normalized or not _REQUEST_HINT_RE.search(normalized):
+        return normalized
+    stripped = _LEADING_GREETING_RE.sub("", normalized, count=1)
+    return stripped or normalized
+
+
+def _normalize_korean_day_expressions(text: str) -> str:
+    def replace_word(match: re.Match[str]) -> str:
+        raw = match.group("number")
+        value = _DAY_NUMBER_WORDS.get(raw.lower())
+        if value is None:
+            return match.group(0)
+        return f"{value}일차"
+
+    normalized = _DAY_NUMBER_WORD_RE.sub(replace_word, text)
+
+    def replace_digit(match: re.Match[str]) -> str:
+        return f"{int(match.group('number'))}일차"
+
+    return _DAY_NUMBER_DIGIT_RE.sub(replace_digit, normalized)
+
+
 @lru_cache(maxsize=1)
 def _indexed_korean_vocabulary() -> tuple[str, ...]:
     terms: list[str] = []
@@ -141,7 +227,7 @@ def _indexed_korean_vocabulary() -> tuple[str, ...]:
 
 def normalize_spoken_code_query(text: str, *, knowledge_base_path: Path | None = None) -> str:
     """Preserve the original query and append high-confidence identifier anchors."""
-    cleaned = _select_spoken_clauses(text)
+    cleaned = prepare_transcript_for_query(text)
     cleaned = _restore_korean_vocabulary_terms(cleaned)
     return rewrite_query_with_identifiers(
         cleaned,

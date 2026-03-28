@@ -32,8 +32,8 @@ class VoicePersona:
 # The Iron Man JARVIS persona
 JARVIS_PERSONA = VoicePersona(
     name="JARVIS",
-    description="Refined cinematic AI assistant — calm, intelligent, polished, masculine",
-    macos_voice_ko="Reed (한국어(대한민국))",
+    description="Refined cinematic AI assistant — calm, intelligent, polished",
+    macos_voice_ko="Yuna (Premium)",
     macos_voice_en="Reed (영어(영국))",
     macos_rate=155,
     response_style_prompt=(

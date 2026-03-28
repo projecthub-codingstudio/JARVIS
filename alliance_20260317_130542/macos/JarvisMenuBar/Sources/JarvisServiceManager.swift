@@ -1,5 +1,29 @@
 import Foundation
 
+enum JarvisServiceManagerRegistry {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var managers: [String: JarvisServiceManager] = [:]
+
+    static func sharedManager(
+        configuration: BridgeConfiguration,
+        socketPath: String,
+        knowledgeBaseOverridePath: String?
+    ) -> JarvisServiceManager {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = managers[socketPath] {
+            return existing
+        }
+        let manager = JarvisServiceManager(
+            configuration: configuration,
+            socketPath: socketPath,
+            knowledgeBaseOverridePath: knowledgeBaseOverridePath
+        )
+        managers[socketPath] = manager
+        return manager
+    }
+}
+
 actor JarvisServiceManager {
     private let configuration: BridgeConfiguration
     private let socketPath: String

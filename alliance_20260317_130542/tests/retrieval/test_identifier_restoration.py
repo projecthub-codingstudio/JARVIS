@@ -25,6 +25,21 @@ class Pipeline:
     return kb
 
 
+def _build_symbol_heavy_kb(tmp_path: Path) -> Path:
+    kb = tmp_path / "knowledge_base"
+    kb.mkdir()
+    (kb / "pipeline.py").write_text(
+        """
+class DebateRound:
+    def __init__(self, opinion_id: str, min_debate_rounds: int) -> None:
+        self.opinion_id = opinion_id
+        self.min_debate_rounds = min_debate_rounds
+""".strip(),
+        encoding="utf-8",
+    )
+    return kb
+
+
 def test_build_identifier_lexicon_extracts_code_symbols(tmp_path: Path) -> None:
     kb = _build_kb(tmp_path)
 
@@ -74,6 +89,19 @@ def test_rewrite_query_with_identifiers_handles_korean_suffixes(tmp_path: Path) 
 
     assert "pipeline.py" in rewrite.rewritten_query
     assert "Pipeline" in rewrite.rewritten_query
+
+
+def test_score_identifier_candidates_skips_symbols_for_non_code_queries(tmp_path: Path) -> None:
+    kb = _build_symbol_heavy_kb(tmp_path)
+    lexicon = build_identifier_lexicon(kb)
+
+    candidates = score_identifier_candidates(
+        "다이어트 식단표에서 3일차 저녁 메뉴 알려줘요",
+        lexicon,
+        limit=5,
+    )
+
+    assert candidates == ()
 
 
 def test_load_voice_query_samples_and_rewrite_against_eval_set(tmp_path: Path) -> None:

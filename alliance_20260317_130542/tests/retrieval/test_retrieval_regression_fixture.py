@@ -21,6 +21,8 @@ def test_retrieval_regression_fixture_has_minimum_coverage() -> None:
     assert "mixed_greeting_task" in categories
     assert "numeric_in_prose" in categories
     assert "stt_corruption" in categories
+    assert "stt_slot_corruption" in categories
+    assert "transcript_tail_noise" in categories
     assert "mixed_task_disambiguation" in categories
     assert "live_data_request" in categories
 

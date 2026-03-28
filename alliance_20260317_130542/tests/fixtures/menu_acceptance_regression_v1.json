@@ -1,0 +1,78 @@
+{
+  "version": "2026-03-29",
+  "description": "Menu bar voice acceptance regression set from raw transcript to spoken response",
+  "queries": [
+    {
+      "id": "voice-001",
+      "raw_transcript": "안녕하세요 다이어트 식단표 중에 삼 일차 저녁 메뉴 알려 주세요",
+      "expected_display_text": "다이어트 식단표 중에 3일차 저녁 메뉴 알려 주세요",
+      "expected_final_query": "다이어트 식단표 중에 3일차 저녁 메뉴 알려 주세요",
+      "expected_spoken_response": "3일차 저녁은 순두부와 방울토마토입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "greeting_plus_day_slot_repair"
+    },
+    {
+      "id": "voice-002",
+      "raw_transcript": "다이어트 메뉴 표 에서 육 일자 점심 메뉴 알려 주세요",
+      "expected_display_text": "다이어트 식단표 에서 6일차 점심 메뉴 알려 주세요",
+      "expected_final_query": "다이어트 식단표 에서 6일차 점심 메뉴 알려 주세요",
+      "expected_spoken_response": "6일차 점심은 닭가슴살과 샐러드와 레몬입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "diet_slot_repair"
+    },
+    {
+      "id": "voice-003",
+      "raw_transcript": "안녕하세요 다이어트 식단표 에서 9일 회차 아침 메뉴 알려 주세요",
+      "expected_display_text": "다이어트 식단표 에서 9일차 아침 메뉴 알려 주세요",
+      "expected_final_query": "다이어트 식단표 에서 9일차 아침 메뉴 알려 주세요",
+      "expected_spoken_response": "9일차 아침은 구운계란 두 개와 요거트와 베리입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "diet_slot_repair"
+    },
+    {
+      "id": "voice-004",
+      "raw_transcript": "다이어트 식단표에서 3일차 저녁 메뉴 알려줘요 min_debate_rounds opinion_id DebateRound",
+      "expected_display_text": "다이어트 식단표에서 3일차 저녁 메뉴 알려줘요",
+      "expected_final_query": "다이어트 식단표에서 3일차 저녁 메뉴 알려줘요",
+      "expected_spoken_response": "3일차 저녁은 순두부와 방울토마토입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "transcript_tail_noise"
+    },
+    {
+      "id": "voice-005",
+      "raw_transcript": "다이어트 식단표에서 11일차 아침 메뉴 알려주세요",
+      "expected_display_text": "다이어트 식단표에서 11일차 아침 메뉴 알려주세요",
+      "expected_final_query": "다이어트 식단표에서 11일차 아침 메뉴 알려주세요",
+      "expected_spoken_response": "11일차 아침은 구운계란 두 개와 아몬드입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "stable_table_lookup"
+    },
+    {
+      "id": "voice-006",
+      "raw_transcript": "다이어트 식단표 에서 6일차 점심 하고 11일차 저녁 메뉴 알려줘",
+      "expected_display_text": "다이어트 식단표 에서 6일차 점심 하고 11일차 저녁 메뉴 알려줘",
+      "expected_final_query": "다이어트 식단표 에서 6일차 점심 하고 11일차 저녁 메뉴 알려줘",
+      "expected_spoken_response": "6일차 점심은 닭가슴살과 샐러드와 레몬입니다. / 11일차 저녁은 두부와 아보카도입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "multi_day_paired_slots"
+    },
+    {
+      "id": "voice-007",
+      "raw_transcript": "다이어트 식단표 에서 1일차 점심 9일차 저녁 메뉴 알려줘",
+      "expected_display_text": "다이어트 식단표 에서 1일차 점심 9일차 저녁 메뉴 알려줘",
+      "expected_final_query": "다이어트 식단표 에서 1일차 점심 9일차 저녁 메뉴 알려줘",
+      "expected_spoken_response": "1일차 점심은 닭가슴살과 현미밥 이 분의 일과 피망샐러드입니다. / 9일차 저녁은 순두부와 김과 피망입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "multi_day_paired_slots"
+    },
+    {
+      "id": "voice-008",
+      "raw_transcript": "다이어트 식단표 에서 일 1일 아침 메뉴 알려줘",
+      "expected_display_text": "다이어트 식단표 에서 1일차 아침 메뉴 알려줘",
+      "expected_final_query": "다이어트 식단표 에서 1일차 아침 메뉴 알려줘",
+      "expected_spoken_response": "1일차 아침은 구운계란 두 개와 방울토마토입니다.",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "diet_slot_repair"
+    }
+  ]
+}
