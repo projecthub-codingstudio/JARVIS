@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -108,8 +109,11 @@ def run_query_latency_bench(corpus_dir: Path, queries_path: Path) -> PerfReport:
         for query in _load_queries(queries_path):
             started_at = time.perf_counter()
             fragments = decomposer.decompose(str(query["text"]))
-            fts_hits = fts.search(fragments, top_k=10)
-            vector_hits = vector.search(fragments, top_k=10)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fts_future = executor.submit(fts.search, fragments, 10)
+                vector_future = executor.submit(vector.search, fragments, 10)
+                fts_hits = fts_future.result()
+                vector_hits = vector_future.result()
             hybrid_results = fusion.fuse(fts_hits, vector_hits, top_k=10)
             evidence = evidence_builder.build(hybrid_results, fragments)
             latency_ms = (time.perf_counter() - started_at) * 1000

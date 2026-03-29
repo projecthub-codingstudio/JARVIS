@@ -1,0 +1,263 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		586446482F73C1E600DBD265 /* JarvisGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586446472F73C1E600DBD265 /* JarvisGuide.swift */; };
+		5864464A2F75023A00DBD265 /* JarvisBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 586446492F75023A00DBD265 /* JarvisBridge.swift */; };
+		5870108E2F6EE1D200EC5CBC /* NativeAudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */; };
+		58834C892F730F1200D946F1 /* LiveSpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */; };
+		58A1F0012F74200100DBD265 /* JarvisServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0002F74200100DBD265 /* JarvisServiceClient.swift */; };
+		58A1F0032F74200200DBD265 /* JarvisSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0022F74200200DBD265 /* JarvisSocketTransport.swift */; };
+		58A1F0052F74200300DBD265 /* JarvisServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0042F74200300DBD265 /* JarvisServiceManager.swift */; };
+		58A1F0072F74200400DBD265 /* JarvisRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0062F74200400DBD265 /* JarvisRuntimeSupport.swift */; };
+		A1000001 /* JarvisMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001 /* JarvisMenuBarApp.swift */; };
+		A1000003 /* MenuModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000003 /* MenuModels.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		586446472F73C1E600DBD265 /* JarvisGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisGuide.swift; sourceTree = "<group>"; };
+		586446492F75023A00DBD265 /* JarvisBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisBridge.swift; sourceTree = "<group>"; };
+		5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudioRecorder.swift; sourceTree = "<group>"; };
+		58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSpeechTranscriber.swift; sourceTree = "<group>"; };
+		58A1F0002F74200100DBD265 /* JarvisServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisServiceClient.swift; sourceTree = "<group>"; };
+		58A1F0022F74200200DBD265 /* JarvisSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisSocketTransport.swift; sourceTree = "<group>"; };
+		58A1F0042F74200300DBD265 /* JarvisServiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisServiceManager.swift; sourceTree = "<group>"; };
+		58A1F0062F74200400DBD265 /* JarvisRuntimeSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisRuntimeSupport.swift; sourceTree = "<group>"; };
+		B1000001 /* JarvisMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisMenuBarApp.swift; sourceTree = "<group>"; };
+		B1000002 /* JarvisBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisBridge.swift; sourceTree = "<group>"; };
+		B1000003 /* MenuModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuModels.swift; sourceTree = "<group>"; };
+		B1000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B1000011 /* JarvisMenuBar.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JarvisMenuBar.entitlements; sourceTree = "<group>"; };
+		B1000020 /* JarvisMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		C1000001 = {
+			isa = PBXGroup;
+			children = (
+				C1000002 /* Sources */,
+				C1000003 /* Resources */,
+				C1000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C1000002 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				586446492F75023A00DBD265 /* JarvisBridge.swift */,
+				586446472F73C1E600DBD265 /* JarvisGuide.swift */,
+				58834C882F730F1200D946F1 /* LiveSpeechTranscriber.swift */,
+				5870108D2F6EE1D200EC5CBC /* NativeAudioRecorder.swift */,
+				58A1F0002F74200100DBD265 /* JarvisServiceClient.swift */,
+				58A1F0042F74200300DBD265 /* JarvisServiceManager.swift */,
+				58A1F0062F74200400DBD265 /* JarvisRuntimeSupport.swift */,
+				58A1F0022F74200200DBD265 /* JarvisSocketTransport.swift */,
+				B1000001 /* JarvisMenuBarApp.swift */,
+				B1000002 /* JarvisBridge.swift */,
+				B1000003 /* MenuModels.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		C1000003 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				B1000010 /* Info.plist */,
+				B1000011 /* JarvisMenuBar.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		C1000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B1000020 /* JarvisMenuBar.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D1000001 /* JarvisMenuBar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E1000003 /* Build configuration list for PBXNativeTarget "JarvisMenuBar" */;
+			buildPhases = (
+				D1000002 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JarvisMenuBar;
+			productName = JarvisMenuBar;
+			productReference = B1000020 /* JarvisMenuBar.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F1000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = E1000001 /* Build configuration list for PBXProject "JarvisMenuBar" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = ko;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				ko,
+				en,
+				Base,
+			);
+			mainGroup = C1000001;
+			productRefGroup = C1000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D1000001 /* JarvisMenuBar */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D1000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001 /* JarvisMenuBarApp.swift in Sources */,
+				58834C892F730F1200D946F1 /* LiveSpeechTranscriber.swift in Sources */,
+				58A1F0012F74200100DBD265 /* JarvisServiceClient.swift in Sources */,
+				58A1F0052F74200300DBD265 /* JarvisServiceManager.swift in Sources */,
+				58A1F0072F74200400DBD265 /* JarvisRuntimeSupport.swift in Sources */,
+				58A1F0032F74200200DBD265 /* JarvisSocketTransport.swift in Sources */,
+				A1000003 /* MenuModels.swift in Sources */,
+				5870108E2F6EE1D200EC5CBC /* NativeAudioRecorder.swift in Sources */,
+				586446482F73C1E600DBD265 /* JarvisGuide.swift in Sources */,
+				5864464A2F75023A00DBD265 /* JarvisBridge.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		E1000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E1000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_OPTIMIZATION_LEVEL = s;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		E1000020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/JarvisMenuBar.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JX58296577;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jarvis.menubar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E1000021 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/JarvisMenuBar.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JX58296577;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jarvis.menubar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E1000001 /* Build configuration list for PBXProject "JarvisMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1000010 /* Debug */,
+				E1000011 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E1000003 /* Build configuration list for PBXNativeTarget "JarvisMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1000020 /* Debug */,
+				E1000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F1000001 /* Project object */;
+}

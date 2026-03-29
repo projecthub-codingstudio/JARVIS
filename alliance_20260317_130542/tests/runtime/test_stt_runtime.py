@@ -42,3 +42,26 @@ class TestWhisperCppSTT:
 
         assert runtime.transcribe(audio) == "router transcript"
         assert router.active_model is None
+
+    def test_defaults_to_korean_language(self) -> None:
+        runtime = WhisperCppSTT()
+        command = runtime._build_command(
+            binary="/tmp/whisper-cli",
+            model_path=Path("/tmp/model.bin"),
+            audio_path=Path("/tmp/sample.wav"),
+        )
+
+        assert command[0] == "/tmp/whisper-cli"
+        assert "-l" in command
+        assert command[command.index("-l") + 1] == "ko"
+
+    def test_env_language_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("JARVIS_STT_LANGUAGE", "en")
+        runtime = WhisperCppSTT()
+        command = runtime._build_command(
+            binary="/tmp/whisper-cli",
+            model_path=Path("/tmp/model.bin"),
+            audio_path=Path("/tmp/sample.wav"),
+        )
+
+        assert command[command.index("-l") + 1] == "en"

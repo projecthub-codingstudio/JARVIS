@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from jarvis.contracts import ChunkRecord, DocumentRecord, EmbeddingRuntimeProtocol, IndexingStatus
+from jarvis.indexing.chunk_router import ChunkRouter
 from jarvis.indexing.chunker import Chunker
 from jarvis.indexing.parsers import DocumentParser
 from jarvis.indexing.tombstone import TombstoneManager
@@ -34,6 +35,7 @@ class IndexPipeline:
         self._db = db
         self._parser = parser
         self._chunker = chunker
+        self._chunk_router = ChunkRouter()
         self._tombstone = tombstone_manager
         self._embedding_runtime = embedding_runtime
         self._vector_index = vector_index
@@ -79,6 +81,26 @@ class IndexPipeline:
             "DELETE FROM chunks WHERE document_id = ?",
             (document_id,),
         )
+
+    def _remove_vectors_for_document(self, document_id: str) -> None:
+        if self._vector_index is None:
+            return
+        remove_document = getattr(self._vector_index, "remove_document", None)
+        if callable(remove_document):
+            remove_document(document_id)
+            return
+        chunk_ids = [r[0] for r in self._db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (document_id,),
+        ).fetchall()]
+        if chunk_ids:
+            self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+
+    def _mark_failed(self, record: DocumentRecord, *, reason: str) -> DocumentRecord:
+        failed_record = replace(record, indexing_status=IndexingStatus.FAILED)
+        self._write_document(failed_record)
+        self._db.commit()
+        raise ValueError(f"Indexing produced no searchable content for {record.path}: {reason}")
 
     def _insert_chunks(self, chunks: list[ChunkRecord]) -> None:
         """Insert chunks immediately without morpheme analysis.
@@ -195,17 +217,20 @@ class IndexPipeline:
         # Reuse document_id if path already exists
         if existing:
             record = replace(record, document_id=existing.document_id)
+            self._remove_vectors_for_document(existing.document_id)
             self._delete_chunks(existing.document_id)
 
-        # Parse and chunk
-        text = self._parser.parse(path)
-        chunks = self._chunker.chunk(text, document_id=record.document_id)
+        # Parse and chunk using structured pipeline
+        parsed_doc = self._parser.parse_structured(path)
+        chunks = self._chunk_router.chunk(parsed_doc, document_id=record.document_id)
 
         # Write document as INDEXING
         record = replace(record, indexing_status=IndexingStatus.INDEXING)
         self._write_document(record)
 
         # Write chunks
+        if not chunks:
+            return self._mark_failed(record, reason="empty parsed content")
         self._insert_chunks(chunks)
 
         # Mark as INDEXED
@@ -230,19 +255,16 @@ class IndexPipeline:
         existing = self._find_document_by_path(path)
         if existing:
             record = replace(record, document_id=existing.document_id)
-            # Remove old vectors from LanceDB before deleting chunks
-            chunk_ids = [r[0] for r in self._db.execute(
-                "SELECT chunk_id FROM chunks WHERE document_id = ?", (existing.document_id,)
-            ).fetchall()]
-            if chunk_ids and self._vector_index is not None:
-                self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+            self._remove_vectors_for_document(existing.document_id)
             self._delete_chunks(existing.document_id)
 
-        text = self._parser.parse(path)
-        chunks = self._chunker.chunk(text, document_id=record.document_id)
+        parsed_doc = self._parser.parse_structured(path)
+        chunks = self._chunk_router.chunk(parsed_doc, document_id=record.document_id)
 
         record = replace(record, indexing_status=IndexingStatus.INDEXING)
         self._write_document(record)
+        if not chunks:
+            return self._mark_failed(record, reason="empty parsed content")
         self._insert_chunks(chunks)
         record = replace(record, indexing_status=IndexingStatus.INDEXED)
         self._write_document(record)
@@ -262,12 +284,7 @@ class IndexPipeline:
         existing = self._find_document_by_path(path)
         if existing is None:
             return
-        # Remove vectors from LanceDB
-        chunk_ids = [r[0] for r in self._db.execute(
-            "SELECT chunk_id FROM chunks WHERE document_id = ?", (existing.document_id,)
-        ).fetchall()]
-        if chunk_ids and self._vector_index is not None:
-            self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+        self._remove_vectors_for_document(existing.document_id)
         self._delete_chunks(existing.document_id)
         self._tombstone.create_tombstone(existing)
 
@@ -289,12 +306,7 @@ class IndexPipeline:
                 document_id=row[0], path=row[1], content_hash=row[2],
                 size_bytes=row[3], indexing_status=IndexingStatus(row[4]),
             )
-            # Remove vectors from LanceDB
-            chunk_ids = [r[0] for r in self._db.execute(
-                "SELECT chunk_id FROM chunks WHERE document_id = ?", (doc.document_id,)
-            ).fetchall()]
-            if chunk_ids and self._vector_index is not None:
-                self._vector_index.remove(chunk_ids)  # type: ignore[union-attr]
+            self._remove_vectors_for_document(doc.document_id)
             self._delete_chunks(doc.document_id)
             self._tombstone.create_tombstone(doc)
             count += 1

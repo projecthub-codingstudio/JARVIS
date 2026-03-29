@@ -9,6 +9,7 @@ description = "Local-first personal workspace AI agent for Apple Silicon"
 requires-python = ">=3.12"
 dependencies = [
     "kiwipiepy>=0.18",
+    "lxml>=5.2",
     "mlx>=0.22",
     "mlx-lm",
     "numpy>=1.26",
@@ -18,6 +19,7 @@ dependencies = [
     "python-pptx>=1.0",
     "sentence-transformers>=3.0",
     "lancedb>=0.8",
+    "qwen-tts>=0.1.1",
     "openpyxl>=3.1",
     "python-hwpx>=0.1",
     "psutil>=5.9",

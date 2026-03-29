@@ -38,36 +38,50 @@ _INDEX_QUEUE_DEGRADED_THRESHOLD = 20
 
 def _sample_system_state() -> SystemStateSnapshot:
     """Sample current system state using psutil and macOS APIs."""
-    import psutil
     from datetime import datetime
 
     try:
-        mem = psutil.virtual_memory()
-        memory_pressure_pct = mem.percent
-    except (OSError, PermissionError):
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None
+
+    if psutil is not None:
+        try:
+            mem = psutil.virtual_memory()
+            memory_pressure_pct = mem.percent
+        except (OSError, PermissionError):
+            memory_pressure_pct = 0.0
+    else:
         memory_pressure_pct = 0.0
 
-    try:
-        swap = psutil.swap_memory()
-        swap_used_mb = int(swap.used / (1024 * 1024))
-    except (OSError, PermissionError):
+    if psutil is not None:
+        try:
+            swap = psutil.swap_memory()
+            swap_used_mb = int(swap.used / (1024 * 1024))
+        except (OSError, PermissionError):
+            swap_used_mb = 0
+    else:
         swap_used_mb = 0
 
-    try:
-        cpu_pct = psutil.cpu_percent(interval=0.1)
-    except (OSError, PermissionError):
+    if psutil is not None:
+        try:
+            cpu_pct = psutil.cpu_percent(interval=0.1)
+        except (OSError, PermissionError):
+            cpu_pct = 0.0
+    else:
         cpu_pct = 0.0
 
     # Battery
     on_ac = True
     battery_pct = 100
-    try:
-        battery = psutil.sensors_battery()
-        if battery is not None:
-            on_ac = battery.power_plugged or False
-            battery_pct = int(battery.percent)
-    except (OSError, PermissionError):
-        pass
+    if psutil is not None:
+        try:
+            battery = psutil.sensors_battery()
+            if battery is not None:
+                on_ac = battery.power_plugged or False
+                battery_pct = int(battery.percent)
+        except (OSError, PermissionError):
+            pass
 
     # Thermal state (macOS)
     thermal: ThermalState = "nominal"
@@ -241,9 +255,9 @@ class Governor:
             )
 
         model_map: dict[RuntimeTier, str] = {
-            "fast": "exaone3.5:7.8b",
-            "balanced": "qwen3:14b",
-            "deep": "qwen3:30b-a3b",
+            "fast": "qwen3.5:9b",
+            "balanced": "qwen3.5:9b",
+            "deep": "exaone4.0:32b",
             "unloaded": "",
         }
 
