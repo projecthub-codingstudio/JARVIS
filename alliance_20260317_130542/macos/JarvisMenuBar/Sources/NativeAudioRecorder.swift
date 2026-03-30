@@ -41,6 +41,9 @@ final class NativeAudioRecorder: @unchecked Sendable {
     /// Callback for guidance messages (e.g., wrong device selected).
     var onGuidanceMessage: ((String) -> Void)?
 
+    /// Callback for live microphone input level normalized to 0...1.
+    var onInputLevelChanged: ((Float) -> Void)?
+
     /// Callback for wake word audio chunks (16kHz mono Int16 PCM, ~80ms each).
     /// Set this to feed audio to the Python wake word detector.
     var onWakeWordAudioChunk: ((Data) -> Void)?
@@ -148,6 +151,8 @@ final class NativeAudioRecorder: @unchecked Sendable {
         isWriting = false
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
+        let levelCallback = onInputLevelChanged
+        DispatchQueue.main.async { levelCallback?(0) }
         audioFile = nil
         engineReady = false
     }
@@ -163,6 +168,9 @@ final class NativeAudioRecorder: @unchecked Sendable {
         totalFramesWritten = 0
         onVadStateChanged = nil
         onGuidanceMessage = nil
+        let levelCallback = onInputLevelChanged
+        DispatchQueue.main.async { levelCallback?(0) }
+        onInputLevelChanged = nil
         onLiveAudioBuffer = nil
         audioFile = nil  // closes the WAV file
 
@@ -284,6 +292,12 @@ final class NativeAudioRecorder: @unchecked Sendable {
             sumSquares += channelData[i] * channelData[i]
         }
         let rms = sqrtf(sumSquares / Float(frameCount))
+        let inputLevel = normalizedInputLevel(from: rms)
+        if let levelCallback = onInputLevelChanged {
+            DispatchQueue.main.async {
+                levelCallback(inputLevel)
+            }
+        }
         totalFramesWritten += 1
         let now = CFAbsoluteTimeGetCurrent()
         let previousState = vadState
@@ -349,5 +363,21 @@ final class NativeAudioRecorder: @unchecked Sendable {
     private func notifyVadState(_ state: VadState) {
         let callback = onVadStateChanged
         DispatchQueue.main.async { callback?(state) }
+    }
+
+    private func normalizedInputLevel(from rms: Float) -> Float {
+        let safeRMS = max(rms, 0.000_001)
+        let db = 20 * log10f(safeRMS)
+        let dbNormalized = max(0, min(1, (db + 52) / 34))
+
+        let thresholdNormalized: Float
+        if noiseFloorCalibrated {
+            let dynamicRange = max((speechThreshold * 3.2) - silenceThreshold, 0.002)
+            thresholdNormalized = max(0, min(1, (rms - silenceThreshold) / dynamicRange))
+        } else {
+            thresholdNormalized = 0
+        }
+
+        return powf(max(dbNormalized, thresholdNormalized), 0.72)
     }
 }

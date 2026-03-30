@@ -3,6 +3,44 @@ import AudioToolbox
 import AVFoundation
 import SwiftUI
 
+enum JarvisTheme {
+    static let backgroundTop = Color(red: 0.03, green: 0.09, blue: 0.16)
+    static let backgroundBottom = Color(red: 0.01, green: 0.03, blue: 0.08)
+    static let panel = Color(red: 0.05, green: 0.10, blue: 0.18)
+    static let panelRaised = Color(red: 0.08, green: 0.15, blue: 0.25)
+    static let panelMuted = Color(red: 0.07, green: 0.12, blue: 0.20)
+
+    static let cyan = Color(red: 0.27, green: 0.88, blue: 1.00)
+    static let blue = Color(red: 0.31, green: 0.62, blue: 1.00)
+    static let amber = Color(red: 1.00, green: 0.62, blue: 0.25)
+    static let green = Color(red: 0.12, green: 0.92, blue: 0.72)
+    static let red = Color(red: 1.00, green: 0.36, blue: 0.34)
+
+    static let textPrimary = Color(red: 0.90, green: 0.96, blue: 1.00)
+    static let textSecondary = Color(red: 0.60, green: 0.75, blue: 0.88)
+    static let textMuted = Color(red: 0.41, green: 0.56, blue: 0.68)
+
+    static let border = cyan.opacity(0.22)
+    static let selection = cyan.opacity(0.16)
+    static let shadow = Color.black.opacity(0.32)
+
+    static var appBackground: LinearGradient {
+        LinearGradient(
+            colors: [backgroundTop, backgroundBottom],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static var panelBackground: LinearGradient {
+        LinearGradient(
+            colors: [panelRaised.opacity(0.98), panel.opacity(0.94)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
 func appLog(_ message: String) {
     fputs("[JarvisMenuBar] \(message)\n", stderr)
 }
@@ -13,6 +51,16 @@ private final class SpeechSynthDelegateBox: NSObject, NSSpeechSynthesizerDelegat
     func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
         onFinish?(finishedSpeaking)
     }
+}
+
+private enum DirectSpeechLanguage {
+    case korean
+    case english
+}
+
+private struct DirectSpeechUtterance {
+    let text: String
+    let language: DirectSpeechLanguage
 }
 
 private func monotonicSeconds() -> Double {
@@ -312,6 +360,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     @Published var bypassEnabled = false
     @Published var bypassStatusMessage = "바이패스 꺼짐"
     @Published var recordingElapsedSeconds = 0.0
+    @Published var voiceInputLevel = 0.0
     @Published var selectedInputDeviceID = "" {
         didSet {
             UserDefaults.standard.set(selectedInputDeviceID, forKey: Self.selectedInputDeviceDefaultsKey)
@@ -324,6 +373,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 restartBypass()
             }
             // Mic will re-activate with new device on next recording
+            voiceInputLevel = 0
             nativeRecorder.deactivate()
         }
     }
@@ -730,7 +780,27 @@ final class JarvisMenuBarViewModel: ObservableObject {
         stopTTS()
         clearTransientVoiceUIState()
         pendingClarificationContext = nil
+        endGuideWorkspaceSession()
         guide.clear()
+    }
+
+    func activateGuideWorkspaceSession(_ sessionID: String) {
+        guide.activateWorkspaceSession(sessionID)
+    }
+
+    func closeGuideWorkspaceSession(_ sessionID: String) {
+        guide.closeWorkspaceSession(sessionID)
+        if !guide.hasWorkspaceSessions {
+            endGuideWorkspaceSession()
+        }
+    }
+
+    private func endGuideWorkspaceSession() {
+        sourceExplorationSessionActive = false
+        sourceExplorationFocus = .files
+        documentExplorationSessionActive = false
+        documentExplorationFocus = .documents
+        guide.selectedExplorationItemID = ""
     }
 
     private func clearTransientVoiceUIState() {
@@ -765,8 +835,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 appLog("TTS request started")
                 let completed: Bool
                 if configuredTTSBackend() == "say" {
-                    let directText = segments.joined(separator: ". ")
-                    completed = try await self.playDirectSpeech(directText)
+                    let directUtterances = Self.directSpeechUtterances(for: segments)
+                    completed = try await self.playDirectSpeechUtterances(directUtterances)
                 } else if segments.count > 1 {
                     completed = try await self.playSegmentedSpeech(
                         segments,
@@ -809,48 +879,106 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     @MainActor
-    private func directSpeechVoiceIdentifier(for text: String) -> NSSpeechSynthesizer.VoiceName? {
+    private func directSpeechVoiceIdentifier(
+        for text: String,
+        preferredLanguage: DirectSpeechLanguage? = nil
+    ) -> NSSpeechSynthesizer.VoiceName? {
         let env = ProcessInfo.processInfo.environment
-        let override = env["JARVIS_TTS_VOICE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let desiredName: String
-        if !override.isEmpty {
-            desiredName = override
-        } else {
-            let containsHangul = text.unicodeScalars.contains { scalar in
-                (0xAC00...0xD7A3).contains(scalar.value) || (0x3131...0x3163).contains(scalar.value)
+        let language = preferredLanguage ?? Self.dominantDirectSpeechLanguage(for: text)
+        let exactOverride: String = {
+            let scopedKey = language == .korean ? "JARVIS_TTS_VOICE_KO" : "JARVIS_TTS_VOICE_EN"
+            let scoped = env[scopedKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !scoped.isEmpty {
+                return scoped
             }
-            desiredName = containsHangul ? "Yuna (Premium)" : "Reed (영어(영국))"
-        }
+            return env["JARVIS_TTS_VOICE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }()
 
         let voices = NSSpeechSynthesizer.availableVoices
-        func resolve(_ targetName: String) -> NSSpeechSynthesizer.VoiceName? {
-            for identifier in voices {
+
+        func voiceEntries() -> [(id: NSSpeechSynthesizer.VoiceName, name: String)] {
+            voices.compactMap { identifier in
                 let attributes = NSSpeechSynthesizer.attributes(forVoice: identifier)
-                let name = (attributes[.name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if name == targetName {
-                    return identifier
+                guard let name = (attributes[.name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else {
+                    return nil
+                }
+                return (identifier, name)
+            }
+        }
+
+        let entries = voiceEntries()
+
+        func resolveExact(_ targetName: String) -> NSSpeechSynthesizer.VoiceName? {
+            for entry in entries where entry.name == targetName {
+                return entry.id
+            }
+            return nil
+        }
+
+        func resolveContaining(_ candidates: [String]) -> NSSpeechSynthesizer.VoiceName? {
+            let normalizedCandidates = candidates.map { $0.lowercased() }
+            for entry in entries {
+                let loweredName = entry.name.lowercased()
+                if normalizedCandidates.contains(where: { loweredName.contains($0) }) {
+                    return entry.id
                 }
             }
             return nil
         }
 
-        if let identifier = resolve(desiredName) {
+        if !exactOverride.isEmpty, let identifier = resolveExact(exactOverride) {
             return identifier
         }
-        if desiredName == "Yuna (Premium)", let identifier = resolve("Yuna") {
-            return identifier
+
+        let exactCandidates: [String]
+        let partialCandidates: [String]
+        switch language {
+        case .korean:
+            exactCandidates = ["Yuna (Premium)", "Yuna", "Reed (한국어(대한민국))"]
+            partialCandidates = ["yuna", "유나", "한국어", "korean", "ko_", "ko-", "대한민국", "reed"]
+        case .english:
+            exactCandidates = [
+                "Samantha",
+                "Shelley (영어(미국))",
+                "Sandy (영어(미국))",
+                "Flo (영어(미국))",
+                "Karen",
+                "Moira",
+                "Tessa",
+                "Sandy (영어(영국))",
+                "Shelley (영어(영국))",
+            ]
+            partialCandidates = [
+                "samantha",
+                "shelley",
+                "sandy",
+                "flo",
+                "karen",
+                "moira",
+                "tessa",
+                "영어",
+                "english",
+                "en_",
+                "en-",
+            ]
         }
-        if text.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }),
-           let identifier = resolve("Reed (한국어(대한민국))") {
-            return identifier
+
+        for candidate in exactCandidates {
+            if let identifier = resolveExact(candidate) {
+                return identifier
+            }
         }
-        return resolve("Reed (영어(영국))")
+        return resolveContaining(partialCandidates)
     }
 
     @MainActor
-    private func playDirectSpeech(_ text: String) async throws -> Bool {
+    private func playDirectSpeech(
+        _ text: String,
+        preferredLanguage: DirectSpeechLanguage? = nil
+    ) async throws -> Bool {
         let synthesizer = NSSpeechSynthesizer()
-        if let voiceIdentifier = directSpeechVoiceIdentifier(for: text) {
+        if let voiceIdentifier = directSpeechVoiceIdentifier(for: text, preferredLanguage: preferredLanguage) {
             synthesizer.setVoice(voiceIdentifier)
         }
         synthesizer.rate = 155
@@ -882,6 +1010,25 @@ final class JarvisMenuBarViewModel: ObservableObject {
             }
             appLog("TTS direct playback started")
         }
+    }
+
+    @MainActor
+    private func playDirectSpeechUtterances(_ utterances: [DirectSpeechUtterance]) async throws -> Bool {
+        let normalizedUtterances = utterances.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !normalizedUtterances.isEmpty else { return false }
+
+        for utterance in normalizedUtterances {
+            try Task.checkCancellation()
+            appLog("TTS direct segment [\(utterance.language == .english ? "en" : "ko")]: \(Self.logPreview(for: utterance.text))")
+            let finished = try await playDirectSpeech(
+                utterance.text,
+                preferredLanguage: utterance.language
+            )
+            guard finished else { return false }
+        }
+        return true
     }
 
     /// Normalize lightweight formatting before TTS.
@@ -953,6 +1100,127 @@ final class JarvisMenuBarViewModel: ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return parts.isEmpty ? [] : parts
+    }
+
+    private static func directSpeechUtterances(for segments: [String]) -> [DirectSpeechUtterance] {
+        var utterances: [DirectSpeechUtterance] = []
+        for segment in segments {
+            let normalized = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { continue }
+            let chunked = directSpeechUtterances(for: normalized)
+            if chunked.isEmpty {
+                utterances.append(
+                    DirectSpeechUtterance(
+                        text: normalized,
+                        language: dominantDirectSpeechLanguage(for: normalized)
+                    )
+                )
+            } else {
+                utterances.append(contentsOf: chunked)
+            }
+        }
+        return utterances
+    }
+
+    private static func directSpeechUtterances(for text: String) -> [DirectSpeechUtterance] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var utterances: [DirectSpeechUtterance] = []
+        var currentLanguage: DirectSpeechLanguage?
+        var currentText = ""
+        var pendingNeutral = ""
+
+        func appendCurrent() {
+            guard let currentLanguage else { return }
+            let combined = (currentText + pendingNeutral).trimmingCharacters(in: .whitespacesAndNewlines)
+            pendingNeutral = ""
+            currentText = ""
+            guard !combined.isEmpty else { return }
+            if let last = utterances.last, last.language == currentLanguage {
+                utterances[utterances.count - 1] = DirectSpeechUtterance(
+                    text: last.text + " " + combined,
+                    language: currentLanguage
+                )
+            } else {
+                utterances.append(DirectSpeechUtterance(text: combined, language: currentLanguage))
+            }
+        }
+
+        for character in trimmed {
+            switch directSpeechCharacterCategory(for: character) {
+            case .english:
+                if currentLanguage == .english || currentLanguage == nil {
+                    currentText += pendingNeutral + String(character)
+                    pendingNeutral = ""
+                    currentLanguage = .english
+                } else {
+                    appendCurrent()
+                    currentLanguage = .english
+                    currentText = String(character)
+                }
+            case .korean:
+                if currentLanguage == .korean || currentLanguage == nil {
+                    currentText += pendingNeutral + String(character)
+                    pendingNeutral = ""
+                    currentLanguage = .korean
+                } else {
+                    appendCurrent()
+                    currentLanguage = .korean
+                    currentText = String(character)
+                }
+            case .neutral:
+                if currentLanguage == nil {
+                    currentText += String(character)
+                } else {
+                    pendingNeutral += String(character)
+                }
+            }
+        }
+
+        appendCurrent()
+        if utterances.isEmpty {
+            utterances.append(
+                DirectSpeechUtterance(
+                    text: trimmed,
+                    language: dominantDirectSpeechLanguage(for: trimmed)
+                )
+            )
+        }
+        return utterances
+    }
+
+    private enum DirectSpeechCharacterCategory {
+        case korean
+        case english
+        case neutral
+    }
+
+    private static func directSpeechCharacterCategory(for character: Character) -> DirectSpeechCharacterCategory {
+        let scalarValues = character.unicodeScalars.map(\.value)
+        if scalarValues.contains(where: { (0xAC00...0xD7A3).contains($0) || (0x3131...0x318E).contains($0) }) {
+            return .korean
+        }
+        if scalarValues.contains(where: { (0x0041...0x005A).contains($0) || (0x0061...0x007A).contains($0) }) {
+            return .english
+        }
+        return .neutral
+    }
+
+    private static func dominantDirectSpeechLanguage(for text: String) -> DirectSpeechLanguage {
+        var koreanScore = 0
+        var englishScore = 0
+        for character in text {
+            switch directSpeechCharacterCategory(for: character) {
+            case .korean:
+                koreanScore += 1
+            case .english:
+                englishScore += 1
+            case .neutral:
+                continue
+            }
+        }
+        return englishScore > koreanScore ? .english : .korean
     }
 
     private func playSegmentedSpeech(
@@ -1128,6 +1396,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         speechSynthesizer = nil
         speechSynthDelegateBox = nil
         isSpeaking = false
+        voiceInputLevel = 0
     }
 
     private func waitForSpeechPlaybackToFinish() async {
@@ -1563,6 +1832,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         voiceLoopTask = nil
         stopLiveTranscription()
         stopTTS()
+        voiceInputLevel = 0
         pendingClarificationContext = nil
         guide.clear()
         cancelPhaseTransition()
@@ -1741,7 +2011,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     func selectExplorationItem(_ item: MenuExplorationItem) {
         pinNavigationPanel()
-        guide.selectedExplorationItemID = item.id
+        guide.selectArtifact(matching: item)
         if item.kind == "document" {
             documentExplorationSessionActive = true
             documentExplorationFocus = .detail
@@ -1867,6 +2137,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     private func processLocalVoiceCommand(_ rawQuery: String) -> Bool {
         let lowered = rawQuery.lowercased()
+        if processGuideCloseCommand(rawQuery, lowered: lowered) {
+            return true
+        }
         if lowered.contains("소스코드 분석 시작")
             || lowered.contains("소스 분석 시작")
             || lowered.contains("소스 탐색 시작") {
@@ -1935,6 +2208,129 @@ final class JarvisMenuBarViewModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    private func processGuideCloseCommand(_ rawQuery: String, lowered: String) -> Bool {
+        let closeIntentTokens = ["닫아", "닫아줘", "닫기", "close", "shut", "꺼줘", "꺼"]
+        guard closeIntentTokens.contains(where: lowered.contains) else {
+            return false
+        }
+
+        let workspaceTokens = [
+            "창", "가이드", "workspace", "워크스페이스", "패널", "panel",
+            "뷰어", "viewer", "웹", "web", "브라우저", "browser",
+            "사이트", "website", "유튜브", "youtube", "문서", "pdf",
+            "코드", "source", "video", "비디오"
+        ]
+        guard workspaceTokens.contains(where: lowered.contains) else {
+            return false
+        }
+
+        let targetHint = guideCloseTargetHint(from: rawQuery)
+        if !targetHint.isEmpty, guide.closeWorkspaceSession(matching: targetHint) {
+            errorMessage = nil
+            if !guide.hasWorkspaceSessions {
+                endGuideWorkspaceSession()
+            }
+            exportMessage = "\(targetHint) 창을 닫았습니다."
+            return true
+        }
+        guard canCloseGuideWorkspace(matching: targetHint) else {
+            errorMessage = nil
+            exportMessage = targetHint.isEmpty
+                ? "닫을 작업 창이 없습니다."
+                : "\(targetHint) 창을 찾지 못했습니다."
+            return true
+        }
+
+        errorMessage = nil
+        closeGuidePanel()
+        exportMessage = targetHint.isEmpty
+            ? "작업 창을 닫았습니다."
+            : "\(targetHint) 창을 닫았습니다."
+        return true
+    }
+
+    private func guideCloseTargetHint(from rawQuery: String) -> String {
+        var cleaned = rawQuery.lowercased()
+        let removableTokens = [
+            "닫아줘", "닫아", "닫기", "close", "shut", "please", "꺼줘", "꺼",
+            "window", "workspace", "viewer", "panel", "guide", "jarvis",
+            "창", "워크스페이스", "뷰어", "패널", "가이드",
+            "해주세요", "해줘", "좀", "좀요", "please"
+        ]
+        for token in removableTokens {
+            cleaned = cleaned.replacingOccurrences(of: token, with: " ")
+        }
+        return Self.compactInputText(cleaned)
+    }
+
+    private func canCloseGuideWorkspace(matching targetHint: String) -> Bool {
+        guard guide.hasRenderableContent
+            || sourceExplorationSessionActive
+            || documentExplorationSessionActive else {
+            return false
+        }
+        guard !targetHint.isEmpty else {
+            return true
+        }
+        if guide.hasWorkspaceSession(matching: targetHint) {
+            return true
+        }
+        return guideWorkspaceMatchesTarget(targetHint)
+    }
+
+    private func guideWorkspaceMatchesTarget(_ targetHint: String) -> Bool {
+        let normalizedHint = targetHint.lowercased()
+        if normalizedHint.isEmpty {
+            return true
+        }
+
+        let artifact = guide.currentSelectedArtifact
+        let viewerKind = artifact?.viewerKind.lowercased() ?? ""
+        let haystacks = [
+            artifact?.title.lowercased() ?? "",
+            artifact?.subtitle.lowercased() ?? "",
+            artifact?.path.lowercased() ?? "",
+            artifact?.fullPath.lowercased() ?? "",
+            guide.guidePresentation?.title.lowercased() ?? "",
+            guide.guidePresentation?.subtitle.lowercased() ?? "",
+            guide.finalResponseText.lowercased(),
+        ]
+
+        if haystacks.contains(where: { !$0.isEmpty && $0.contains(normalizedHint) }) {
+            return true
+        }
+        if normalizedHint.contains("유튜브") || normalizedHint.contains("youtube") {
+            return haystacks.contains(where: { $0.contains("youtube") || $0.contains("youtu.be") || $0.contains("유튜브") })
+        }
+        if normalizedHint.contains("웹")
+            || normalizedHint.contains("브라우저")
+            || normalizedHint.contains("사이트")
+            || normalizedHint.contains("web")
+            || normalizedHint.contains("browser")
+            || normalizedHint.contains("website") {
+            return viewerKind == "web" || viewerKind == "html"
+        }
+        if normalizedHint.contains("문서")
+            || normalizedHint.contains("pdf")
+            || normalizedHint.contains("document") {
+            return viewerKind == "document"
+        }
+        if normalizedHint.contains("코드")
+            || normalizedHint.contains("소스")
+            || normalizedHint.contains("source")
+            || normalizedHint.contains("code") {
+            return viewerKind == "code"
+        }
+        if normalizedHint.contains("비디오")
+            || normalizedHint.contains("video") {
+            return viewerKind == "video"
+        }
+        return normalizedHint.contains("가이드")
+            || normalizedHint.contains("workspace")
+            || normalizedHint.contains("워크스페이스")
+            || normalizedHint.contains("창")
     }
 
     private func moveSourceExplorationBack() {
@@ -2200,6 +2596,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         cancelPhaseTransition()
         voiceLoopPhase = .recording
         recordingElapsedSeconds = 0
+        voiceInputLevel = 0
 
         // Wire VAD state changes to UI phases
         nativeRecorder.onVadStateChanged = { [weak self] vadState in
@@ -2222,6 +2619,13 @@ final class JarvisMenuBarViewModel: ObservableObject {
             self?.errorMessage = message
         }
 
+        nativeRecorder.onInputLevelChanged = { [weak self] level in
+            guard let self else { return }
+            let nextLevel = Double(level)
+            let smoothing = nextLevel >= self.voiceInputLevel ? 0.64 : 0.2
+            self.voiceInputLevel = (self.voiceInputLevel * (1 - smoothing)) + (nextLevel * smoothing)
+        }
+
         // Elapsed time counter
         phaseTransitionTask = Task { [weak self] in
             guard let self else { return }
@@ -2236,6 +2640,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     private func transitionToAnswering() {
         cancelPhaseTransition()
         voiceLoopPhase = .answering
+        voiceInputLevel = 0
     }
 
     private func cancelPhaseTransition() {
@@ -2291,8 +2696,8 @@ struct StatusBadge: View {
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(active ? Color.orange.opacity(0.18) : Color.gray.opacity(0.12))
-            .foregroundStyle(active ? Color.orange : Color.secondary)
+            .background(active ? JarvisTheme.amber.opacity(0.18) : JarvisTheme.panelMuted.opacity(0.92))
+            .foregroundStyle(active ? JarvisTheme.amber : JarvisTheme.textSecondary)
             .clipShape(Capsule())
     }
 }
@@ -2306,7 +2711,14 @@ struct ToneBadge: View {
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(color.opacity(0.14))
+            .background(
+                Capsule(style: .continuous)
+                    .fill(color.opacity(0.14))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(color.opacity(0.2), lineWidth: 1)
+            )
             .foregroundStyle(color)
             .clipShape(Capsule())
     }
@@ -2328,10 +2740,11 @@ struct SectionCard<Content: View>: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.headline.weight(.semibold))
+                    .foregroundStyle(JarvisTheme.textPrimary)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(JarvisTheme.textSecondary)
                 }
             }
             content
@@ -2340,12 +2753,13 @@ struct SectionCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(NSColor.windowBackgroundColor).opacity(0.96))
+                .fill(JarvisTheme.panelBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                .strokeBorder(JarvisTheme.border, lineWidth: 1)
         )
+        .shadow(color: JarvisTheme.shadow, radius: 18, x: 0, y: 10)
     }
 }
 
@@ -2357,7 +2771,7 @@ struct ActivityDots: View {
         HStack(spacing: 5) {
             ForEach(0..<4, id: \.self) { index in
                 Circle()
-                .fill(active ? activeColor.opacity(0.35 + (Double(index) * 0.15)) : Color.gray.opacity(0.18))
+                .fill(active ? activeColor.opacity(0.35 + (Double(index) * 0.15)) : JarvisTheme.textMuted.opacity(0.18))
                     .frame(width: 7, height: 7)
             }
         }
@@ -2372,19 +2786,19 @@ struct VoicePhaseIndicator: View {
     private var tint: Color {
         switch phase {
         case .idle, .stopped:
-            return .gray
+            return JarvisTheme.textMuted
         case .recording:
-            return .red
+            return JarvisTheme.amber
         case .pauseDetected:
-            return .yellow
+            return JarvisTheme.amber
         case .transcribing:
-            return .orange
+            return JarvisTheme.cyan
         case .answering:
-            return .blue
+            return JarvisTheme.blue
         case .cooldown:
-            return .mint
+            return JarvisTheme.green
         case .error:
-            return .red
+            return JarvisTheme.red
         }
     }
 
@@ -2453,14 +2867,14 @@ struct HealthCheckRow: View {
         let lowered = detail.lowercased()
         if ok {
             if lowered.contains("ready") || lowered.contains("lazy-loaded") {
-                return .yellow
+                return JarvisTheme.cyan
             }
-            return .green
+            return JarvisTheme.green
         }
         if lowered.contains("disabled") || lowered.contains("fts-only") || lowered.contains("not configured") {
-            return .orange
+            return JarvisTheme.amber
         }
-        return .red
+        return JarvisTheme.red
     }
 
     private var stateLabel: String {
@@ -2494,45 +2908,241 @@ struct HealthCheckRow: View {
                 }
                 Text(detail)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(JarvisTheme.textSecondary)
             }
             Spacer()
         }
     }
 }
 
+enum JarvisSurfaceMode: String, CaseIterable, Identifiable {
+    case voice = "voice"
+    case chat = "chat"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .voice:
+            return "Voice"
+        case .chat:
+            return "Chat"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .voice:
+            return "핸즈프리 대화"
+        case .chat:
+            return "텍스트 중심 워크플로"
+        }
+    }
+}
+
+struct ConversationBubble: View {
+    let title: String
+    let text: String
+    let tint: Color
+    let alignedTrailing: Bool
+
+    var body: some View {
+        HStack {
+            if alignedTrailing { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint)
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(JarvisTheme.textPrimary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(JarvisTheme.panelMuted.opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(tint.opacity(0.28), lineWidth: 1)
+            )
+            if !alignedTrailing { Spacer(minLength: 40) }
+        }
+    }
+}
+
+struct VoiceCoreView: View {
+    let phase: VoiceLoopPhase
+    let listeningActive: Bool
+    let speakingActive: Bool
+    let inputLevel: Double
+
+    private var tint: Color {
+        if speakingActive { return JarvisTheme.cyan }
+        if listeningActive { return JarvisTheme.amber }
+        switch phase {
+        case .transcribing:
+            return JarvisTheme.cyan
+        case .answering:
+            return JarvisTheme.blue
+        case .cooldown:
+            return JarvisTheme.green
+        case .error:
+            return JarvisTheme.red
+        default:
+            return JarvisTheme.textMuted
+        }
+    }
+
+    private var centerLabel: String {
+        if speakingActive { return "Speaking" }
+        if listeningActive { return "Listening" }
+        switch phase {
+        case .transcribing:
+            return "Thinking"
+        case .answering:
+            return "Answer"
+        case .cooldown:
+            return "Cooldown"
+        case .error:
+            return "Error"
+        case .stopped:
+            return "Stopped"
+        default:
+            return "Ready"
+        }
+    }
+
+    private var activeLevel: Double {
+        if listeningActive { return 0.18 + min(1, inputLevel) * 0.92 }
+        if speakingActive { return 0.88 }
+        switch phase {
+        case .transcribing, .answering:
+            return 0.54
+        case .cooldown:
+            return 0.34
+        case .error:
+            return 0.2
+        default:
+            return 0.14
+        }
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            ZStack {
+                Circle()
+                    .stroke(tint.opacity(0.18), lineWidth: 1)
+                    .frame(width: 210, height: 210)
+                    .scaleEffect(1.0 + activeLevel * 0.03 + (listeningActive ? inputLevel * 0.07 : 0))
+                Circle()
+                    .stroke(tint.opacity(0.12), lineWidth: 18)
+                    .frame(width: 170, height: 170)
+
+                ForEach(0..<44, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.78))
+                        .frame(width: 4, height: radialBarHeight(index: index, time: time))
+                        .offset(y: -106)
+                        .rotationEffect(.degrees(Double(index) * (360.0 / 44.0)))
+                }
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                tint.opacity(0.46),
+                                tint.opacity(0.16),
+                                Color.black.opacity(0.02)
+                            ],
+                            center: .center,
+                            startRadius: 8,
+                            endRadius: 84
+                        )
+                    )
+                    .frame(
+                        width: 132 + (listeningActive ? inputLevel * 24 : activeLevel * 10),
+                        height: 132 + (listeningActive ? inputLevel * 24 : activeLevel * 10)
+                    )
+
+                VStack(spacing: 6) {
+                    Text(centerLabel)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(JarvisTheme.textPrimary)
+                    Text(phase.rawValue.replacingOccurrences(of: "_", with: " "))
+                        .font(.caption2)
+                        .foregroundStyle(JarvisTheme.textSecondary)
+                }
+            }
+            .frame(width: 228, height: 228)
+            .background(
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                JarvisTheme.panelRaised,
+                                JarvisTheme.panel,
+                                tint.opacity(0.04)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+        }
+    }
+
+    private func radialBarHeight(index: Int, time: Double) -> CGFloat {
+        let phaseOffset = Double(index) * 0.37
+        let liveEnergy = listeningActive ? max(0.04, inputLevel) : activeLevel
+        let wave = sin((time * (2.6 + liveEnergy * 2.8)) + phaseOffset)
+        let shimmer = cos((time * (1.8 + liveEnergy * 1.4)) + Double(index) * 0.18)
+        let envelope = max(
+            0.08,
+            (liveEnergy * 0.92)
+                + (wave * (0.14 + liveEnergy * 0.22))
+                + (shimmer * (0.06 + liveEnergy * 0.08))
+        )
+        let maxTravel = listeningActive ? 40.0 : 26.0
+        return CGFloat(10.0 + envelope * maxTravel)
+    }
+}
+
 struct JarvisMenuContentView: View {
     @ObservedObject var viewModel: JarvisMenuBarViewModel
-    @State private var showRuntimeTools = false
+    @State private var surfaceMode: JarvisSurfaceMode = .voice
 
     private var phaseColor: Color {
         switch viewModel.voiceLoopPhase {
         case .idle, .stopped:
-            return .gray
+            return JarvisTheme.textMuted
         case .recording:
-            return .red
+            return JarvisTheme.amber
         case .pauseDetected:
-            return .yellow
+            return JarvisTheme.amber
         case .transcribing:
-            return .orange
+            return JarvisTheme.cyan
         case .answering:
-            return .blue
+            return JarvisTheme.blue
         case .cooldown:
-            return .mint
+            return JarvisTheme.green
         case .error:
-            return .red
+            return JarvisTheme.red
         }
     }
 
     private var healthColor: Color {
-        guard let health = viewModel.health else { return .gray }
+        guard let health = viewModel.health else { return JarvisTheme.textMuted }
         switch health.statusLevel {
         case "healthy":
-            return .green
+            return JarvisTheme.green
         case "warning":
-            return .orange
+            return JarvisTheme.amber
         default:
-            return .red
+            return JarvisTheme.red
         }
     }
 
@@ -2575,15 +3185,15 @@ struct JarvisMenuContentView: View {
     private func runtimeTone(_ detail: String) -> Color {
         let lowered = detail.lowercased()
         if lowered.contains("active") || lowered == "ok" || lowered.hasPrefix("ok ") || lowered.hasPrefix("ok(") {
-            return .green
+            return JarvisTheme.green
         }
         if lowered.contains("ready") || lowered.contains("lazy-loaded") {
-            return .yellow
+            return JarvisTheme.cyan
         }
         if lowered.contains("disabled") || lowered.contains("fts-only") || lowered.contains("unavailable") {
-            return .orange
+            return JarvisTheme.amber
         }
-        return .secondary
+        return JarvisTheme.textSecondary
     }
 
     private func runtimeSummaryLabel(_ detail: String) -> String {
@@ -2634,70 +3244,149 @@ struct JarvisMenuContentView: View {
         if viewModel.currentInteractionMode == mode {
             switch mode {
             case .generalQuery:
-                return .blue
+                return JarvisTheme.blue
             case .sourceExploration:
-                return .mint
+                return JarvisTheme.cyan
             case .documentExploration:
-                return .orange
+                return JarvisTheme.amber
             }
         }
-        return .gray
+        return JarvisTheme.textMuted
+    }
+
+    private var latestAssistantText: String {
+        if !viewModel.guide.finalResponseText.isEmpty {
+            return viewModel.guide.finalResponseText
+        }
+        if !viewModel.guide.liveResponseText.isEmpty {
+            return viewModel.guide.liveResponseText
+        }
+        return ""
+    }
+
+    private var voiceListeningActive: Bool {
+        viewModel.isLiveVoicePreviewActive
+            || viewModel.voiceLoopPhase == .recording
+            || viewModel.voiceLoopPhase == .pauseDetected
+    }
+
+    private var voiceSpeakingActive: Bool {
+        viewModel.isSpeaking || viewModel.voiceLoopPhase == .answering
     }
 
     var body: some View {
-        ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 14) {
-                SectionCard("JARVIS", subtitle: "Persona and live conversation entry") {
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("JARVIS 페르소나가 현재 대화 세션을 안내합니다.")
-                                .font(.subheadline.weight(.semibold))
-                            Text(viewModel.phaseStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 10) {
+                    Picker("Surface", selection: $surfaceMode) {
+                        ForEach(JarvisSurfaceMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Spacer()
+                    Picker("마이크", selection: $viewModel.selectedInputDeviceID) {
+                        Text("시스템 기본 입력").tag("")
+                        ForEach(viewModel.availableInputDevices) { device in
+                            Text(device.name).tag(device.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Button {
+                        viewModel.refreshAudioInputDevices()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("마이크 장치 목록 새로고침")
+                }
+
+                if surfaceMode == .voice {
+                    HStack(alignment: .top, spacing: 16) {
+                        VoiceCoreView(
+                            phase: viewModel.voiceLoopPhase,
+                            listeningActive: voiceListeningActive,
+                            speakingActive: voiceSpeakingActive,
+                            inputLevel: viewModel.voiceInputLevel
+                        )
+
+                        VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 6) {
-                                ForEach(InteractionMode.allCases) { mode in
-                                    ToneBadge(
-                                        title: mode.title,
-                                        color: interactionModeColor(mode)
+                                ToneBadge(title: viewModel.currentInteractionMode.title, color: interactionModeColor(viewModel.currentInteractionMode))
+                            }
+
+                            if !viewModel.lastTranscript.isEmpty {
+                                Text(viewModel.lastTranscript)
+                                    .font(.body)
+                                    .foregroundStyle(JarvisTheme.textPrimary)
+                                    .textSelection(.enabled)
+                            }
+
+                            if !latestAssistantText.isEmpty {
+                                Text(latestAssistantText)
+                                    .font(.caption)
+                                    .foregroundStyle(JarvisTheme.textPrimary)
+                                    .lineLimit(5)
+                                    .textSelection(.enabled)
+                            }
+
+                            ActivityDots(activeColor: phaseColor, active: viewModel.isLoading || voiceListeningActive || voiceSpeakingActive)
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    viewModel.recordOnce()
+                                } label: {
+                                    Label("말하기", systemImage: "mic.fill")
+                                }
+
+                                Button(viewModel.voiceLoopEnabled ? "루프 중지" : "라이브 루프") {
+                                    viewModel.toggleVoiceLoop()
+                                }
+
+                                if viewModel.isSpeaking {
+                                    Button("음성 중지") {
+                                        viewModel.stopTTS()
+                                    }
+                                }
+
+                                Spacer()
+                            }
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 6) {
+                            ToneBadge(title: viewModel.currentInteractionMode.title, color: interactionModeColor(viewModel.currentInteractionMode))
+                        }
+
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if !viewModel.lastTranscript.isEmpty {
+                                    ConversationBubble(
+                                        title: "User",
+                                        text: viewModel.lastTranscript,
+                                        tint: JarvisTheme.amber,
+                                        alignedTrailing: true
+                                    )
+                                }
+                                if !latestAssistantText.isEmpty {
+                                    ConversationBubble(
+                                        title: "JARVIS",
+                                        text: latestAssistantText,
+                                        tint: JarvisTheme.cyan,
+                                        alignedTrailing: false
                                     )
                                 }
                             }
                         }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 8) {
-                            VoicePhaseIndicator(
-                                phase: viewModel.voiceLoopPhase,
-                                active: viewModel.isLoading || viewModel.voiceLoopEnabled
-                            )
-                            if let health = viewModel.health {
-                                Text("\(health.chunkCount) chunks")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    if viewModel.isLoading {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(viewModel.phaseStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                        .frame(minHeight: 180, maxHeight: 260)
 
-                SectionCard("Persona", subtitle: "대화 진입과 최근 발화") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 6) {
-                            ToneBadge(title: viewModel.guide.loopStage.title, color: .teal)
-                            ToneBadge(title: viewModel.currentInteractionMode.title, color: interactionModeColor(viewModel.currentInteractionMode))
-                        }
-                        Text(viewModel.lastTranscript.isEmpty ? "아직 사용자의 최근 발화가 없습니다." : viewModel.lastTranscript)
-                            .font(.body)
-                            .foregroundStyle(viewModel.lastTranscript.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
                         TextField("질문을 입력하세요", text: $viewModel.query)
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: viewModel.query) { _, newValue in
@@ -2713,21 +3402,11 @@ struct JarvisMenuContentView: View {
                             Button {
                                 viewModel.recordOnce()
                             } label: {
-                                Label("Record Once", systemImage: "mic.fill")
+                                Label("음성 입력", systemImage: "waveform")
                             }
-                            .help("Push-to-talk once")
-
-                            Button(viewModel.voiceLoopEnabled ? "Stop Loop" : "Live Loop") {
-                                viewModel.toggleVoiceLoop()
-                            }
-
-                            Button("Ask") {
-                                viewModel.submit()
-                            }
-                            .keyboardShortcut(.return, modifiers: [.command])
 
                             if viewModel.isSpeaking {
-                                Button("Stop Voice") {
+                                Button("음성 중지") {
                                     viewModel.stopTTS()
                                 }
                             }
@@ -2736,275 +3415,33 @@ struct JarvisMenuContentView: View {
                         }
                     }
                 }
-
-                if let errorMessage = viewModel.errorMessage {
-                    SectionCard("Error", subtitle: "최근 브리지 또는 런타임 오류") {
-                        ScrollView {
-                            Text(errorMessage)
-                                .font(.callout)
-                                .foregroundStyle(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxHeight: 120)
-                    }
-                }
-
-                if let startupGuidanceMessage = viewModel.startupGuidanceMessage, !startupGuidanceMessage.isEmpty {
-                    SectionCard(
-                        viewModel.knowledgeBaseIndexingInProgress ? "Knowledge Base Setup" : "Getting Started",
-                        subtitle: viewModel.knowledgeBaseIndexingInProgress ? "인덱싱 진행 상태" : "초기 설정 안내"
-                    ) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if viewModel.knowledgeBaseIndexingInProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Text(startupGuidanceMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-
-                if let exportMessage = viewModel.exportMessage {
-                    SectionCard("Activity", subtitle: "최근 작업 결과") {
-                        Text(exportMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                SectionCard("Guide", subtitle: "응답 본문은 Jarvis Guide 창에서 확인") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let status = viewModel.guide.status {
-                            HStack(spacing: 6) {
-                                ToneBadge(title: status.mode, color: .blue)
-                                ToneBadge(title: "safe", color: status.safeMode ? .orange : .gray)
-                                ToneBadge(title: "degraded", color: status.degradedMode ? .orange : .gray)
-                                ToneBadge(title: "write-block", color: status.writeBlocked ? .red : .gray)
-                                ToneBadge(title: viewModel.currentInteractionMode.title, color: interactionModeColor(viewModel.currentInteractionMode))
-                            }
-                        }
-
-                        if viewModel.guide.hasClarification {
-                            Text(viewModel.guide.clarificationPrompt.isEmpty
-                                ? "Jarvis Guide가 추가 정보를 요청하고 있습니다."
-                                : viewModel.guide.clarificationPrompt)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            Text(viewModel.guide.finalResponseText.isEmpty && viewModel.guide.liveResponseText.isEmpty
-                                ? "Jarvis Guide가 실시간 처리 상태와 최종 응답을 표시합니다."
-                                : "현재 응답은 Jarvis Guide 창에 표시 중입니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
-                        HStack(spacing: 8) {
-                            if viewModel.guide.hasExportableResponse {
-                                Button("Export Draft") {
-                                    viewModel.requestExport()
-                                }
-                            }
-                            if viewModel.isSpeaking {
-                                Button("Stop Voice") {
-                                    viewModel.stopTTS()
-                                }
-                            }
-                            Spacer()
-                        }
-                    }
-                }
-
-                SectionCard("Runtime Tools", subtitle: showRuntimeTools ? "상세 상태와 오디오 도구" : "기본 UI에서는 숨김") {
-                    DisclosureGroup(showRuntimeTools ? "도구 숨기기" : "도구 보기", isExpanded: $showRuntimeTools) {
-                        VStack(alignment: .leading, spacing: 14) {
-                    SectionCard("Knowledge Base", subtitle: viewModel.knowledgeBaseStatusMessage) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("검색과 인덱싱 범위는 이 디렉토리로 제한됩니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            TextField("지식기반 디렉토리 경로", text: $viewModel.knowledgeBaseDirectoryPath)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit {
-                                    viewModel.applyKnowledgeBaseDirectorySetting()
-                                }
-
-                            HStack(spacing: 8) {
-                                Button("Browse…") {
-                                    viewModel.chooseKnowledgeBaseDirectory()
-                                }
-                                .controlSize(.small)
-
-                                Button("Apply") {
-                                    viewModel.applyKnowledgeBaseDirectorySetting()
-                                }
-                                .controlSize(.small)
-
-                                Button("Reset Default") {
-                                    viewModel.resetKnowledgeBaseDirectorySetting()
-                                }
-                                .controlSize(.small)
-
-                                Spacer()
-                            }
-
-                            if !viewModel.activeKnowledgeBaseDirectoryPath.isEmpty {
-                                Text(viewModel.activeKnowledgeBaseDirectoryPath)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                    }
-
-                    SectionCard("Health", subtitle: viewModel.healthMessage) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Button("Refresh Health") {
-                                    Task {
-                                        await viewModel.refreshHealth()
-                                    }
-                                }
-                                .controlSize(.small)
-
-                                Button("Copy Health") {
-                                    viewModel.copyHealthSummary()
-                                }
-                                .controlSize(.small)
-
-                                Button("Save Health") {
-                                    viewModel.saveHealthSummary()
-                                }
-                                .controlSize(.small)
-
-                                Button("Copy Error") {
-                                    viewModel.copyErrorMessage()
-                                }
-                                .controlSize(.small)
-
-                                Button("Save Error") {
-                                    viewModel.saveErrorMessage()
-                                }
-                                .controlSize(.small)
-                            }
-
-                            if let health = viewModel.health {
-                                HStack(spacing: 6) {
-                                    ToneBadge(title: health.statusLevel, color: healthColor)
-                                    ToneBadge(title: health.bridgeMode, color: .blue)
-                                    ToneBadge(title: "\(health.chunkCount) chunks", color: .secondary)
-                                }
-
-                                HStack(spacing: 6) {
-                                    ToneBadge(title: "embed \(runtimeSummaryLabel(runtimeDetail("embeddings")))", color: runtimeTone(runtimeDetail("embeddings")))
-                                    ToneBadge(title: "vector \(runtimeSummaryLabel(runtimeDetail("vector_search")))", color: runtimeTone(runtimeDetail("vector_search")))
-                                    ToneBadge(title: "reranker \(runtimeSummaryLabel(runtimeDetail("reranker")))", color: runtimeTone(runtimeDetail("reranker")))
-                                }
-
-                                if !health.failedChecks.isEmpty {
-                                    Text("Issues: \(health.failedChecks.joined(separator: ", "))")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .textSelection(.enabled)
-                                }
-
-                                if !health.knowledgeBasePath.isEmpty {
-                                    Text(health.knowledgeBasePath)
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                        .textSelection(.enabled)
-                                }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    ForEach(health.checks.keys.sorted(), id: \.self) { key in
-                                        HealthCheckRow(
-                                            name: key,
-                                            ok: health.checks[key] ?? false,
-                                            detail: humanizedHealthDetail(
-                                                for: key,
-                                                detail: health.details[key] ?? ""
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    SectionCard("Audio", subtitle: "입력 장치와 실시간 상태") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Picker("마이크", selection: $viewModel.selectedInputDeviceID) {
-                                    Text("시스템 기본 입력").tag("")
-                                    ForEach(viewModel.availableInputDevices) { device in
-                                        Text(device.name).tag(device.id)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-
-                                Button("장치 새로고침") {
-                                    viewModel.refreshAudioInputDevices()
-                                }
-                                .controlSize(.small)
-                            }
-
-                            HStack(spacing: 8) {
-                                Button(viewModel.bypassEnabled ? "Bypass Off" : "Bypass On") {
-                                    viewModel.toggleBypass()
-                                }
-                                .controlSize(.small)
-
-                                Text(viewModel.bypassStatusMessage)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-
-                            Text(viewModel.inputDeviceStatusMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                        }
-                        .padding(.top, 10)
-                    }
-                }
-
-                Divider()
-
-                HStack {
-                    Spacer()
-                    Button("Quit JARVIS  ⌘Q") {
-                        Task { await viewModel.shutdownBridge() }
-                        NSApplication.shared.terminate(nil)
-                    }
-                    .keyboardShortcut("q", modifiers: .command)
-                    .controlSize(.small)
-                    .foregroundStyle(.secondary)
+                if let errorMessage = viewModel.errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(JarvisTheme.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
             }
-            .padding(16)
-        }
-        .frame(width: 500, height: 860)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(NSColor.controlBackgroundColor),
-                    Color(NSColor.windowBackgroundColor),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(JarvisTheme.panelBackground)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(JarvisTheme.border, lineWidth: 1)
+            )
+            .shadow(color: JarvisTheme.shadow, radius: 18, x: 0, y: 10)
+        }
+        .padding(14)
+        .frame(width: 560)
+        .background(
+            JarvisTheme.appBackground
         )
+        .tint(JarvisTheme.cyan)
+        .preferredColorScheme(.dark)
         .overlay {
             if viewModel.showApprovalPanel {
                 Color.black.opacity(0.3)
@@ -3014,9 +3451,10 @@ struct JarvisMenuContentView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Export Approval")
                                 .font(.title3.weight(.bold))
+                                .foregroundStyle(JarvisTheme.textPrimary)
                             Text("기술문서 기준 승인형 쓰기 정책을 따릅니다. 파일 쓰기는 명시 승인 후에만 진행됩니다.")
                                 .font(.callout)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(JarvisTheme.textSecondary)
                             TextField("Filename", text: $viewModel.exportFilename)
                                 .textFieldStyle(.roundedBorder)
                             Picker("Format", selection: $viewModel.exportFormat) {
@@ -3032,17 +3470,17 @@ struct JarvisMenuContentView: View {
                             }
                             Text(viewModel.exportDestination().path)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(JarvisTheme.textSecondary)
                                 .textSelection(.enabled)
                             if viewModel.exportWillOverwrite {
                                 Text("Existing file will be overwritten.")
                                     .font(.caption)
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(JarvisTheme.amber)
                             }
                             if let msg = viewModel.exportMessage {
                                 Text(msg)
                                     .font(.caption)
-                                    .foregroundStyle(msg.hasPrefix("Exported") ? .green : .secondary)
+                                    .foregroundStyle(msg.hasPrefix("Exported") ? JarvisTheme.green : JarvisTheme.textSecondary)
                             }
                             HStack {
                                 Button("Cancel") {
@@ -3056,8 +3494,12 @@ struct JarvisMenuContentView: View {
                         }
                         .padding(20)
                         .frame(width: 380)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        .shadow(radius: 8)
+                        .background(JarvisTheme.panelBackground, in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(JarvisTheme.border, lineWidth: 1)
+                        )
+                        .shadow(color: JarvisTheme.shadow, radius: 12, x: 0, y: 8)
                     }
             }
         }
