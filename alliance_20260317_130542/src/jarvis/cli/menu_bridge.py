@@ -982,6 +982,47 @@ def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse |
     )
     if resolution.policy is None:
         return None
+
+    # Action intent: parse and execute via ActionResolver
+    if resolution.policy.intent == "action":
+        from jarvis.core.action_resolver import parse_action_target, execute_action
+
+        target = parse_action_target(query)
+        if target is None:
+            return None  # fall through to RAG
+        result = execute_action(target)
+        return MenuBarResponse(
+            query=query,
+            response=result.display_response,
+            spoken_response=result.spoken_response,
+            has_evidence=False,
+            citations=[],
+            status=MenuBarStatus(
+                mode="action_execute",
+                safe_mode=False,
+                degraded_mode=False,
+                generation_blocked=False,
+                write_blocked=False,
+                rebuild_index_required=False,
+            ),
+            render_hints=MenuBarRenderHints(
+                response_type="action_result",
+                primary_source_type="none",
+                source_profile="none",
+                interaction_mode="action",
+                citation_count=0,
+                truncated=False,
+            ),
+            exploration=None,
+            guide_directive=MenuBarGuideDirective(
+                intent="action",
+                skill="action_resolver",
+                loop_stage="idle",
+                should_hold=False,
+            ),
+            full_response_path="",
+        )
+
     policy = resolution.policy
     return MenuBarResponse(
         query=query,
