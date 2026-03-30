@@ -213,6 +213,66 @@ struct ServiceAnswerPayload: Codable {
     }
 }
 
+struct MenuGuideArtifact: Codable, Identifiable, Equatable {
+    let id: String
+    let type: String
+    let title: String
+    let subtitle: String
+    let path: String
+    let fullPath: String
+    let preview: String
+    let sourceType: String
+    let viewerKind: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case title
+        case subtitle
+        case path
+        case fullPath = "full_path"
+        case preview
+        case sourceType = "source_type"
+        case viewerKind = "viewer_kind"
+    }
+}
+
+struct MenuGuideBlock: Codable, Identifiable, Equatable {
+    let id: String
+    let kind: String
+    let title: String
+    let subtitle: String
+    let artifactIDs: [String]
+    let citationLabels: [String]
+    let emptyState: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case title
+        case subtitle
+        case artifactIDs = "artifact_ids"
+        case citationLabels = "citation_labels"
+        case emptyState = "empty_state"
+    }
+}
+
+struct MenuGuidePresentation: Codable, Equatable {
+    let layout: String
+    let title: String
+    let subtitle: String
+    let selectedArtifactID: String
+    let blocks: [MenuGuideBlock]
+
+    private enum CodingKeys: String, CodingKey {
+        case layout
+        case title
+        case subtitle
+        case selectedArtifactID = "selected_artifact_id"
+        case blocks
+    }
+}
+
 struct ServiceGuidePayload: Codable {
     let loopStage: String
     let clarificationPrompt: String
@@ -228,6 +288,8 @@ struct ServiceGuidePayload: Codable {
     let explorationMode: String
     let targetFile: String
     let targetDocument: String
+    let presentation: MenuGuidePresentation?
+    let artifacts: [MenuGuideArtifact]?
 
     private enum CodingKeys: String, CodingKey {
         case loopStage = "loop_stage"
@@ -244,6 +306,8 @@ struct ServiceGuidePayload: Codable {
         case explorationMode = "exploration_mode"
         case targetFile = "target_file"
         case targetDocument = "target_document"
+        case presentation
+        case artifacts
     }
 }
 
