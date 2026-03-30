@@ -624,6 +624,9 @@ def _classify_retrieval_task(
     if intent == "smalltalk":
         return "smalltalk", entities
 
+    if intent == "action":
+        return "action_request", entities
+
     if intent == "weather":
         return "live_data_request", {"capability": "weather"}
 
