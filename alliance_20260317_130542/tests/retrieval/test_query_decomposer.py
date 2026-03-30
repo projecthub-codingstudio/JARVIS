@@ -1,6 +1,8 @@
 """Tests for QueryDecomposer."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from jarvis.contracts import QueryDecomposerProtocol, TypedQueryFragment
 from jarvis.retrieval.query_decomposer import QueryDecomposer
 
@@ -38,3 +40,54 @@ class TestQueryDecomposer:
 
     def test_protocol_conformance(self) -> None:
         assert isinstance(QueryDecomposer(), QueryDecomposerProtocol)
+
+    def test_restores_spoken_korean_code_terms_from_lexicon(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class Pipeline:\n    provider_result = 'ok'\n",
+            encoding="utf-8",
+        )
+        fragments = QueryDecomposer(knowledge_base_path=kb).decompose(
+            "파이프라인점 파이에 있는 소스야 프로바이더 리절트에 대해서 다시 설명해줘"
+        )
+        keyword_texts = [f.text for f in fragments if f.query_type == "keyword"]
+        semantic_texts = [f.text for f in fragments if f.query_type == "semantic"]
+
+        assert any("pipeline.py" in text for text in keyword_texts + semantic_texts)
+        assert any("provider_result" in text for text in keyword_texts + semantic_texts)
+
+    def test_restores_spoken_python_class_query_from_lexicon(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class Pipeline:\n    def run(self) -> None:\n        pass\n",
+            encoding="utf-8",
+        )
+        fragments = QueryDecomposer(knowledge_base_path=kb).decompose(
+            "다시 파이선 소스인 파이프라인에서 클래스 파이프라인에 대해 설명해 줘"
+        )
+        texts = [f.text for f in fragments]
+
+        assert any("pipeline.py" in text for text in texts)
+        assert any("Pipeline" in text for text in texts)
+
+    def test_does_not_pollute_document_query_with_code_identifiers(self, tmp_path: Path) -> None:
+        kb = tmp_path / "knowledge_base"
+        kb.mkdir()
+        (kb / "pipeline.py").write_text(
+            "class StageDesign:\n"
+            "    project_path = 'demo'\n"
+            "    def _parse_research_section(self) -> None:\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+
+        fragments = QueryDecomposer(knowledge_base_path=kb).decompose(
+            "ProjectHub 브로셔에서 ProjectHub를 어떻게 소개하나요?"
+        )
+        texts = [f.text for f in fragments]
+
+        assert any("ProjectHub 브로셔에서" in text or "projecthub 브로셔에서" in text for text in texts)
+        assert all("project_path" not in text for text in texts)
+        assert all("_parse_research_section" not in text for text in texts)

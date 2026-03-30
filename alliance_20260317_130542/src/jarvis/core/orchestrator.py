@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import re
 import time
+import logging
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+_logger = logging.getLogger(__name__)
 
 from jarvis.contracts import (
     AnswerDraft,
@@ -24,6 +29,7 @@ from jarvis.contracts import (
     HybridFusionProtocol,
     LLMGeneratorProtocol,
     QueryDecomposerProtocol,
+    SearchHit,
     TaskLogEntry,
     TaskLogStoreProtocol,
     TaskStatus,
@@ -34,6 +40,8 @@ from jarvis.contracts import (
 )
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricName, MetricsCollector
+from jarvis.query_normalization import normalize_spoken_code_query
+from jarvis.retrieval.strategy import RetrievalInputs, select_retrieval_strategy
 
 _DESTRUCTIVE_REQUEST_PATTERNS = (
     re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
@@ -41,6 +49,10 @@ _DESTRUCTIVE_REQUEST_PATTERNS = (
     re.compile(r"(모두|전체).*(삭제|지워|제거)"),
     re.compile(r"(파일|폴더|디렉터리).*(전부|모두).*(삭제|제거)"),
 )
+_CLASS_HINT_RE = re.compile(r"(?:\bclass\b|클래스)", re.IGNORECASE)
+_FUNCTION_HINT_RE = re.compile(r"(?:\bfunction\b|\bmethod\b|\bdef\b|함수|메서드|메소드)", re.IGNORECASE)
+_IDENTIFIER_TOKEN_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+_CODE_SCOPE_HINT_RE = re.compile(r"(?:소스|코드|파일|\.(?:py|ts|tsx|js|jsx|sql))", re.IGNORECASE)
 
 
 class Orchestrator:
@@ -64,8 +76,11 @@ class Orchestrator:
         conversation_store: ConversationStoreProtocol,
         task_log_store: TaskLogStoreProtocol,
         planner: object | None = None,
+        reranker: object | None = None,
         metrics: MetricsCollector | None = None,
         error_monitor: ErrorMonitor | None = None,
+        user_knowledge_store: object | None = None,
+        knowledge_base_path: Path | None = None,
     ) -> None:
         self._governor = governor
         self._query_decomposer = query_decomposer
@@ -78,8 +93,12 @@ class Orchestrator:
         self._conversation_store = conversation_store
         self._task_log_store = task_log_store
         self._planner = planner
+        self._reranker = reranker
         self._metrics = metrics
         self._error_monitor = error_monitor
+        self._query_complexity: str = "moderate"
+        self._user_knowledge_store = user_knowledge_store
+        self._knowledge_base_path = knowledge_base_path
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
@@ -114,13 +133,18 @@ class Orchestrator:
 
         # 3. Planner: AI-based query analysis (Spec Section 2.1)
         search_query = user_input
+        analysis = None
         if self._planner is not None:
             analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
             if analysis.search_terms:
                 search_query = " ".join(analysis.search_terms)
+            # Complexity classification for model routing
+            classify = getattr(self._planner, "classify_complexity", None)
+            if callable(classify):
+                self._query_complexity = classify(user_input)
 
         # 4. Retrieve evidence using analyzed search terms
-        evidence = self._retrieve_evidence(search_query)
+        evidence = self._retrieve_evidence(search_query, analysis=analysis)
 
         # 5. If no evidence, return early
         if evidence.is_empty:
@@ -178,6 +202,7 @@ class Orchestrator:
         turn.has_evidence = True
         self._last_answer = answer
         self._conversation_store.save_turn(turn)
+        self._extract_user_knowledge(turn)
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
@@ -190,6 +215,102 @@ class Orchestrator:
 
         return turn
 
+    def handle_turn_stream(self, user_input: str) -> Iterator[str | ConversationTurn]:
+        """Stream a turn — yields tokens then a final ConversationTurn.
+
+        Retrieval is synchronous. Only the LLM generation phase streams.
+        The last yielded item is always a ConversationTurn.
+        """
+        started_at = time.perf_counter()
+        turn = ConversationTurn(user_input=user_input)
+
+        # Safety, governor, planner checks (same as handle_turn)
+        if self._is_destructive_request(user_input):
+            turn.assistant_output = (
+                "파괴적이거나 대량 삭제로 이어질 수 있는 요청은 안전 정책상 수행할 수 없습니다."
+            )
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            yield turn
+            return
+
+        if not self._governor.check_resource_budget():
+            turn.assistant_output = "시스템 리소스가 부족하여 처리할 수 없습니다."
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            yield turn
+            return
+
+        self._task_log_store.log_entry(TaskLogEntry(
+            turn_id=turn.turn_id, stage="start", status=TaskStatus.RUNNING,
+        ))
+
+        search_query = user_input
+        analysis = None
+        if self._planner is not None:
+            analysis = self._planner.analyze(user_input)  # type: ignore[union-attr]
+            if analysis.search_terms:
+                search_query = " ".join(analysis.search_terms)
+            classify = getattr(self._planner, "classify_complexity", None)
+            if callable(classify):
+                self._query_complexity = classify(user_input)
+
+        evidence = self._retrieve_evidence(search_query, analysis=analysis)
+
+        if evidence.is_empty:
+            turn.assistant_output = "관련 증거를 찾을 수 없어 답변을 생성할 수 없습니다."
+            turn.has_evidence = False
+            self._conversation_store.save_turn(turn)
+            self._task_log_store.log_entry(TaskLogEntry(
+                turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
+            ))
+            yield turn
+            return
+
+        # Stream LLM generation
+        recent_turns = self._conversation_store.get_recent_turns(limit=3)
+        generate_stream = getattr(self._llm_generator, "generate_stream", None)
+
+        if callable(generate_stream):
+            full_text_parts: list[str] = []
+            answer: AnswerDraft | None = None
+
+            for item in generate_stream(user_input, evidence, recent_turns=recent_turns):
+                if isinstance(item, str):
+                    full_text_parts.append(item)
+                    yield item
+                else:
+                    # AnswerDraft sentinel
+                    answer = item
+
+            if answer is None:
+                # Shouldn't happen, but handle gracefully
+                from jarvis.runtime.mlx_runtime import strip_think_tags
+                answer = AnswerDraft(
+                    content=strip_think_tags("".join(full_text_parts)),
+                    evidence=evidence,
+                    model_id="unknown",
+                )
+        else:
+            # No streaming — fall back to non-streaming
+            answer = self._generate_answer(user_input, evidence, recent_turns)
+
+        turn.assistant_output = answer.content
+        turn.has_evidence = True
+        self._last_answer = answer
+        self._conversation_store.save_turn(turn)
+        self._extract_user_knowledge(turn)
+        self._task_log_store.log_entry(TaskLogEntry(
+            turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
+        ))
+        if self._metrics is not None:
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                (time.perf_counter() - started_at) * 1000,
+                tags={"has_evidence": "true", "streaming": "true"},
+            )
+        yield turn
+
     @property
     def last_answer(self) -> AnswerDraft | None:
         """Access the last AnswerDraft for citation rendering."""
@@ -200,7 +321,8 @@ class Orchestrator:
         r"([\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx))"
     )
 
-    def _retrieve_evidence(self, query: str) -> VerifiedEvidenceSet:
+    def _retrieve_evidence(self, query: str, *, analysis=None) -> VerifiedEvidenceSet:
+        retrieval_start = time.perf_counter()
         fragments = self._query_decomposer.decompose(query)
         if not fragments:
             return VerifiedEvidenceSet(items=(), query_fragments=())
@@ -208,37 +330,87 @@ class Orchestrator:
         runtime_decision = self._resolve_runtime_decision()
         retrieval_top_k = max(4, runtime_decision.max_retrieved_chunks * 2)
 
-        can_parallelize = (
-            getattr(self._fts_retriever, "_db", None) is None
-            and getattr(self._vector_retriever, "_db", None) is None
-        )
-        if can_parallelize:
+        search_start = time.perf_counter()
+        try:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 fts_future = executor.submit(self._fts_retriever.search, fragments, retrieval_top_k)
                 vector_future = executor.submit(self._vector_retriever.search, fragments, retrieval_top_k)
                 fts_hits = fts_future.result()
                 vector_hits = vector_future.result()
-        else:
+        except Exception:
+            _logger.warning("Parallel search failed, falling back to sequential")
             fts_hits = self._fts_retriever.search(fragments, retrieval_top_k)
             vector_hits = self._vector_retriever.search(fragments, retrieval_top_k)
+        search_ms = (time.perf_counter() - search_start) * 1000
 
-        # Document-targeted search: if query mentions a filename,
-        # also search within that specific document's chunks
-        targeted_hits = self._targeted_file_search(query, fragments)
-        if targeted_hits:
-            fts_hits = targeted_hits + [h for h in fts_hits if h.chunk_id not in
-                                         {t.chunk_id for t in targeted_hits}]
+        strategy = select_retrieval_strategy(analysis)
+        fts_hits, vector_hits = strategy.augment_candidates(
+            RetrievalInputs(
+                query=query,
+                analysis=analysis,
+                fragments=fragments,
+                fts_hits=list(fts_hits),
+                vector_hits=list(vector_hits),
+                db=getattr(self._fts_retriever, "_db", None),
+                targeted_file_search=self._targeted_file_search,
+                explicit_file_scoped_query=self._is_explicit_file_scoped_query,
+            )
+        )
 
         hybrid_results = self._hybrid_fusion.fuse(
             fts_hits,
             vector_hits,
-            top_k=runtime_decision.max_retrieved_chunks,
+            # Fetch more candidates for reranker to filter
+            top_k=runtime_decision.max_retrieved_chunks * 2 if self._reranker else runtime_decision.max_retrieved_chunks,
         )
+
+        # Rerank if available: cross-encoder re-scores candidates
+        if self._reranker is not None and hasattr(self._reranker, "rerank"):
+            # Fetch chunk texts for better reranking (snippets may be truncated)
+            chunk_texts: dict[str, str] = {}
+            db = getattr(self._fts_retriever, "_db", None)
+            if db is not None:
+                for r in hybrid_results:
+                    row = db.execute(
+                        "SELECT text FROM chunks WHERE chunk_id = ?", (r.chunk_id,)
+                    ).fetchone()
+                    if row:
+                        chunk_texts[r.chunk_id] = row[0]
+
+            pre_rerank_results = list(hybrid_results)
+            hybrid_results = self._reranker.rerank(
+                query,
+                hybrid_results,
+                top_k=runtime_decision.max_retrieved_chunks,
+                chunk_texts=chunk_texts,
+            )
+
+            hybrid_results = strategy.protect_post_rerank(
+                analysis=analysis,
+                query=query,
+                hybrid_results=hybrid_results,
+                pre_rerank_results=pre_rerank_results,
+                chunk_texts=chunk_texts,
+            )
+
         evidence = self._evidence_builder.build(hybrid_results, fragments)
+
         if len(evidence.items) > runtime_decision.max_retrieved_chunks:
             evidence = VerifiedEvidenceSet(
                 items=evidence.items[:runtime_decision.max_retrieved_chunks],
                 query_fragments=evidence.query_fragments,
+            )
+
+        retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
+        _logger.info(
+            "Retrieval: search=%.0fms total=%.0fms fts=%d vector=%d fused=%d",
+            search_ms, retrieval_ms, len(fts_hits), len(vector_hits),
+            len(hybrid_results),
+        )
+        if self._metrics is not None:
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS, search_ms,
+                tags={"stage": "parallel_search"},
             )
         return evidence
 
@@ -247,11 +419,22 @@ class Orchestrator:
     ) -> list:
         """Search within a specific document when filename is mentioned in query.
 
-        If the user says "pipeline.py의 함수를 알려줘", this finds pipeline.py
-        in the DB and searches only its chunks, bypassing BM25 noise from
-        large unrelated documents.
+        Handles both exact filenames ("pipeline.py") and space-separated
+        references ("14day diet supplements final" → 14day_diet_supplements_final).
         """
+        from jarvis.retrieval.query_decomposer import _extract_filenames
+
+        normalized_query = normalize_spoken_code_query(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
         filenames = self._FILENAME_RE.findall(query)
+        filenames.extend(self._FILENAME_RE.findall(normalized_query))
+        # Also detect underscore-separated stems and space-separated variants
+        filenames.extend(_extract_filenames(query))
+        filenames.extend(_extract_filenames(normalized_query))
+        # Deduplicate
+        filenames = list(dict.fromkeys(filenames))
         if not filenames:
             return []
 
@@ -263,20 +446,35 @@ class Orchestrator:
         from jarvis.contracts import SearchHit
 
         targeted: list[SearchHit] = []
+        wants_class = bool(_CLASS_HINT_RE.search(normalized_query))
+        wants_function = bool(_FUNCTION_HINT_RE.search(normalized_query))
+        identifier_terms = {
+            token for token in _IDENTIFIER_TOKEN_RE.findall(normalized_query)
+            if "." not in token and len(token) > 2
+        }
         for filename in filenames:
-            # Find documents matching this filename
+            # Find documents matching this filename (exact path ending)
             rows = db.execute(
                 "SELECT document_id FROM documents"
                 " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
                 (f"%/{filename}",),
             ).fetchall()
             if not rows:
-                # Try partial match (filename without path)
+                # Try partial match (filename without path, stem match)
                 rows = db.execute(
                     "SELECT document_id FROM documents"
                     " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
                     (f"%{filename}%",),
                 ).fetchall()
+            if not rows:
+                # Try space→underscore conversion
+                underscore_name = filename.replace(" ", "_").replace("-", "_")
+                if underscore_name != filename:
+                    rows = db.execute(
+                        "SELECT document_id FROM documents"
+                        " WHERE path LIKE ? AND indexing_status = 'INDEXED'",
+                        (f"%{underscore_name}%",),
+                    ).fetchall()
 
             for (doc_id,) in rows:
                 # Get all chunks for this document, scored by keyword match
@@ -294,11 +492,22 @@ class Orchestrator:
                 for chunk_id, did, text in chunk_rows:
                     # Score by how many query terms appear in this chunk
                     matches = sum(1 for t in keyword_terms if t.lower() in text.lower())
-                    if matches > 0:
+                    signature_boost = 0.0
+                    if wants_class and any(
+                        re.search(rf"\bclass\s+{re.escape(term)}\b", text, re.IGNORECASE)
+                        for term in identifier_terms
+                    ):
+                        signature_boost += 12.0
+                    if wants_function and any(
+                        re.search(rf"\b(?:def|function)\s+{re.escape(term)}\b", text, re.IGNORECASE)
+                        for term in identifier_terms
+                    ):
+                        signature_boost += 10.0
+                    if matches > 0 or signature_boost > 0:
                         targeted.append(SearchHit(
                             chunk_id=chunk_id,
                             document_id=did,
-                            score=matches * 5.0 + 10.0,  # High base score for targeted results
+                            score=matches * 5.0 + 10.0 + signature_boost,  # Prefer exact file/signature hits
                             snippet=text[:200],
                         ))
 
@@ -306,12 +515,43 @@ class Orchestrator:
         targeted.sort(key=lambda h: h.score, reverse=True)
         return targeted[:5]
 
+    def _extract_user_knowledge(self, turn: ConversationTurn) -> None:
+        """Extract and store user knowledge from a completed turn (Tier 3 memory)."""
+        if self._user_knowledge_store is None:
+            return
+        try:
+            from jarvis.memory.user_knowledge import extract_knowledge
+
+            entries = extract_knowledge(
+                turn.user_input, turn.assistant_output or "",
+                turn_id=turn.turn_id,
+            )
+            upsert = getattr(self._user_knowledge_store, "upsert", None)
+            if callable(upsert):
+                for entry in entries:
+                    upsert(entry)
+        except Exception:
+            pass  # Knowledge extraction failure should never block the main flow
+
+    def _get_user_knowledge_context(self) -> str:
+        """Get formatted user knowledge for LLM prompt injection."""
+        if self._user_knowledge_store is None:
+            return ""
+        fmt = getattr(self._user_knowledge_store, "format_for_prompt", None)
+        if callable(fmt):
+            return fmt(max_entries=8)
+        return ""
+
     def _generate_answer(
         self,
         prompt: str,
         evidence: VerifiedEvidenceSet,
         recent_turns: list[ConversationTurn] | None = None,
     ) -> AnswerDraft:
+        # Inject user knowledge into prompt if available
+        knowledge_ctx = self._get_user_knowledge_context()
+        if knowledge_ctx:
+            prompt = f"{knowledge_ctx}\n\n{prompt}"
         return self._llm_generator.generate(prompt, evidence, recent_turns=recent_turns)
 
     def _build_safe_mode_response(
@@ -346,6 +586,12 @@ class Orchestrator:
                 requested_tier = suggest_idle()
             if self._error_monitor is not None and self._error_monitor.degraded_mode:
                 requested_tier = "fast"
+            # Complexity-based tier adjustment
+            complexity = getattr(self, "_query_complexity", "moderate")
+            if complexity == "complex" and requested_tier != "fast":
+                requested_tier = "deep"
+            elif complexity == "simple" and requested_tier == "deep":
+                requested_tier = "balanced"
             return select_runtime(requested_tier)
 
         class _FallbackDecision:
@@ -359,3 +605,20 @@ class Orchestrator:
         if not text:
             return False
         return any(pattern.search(text) for pattern in _DESTRUCTIVE_REQUEST_PATTERNS)
+
+    def _is_explicit_file_scoped_query(self, query: str) -> bool:
+        normalized_query = normalize_spoken_code_query(
+            query,
+            knowledge_base_path=self._knowledge_base_path,
+        )
+        has_filename = bool(self._FILENAME_RE.search(query) or self._FILENAME_RE.search(normalized_query))
+        if not has_filename:
+            return False
+        return bool(
+            _CODE_SCOPE_HINT_RE.search(query)
+            or _CLASS_HINT_RE.search(query)
+            or _FUNCTION_HINT_RE.search(query)
+            or _CODE_SCOPE_HINT_RE.search(normalized_query)
+            or _CLASS_HINT_RE.search(normalized_query)
+            or _FUNCTION_HINT_RE.search(normalized_query)
+        )

@@ -17,12 +17,13 @@ _RUNTIME_DEP_MAP: dict[str, str] = {
     "model": "llm_generator",
     "embeddings": "embedding_runtime",
     "vector_db": "vector_index",
+    "reranker": "reranker",
     "file_watcher": "file_watcher",
     "governor": "governor",
 }
 
 _CORE_KEYS: frozenset[str] = frozenset({"database", "metrics", "watched_folders", "export_dir"})
-_RUNTIME_KEYS: frozenset[str] = frozenset({"model", "embeddings", "vector_db", "file_watcher", "governor"})
+_RUNTIME_KEYS: frozenset[str] = frozenset({"model", "embeddings", "vector_db", "reranker", "file_watcher", "governor"})
 
 
 @dataclass
@@ -34,6 +35,19 @@ class HealthStatus:
     details: dict[str, str]
     message: str = ""
     failed_checks: list[str] = field(default_factory=list)
+
+
+def _runtime_available_flag(runtime: object) -> bool | None:
+    checker = getattr(runtime, "_check_available", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    available = getattr(runtime, "_available", None)
+    if available is None:
+        return None
+    return bool(available)
 
 
 def _has_runtime_failure(*, checks: dict[str, bool], deps: dict[str, object]) -> bool:
@@ -62,6 +76,7 @@ def check_health(deps: dict[str, object]) -> HealthStatus:
       - llm_generator: LLM runtime (has .model_id)
       - embedding_runtime: EmbeddingRuntime (has .model_loaded)
       - vector_index: VectorIndex (has ._table or similar)
+      - reranker: Reranker (has ._check_available / ._model)
       - file_watcher: FileWatcher (has .is_alive())
       - governor: Governor (has .sample())
     """
@@ -124,7 +139,7 @@ def check_health(deps: dict[str, object]) -> HealthStatus:
             details["model"] = f"OK ({model_id})"
         else:
             checks["model"] = False
-            details["model"] = "stub — no LLM loaded"
+            details["model"] = getattr(llm, "status_detail", "stub — no LLM loaded")
     else:
         checks["model"] = False
         details["model"] = "not configured"
@@ -132,14 +147,19 @@ def check_health(deps: dict[str, object]) -> HealthStatus:
     # Embedding runtime
     emb = deps.get("embedding_runtime")
     if emb is not None:
-        model_loaded = getattr(emb, "model_loaded", None)
-        if model_loaded is not None:
-            checks["embeddings"] = bool(model_loaded)
-            details["embeddings"] = "OK" if model_loaded else "model not loaded"
+        available = _runtime_available_flag(emb)
+        if available is False:
+            checks["embeddings"] = False
+            details["embeddings"] = "disabled (sentence-transformers unavailable)"
         else:
-            # Fallback: check if the runtime object exists
             checks["embeddings"] = True
-            details["embeddings"] = "OK (runtime present)"
+            model_loaded = getattr(emb, "model_loaded", None)
+            if model_loaded is None:
+                model_loaded = getattr(emb, "is_loaded", None)
+            if bool(model_loaded):
+                details["embeddings"] = "active"
+            else:
+                details["embeddings"] = "ready (lazy-loaded)"
     else:
         checks["embeddings"] = False
         details["embeddings"] = "not configured"
@@ -147,18 +167,35 @@ def check_health(deps: dict[str, object]) -> HealthStatus:
     # Vector DB (LanceDB)
     vi = deps.get("vector_index")
     if vi is not None:
-        get_table = getattr(vi, "_get_table", None)
-        if callable(get_table):
-            table = get_table()
-            checks["vector_db"] = table is not None
-            details["vector_db"] = "OK" if table is not None else "table not initialized"
+        available = _runtime_available_flag(vi)
+        if available is False:
+            checks["vector_db"] = False
+            details["vector_db"] = "disabled (FTS-only mode)"
         else:
-            table = getattr(vi, "_table", None)
-            checks["vector_db"] = table is not None
-            details["vector_db"] = "OK" if table is not None else "table not initialized"
+            get_table = getattr(vi, "_get_table", None)
+            if callable(get_table):
+                table = get_table()
+            else:
+                table = getattr(vi, "_table", None)
+            checks["vector_db"] = True
+            details["vector_db"] = "active" if table is not None else "ready (no table yet)"
     else:
         checks["vector_db"] = False
         details["vector_db"] = "not configured"
+
+    reranker = deps.get("reranker")
+    if reranker is not None:
+        available = _runtime_available_flag(reranker)
+        if available is False:
+            checks["reranker"] = False
+            details["reranker"] = "disabled (cross-encoder unavailable)"
+        else:
+            checks["reranker"] = True
+            model_loaded = getattr(reranker, "_model", None) is not None
+            details["reranker"] = "active" if model_loaded else "ready (lazy-loaded)"
+    else:
+        checks["reranker"] = False
+        details["reranker"] = "not configured"
 
     # File watcher
     watcher = deps.get("file_watcher")

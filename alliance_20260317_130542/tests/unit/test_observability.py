@@ -41,6 +41,15 @@ class TestHealthCheck:
         class FakeVector:
             _table = object()
 
+            def _check_available(self) -> bool:
+                return True
+
+        class FakeReranker:
+            _model = object()
+
+            def _check_available(self) -> bool:
+                return True
+
         class FakeWatcher:
             def is_alive(self) -> bool:
                 return True
@@ -52,6 +61,7 @@ class TestHealthCheck:
             "llm_generator": FakeLLM(),
             "embedding_runtime": FakeEmbedding(),
             "vector_index": FakeVector(),
+            "reranker": FakeReranker(),
             "file_watcher": FakeWatcher(),
         })
 
@@ -66,6 +76,9 @@ class TestHealthCheck:
             def _get_table(self) -> object:
                 return object()
 
+            def _check_available(self) -> bool:
+                return True
+
         status = check_health({
             "db": sqlite3.connect(":memory:"),
             "metrics": MetricsCollector(),
@@ -75,7 +88,78 @@ class TestHealthCheck:
 
         assert status.healthy is True
         assert status.checks["vector_db"] is True
-        assert status.details["vector_db"] == "OK"
+        assert status.details["vector_db"] == "active"
+
+    def test_reports_ready_when_optional_runtime_is_lazy_loaded(self, tmp_path: Path) -> None:
+        config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
+
+        class FakeEmbedding:
+            is_loaded = False
+
+            def _check_available(self) -> bool:
+                return True
+
+        class FakeVector:
+            def _check_available(self) -> bool:
+                return True
+
+            def _get_table(self) -> object | None:
+                return None
+
+        class FakeReranker:
+            _model = None
+
+            def _check_available(self) -> bool:
+                return True
+
+        status = check_health({
+            "db": sqlite3.connect(":memory:"),
+            "metrics": MetricsCollector(),
+            "config": config,
+            "embedding_runtime": FakeEmbedding(),
+            "vector_index": FakeVector(),
+            "reranker": FakeReranker(),
+        })
+
+        assert status.healthy is True
+        assert status.checks["embeddings"] is True
+        assert status.checks["vector_db"] is True
+        assert status.checks["reranker"] is True
+        assert status.details["embeddings"] == "ready (lazy-loaded)"
+        assert status.details["vector_db"] == "ready (no table yet)"
+        assert status.details["reranker"] == "ready (lazy-loaded)"
+
+    def test_reports_disabled_optional_runtime_clearly(self, tmp_path: Path) -> None:
+        config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
+
+        class DisabledEmbedding:
+            def _check_available(self) -> bool:
+                return False
+
+        class DisabledVector:
+            def _check_available(self) -> bool:
+                return False
+
+        class DisabledReranker:
+            def _check_available(self) -> bool:
+                return False
+
+        status = check_health({
+            "db": sqlite3.connect(":memory:"),
+            "metrics": MetricsCollector(),
+            "config": config,
+            "embedding_runtime": DisabledEmbedding(),
+            "vector_index": DisabledVector(),
+            "reranker": DisabledReranker(),
+        })
+
+        assert status.healthy is False
+        assert status.details["embeddings"] == "disabled (sentence-transformers unavailable)"
+        assert status.details["vector_db"] == "disabled (FTS-only mode)"
+        assert status.details["reranker"] == "disabled (cross-encoder unavailable)"
+        assert "embeddings" in status.failed_checks
+        assert "vector_db" in status.failed_checks
+        assert "reranker" in status.failed_checks
 
     def test_reports_missing_dependencies(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing-folder"
@@ -100,6 +184,7 @@ class TestHealthCheck:
 
         class BrokenLLM:
             model_id = "stub"
+            status_detail = "MLX preflight failed: device unavailable"
 
         status = check_health({
             "db": sqlite3.connect(":memory:"),
@@ -112,6 +197,7 @@ class TestHealthCheck:
         assert status.checks["model"] is False
         assert "model" in status.message
         assert status.failed_checks == ["model"]
+        assert status.details["model"] == "MLX preflight failed: device unavailable"
 
 
 class TestJsonLogFormatter:

@@ -71,3 +71,16 @@ class TestVoiceSession:
 
         assert orchestrator.received_input == "PTT 질문"
         assert turn.assistant_output == "음성 응답"
+
+    def test_push_to_talk_once_can_return_transcript_only(self) -> None:
+        orchestrator = StubOrchestrator()
+        session = VoiceSession(
+            orchestrator=orchestrator,
+            stt_runtime=WhisperCppSTT(),
+            recorder=StubRecorder(transcript="회의 일정 정리"),
+        )
+
+        transcript = session.record_and_transcribe_once()
+
+        assert transcript == "회의 일정 정리"
+        assert orchestrator.received_input == ""

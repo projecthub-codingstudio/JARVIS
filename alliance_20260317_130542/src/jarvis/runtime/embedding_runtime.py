@@ -9,6 +9,8 @@ Falls back to stub (zero-vectors) if sentence-transformers is not installed.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Sequence
 
 from jarvis.contracts import EmbeddingRuntimeProtocol
@@ -18,6 +20,32 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL = "BAAI/bge-m3"
 _DEFAULT_DIM = 1024
 _BATCH_SIZE = 32
+_DEFAULT_DEVICE = "cpu"
+
+
+def _resolve_local_model_path(model_id: str) -> str | None:
+    """Prefer a complete local Hugging Face snapshot when available."""
+    if "/" not in model_id:
+        return None
+
+    org, name = model_id.split("/", 1)
+    cache_root = Path.home() / ".cache" / "huggingface" / "hub"
+    snapshot_root = cache_root / f"models--{org}--{name}" / "snapshots"
+    if not snapshot_root.exists():
+        return None
+
+    snapshots = sorted(
+        (
+            path for path in snapshot_root.iterdir()
+            if path.is_dir() and (path / "config.json").exists()
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for snapshot in snapshots:
+        if any(snapshot.iterdir()):
+            return str(snapshot)
+    return None
 
 
 class EmbeddingRuntime:
@@ -33,11 +61,11 @@ class EmbeddingRuntime:
         *,
         model_id: str = _DEFAULT_MODEL,
         dim: int = _DEFAULT_DIM,
-        device: str = "mps",
+        device: str | None = None,
     ) -> None:
         self._model_id = model_id
         self._dim = dim
-        self._device = device
+        self._device = device or os.getenv("JARVIS_EMBEDDING_DEVICE", _DEFAULT_DEVICE)
         self._model: object | None = None
         self._available: bool | None = None
 
@@ -62,9 +90,21 @@ class EmbeddingRuntime:
         if not self._check_available():
             return
         try:
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+            logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+            logging.getLogger("transformers").setLevel(logging.ERROR)
+            logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+            try:
+                from huggingface_hub.utils import disable_progress_bars
+
+                disable_progress_bars()
+            except Exception:
+                pass
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_id, device=self._device)
-            logger.info("Loaded embedding model: %s on %s", self._model_id, self._device)
+            model_source = _resolve_local_model_path(self._model_id) or self._model_id
+            self._model = SentenceTransformer(model_source, device=self._device)
+            logger.info("Loaded embedding model: %s on %s", model_source, self._device)
         except Exception as e:
             logger.warning("Failed to load embedding model: %s", e)
             self._available = False
@@ -75,12 +115,13 @@ class EmbeddingRuntime:
             return
         del self._model
         self._model = None
-        try:
-            import torch
-            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
-        except ImportError:
-            pass
+        if self._device.startswith("mps"):
+            try:
+                import torch
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+            except ImportError:
+                pass
         logger.info("Unloaded embedding model: %s", self._model_id)
 
     @property

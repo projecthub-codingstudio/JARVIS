@@ -37,11 +37,37 @@ from jarvis.observability.metrics import MetricName, MetricsCollector
 
 # Patterns for extracting specific identifiers from queries
 _FILENAME_RE = re.compile(r"[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf)")
+# Also match filenames without extension (e.g., "14day_diet_supplements_final")
+_FILENAME_STEM_RE = re.compile(r"\b([a-zA-Z0-9][\w-]{5,}(?:_[\w-]+)+)\b")
 _CODE_IDENT_RE = re.compile(r"[a-zA-Z_]\w{3,}(?:\.\w+)*")  # function/class names like _build_foo, MyClass
 
 # Boost values
-_FILENAME_MATCH_BOOST = 0.10   # document path contains queried filename
+_FILENAME_MATCH_BOOST = 0.20   # document path contains queried filename
+_FILENAME_STEM_BOOST = 0.15    # document stem matches without extension
 _IDENTIFIER_MATCH_BOOST = 0.08  # chunk text contains queried code identifier
+_CODE_SOURCE_BOOST = 0.28
+_NON_CODE_PENALTY = 0.14
+_CLASS_SIGNATURE_BOOST = 0.16
+_FUNCTION_SIGNATURE_BOOST = 0.12
+_DOCUMENT_PHRASE_BOOST = 0.08
+_DOCUMENT_EXPLANATORY_BOOST = 0.05
+_DOCUMENT_REFERENCE_PENALTY = 0.12
+MIN_RELEVANCE_SCORE = 0.01     # lowered: RRF scores are inherently small (~0.016)
+
+_CLASS_QUERY_RE = re.compile(r"(클래스|class)", re.IGNORECASE)
+_FUNCTION_QUERY_RE = re.compile(r"(함수|메서드|메소드|function|method)", re.IGNORECASE)
+_CODE_QUERY_RE = re.compile(
+    r"(소스|코드|파이(?:썬|선)|python|class|클래스|function|함수|method|메서드|def\s|import\s|\.py\b|source)",
+    re.IGNORECASE,
+)
+_CODE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".sql", ".java", ".kt", ".go", ".rs", ".cpp", ".c", ".h"}
+_DOCUMENT_EXPLANATORY_RE = re.compile(r"(?:이다|있다|한다|된다|저장된다|구조로|의미|설명)")
+_DOCUMENT_REFERENCE_RE = re.compile(r"(?:참조|자세한 것은|보기 바란다|아닐 때는)")
+_PHRASE_TOKEN_RE = re.compile(r"[A-Za-z0-9가-힣]+")
+_PHRASE_STOPWORDS = {
+    "설명", "설명해", "설명해요", "설명해줘", "설명해주세요", "주세요",
+    "문서", "자료", "중", "중에", "대해", "대해서", "기본", "구조",
+}
 
 
 class EvidenceBuilder:
@@ -67,12 +93,17 @@ class EvidenceBuilder:
             return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
 
         if self._db is None:
-            return self._stub_build(results, fragments)
+            return VerifiedEvidenceSet(items=(), query_fragments=tuple(fragments))
 
         # Extract filename and identifier terms from query for boost scoring
         query_text = " ".join(f.text for f in fragments)
         query_filenames = {m.lower() for m in _FILENAME_RE.findall(query_text)}
+        query_filename_stems = {m.lower() for m in _FILENAME_STEM_RE.findall(query_text)}
         query_identifiers = {m for m in _CODE_IDENT_RE.findall(query_text) if len(m) > 4}
+        prefers_code = _looks_like_code_query(query_text)
+        wants_class = bool(_CLASS_QUERY_RE.search(query_text))
+        wants_function = bool(_FUNCTION_QUERY_RE.search(query_text))
+        query_phrases = _document_query_phrases(query_text)
 
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
@@ -114,10 +145,26 @@ class EvidenceBuilder:
             boost += self._freshness.compute_freshness_boost(doc)
 
             # Filename match boost: document path contains queried filename
-            if query_filenames and doc.path:
+            if doc.path:
                 doc_filename = Path(doc.path).name.lower()
-                if doc_filename in query_filenames:
+                doc_stem = Path(doc.path).stem.lower()
+                if query_filenames and doc_filename in query_filenames:
                     boost += _FILENAME_MATCH_BOOST
+                elif query_filename_stems and doc_stem in query_filename_stems:
+                    boost += _FILENAME_STEM_BOOST
+                else:
+                    # Fuzzy: check if query words match document stem tokens
+                    # e.g., "14day diet supplements final" matches "14day_diet_supplements_final"
+                    stem_tokens = set(doc_stem.replace("-", "_").split("_"))
+                    query_words = {w.lower() for f in fragments for w in f.text.split() if len(w) > 2}
+                    overlap = stem_tokens & query_words
+                    if len(overlap) >= 2 and len(overlap) >= len(stem_tokens) * 0.5:
+                        boost += _FILENAME_STEM_BOOST
+                if prefers_code:
+                    if _is_code_path(doc.path):
+                        boost += _CODE_SOURCE_BOOST
+                    else:
+                        boost -= _NON_CODE_PENALTY
 
             # Identifier match boost: chunk contains queried code identifier
             chunk_text = chunk_row[0] if chunk_row[0] else ""
@@ -126,11 +173,29 @@ class EvidenceBuilder:
                     if ident in chunk_text:
                         boost += _IDENTIFIER_MATCH_BOOST
                         break  # One boost per chunk
+            if chunk_text and wants_class and any(
+                re.search(rf"\bclass\s+{re.escape(ident)}\b", chunk_text)
+                for ident in query_identifiers
+            ):
+                boost += _CLASS_SIGNATURE_BOOST
+            if chunk_text and wants_function and any(
+                re.search(rf"\b(?:def|function)\s+{re.escape(ident)}\b", chunk_text)
+                for ident in query_identifiers
+            ):
+                boost += _FUNCTION_SIGNATURE_BOOST
+            if not prefers_code and chunk_text:
+                boost += _document_chunk_boost(
+                    query_text=query_text,
+                    query_phrases=query_phrases,
+                    heading_path=chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else "",
+                    chunk_text=chunk_text,
+                )
+
+            heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
 
             boosted_score = result.rrf_score + boost
 
             text = chunk_text or result.snippet
-            heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
             items.append(EvidenceItem(
                 chunk_id=result.chunk_id,
                 document_id=result.document_id,
@@ -174,26 +239,58 @@ class EvidenceBuilder:
             )
         return evidence
 
-    def _stub_build(
-        self,
-        results: Sequence[HybridSearchResult],
-        fragments: Sequence[TypedQueryFragment],
-    ) -> VerifiedEvidenceSet:
-        items: list[EvidenceItem] = []
-        for i, result in enumerate(results, 1):
-            citation = CitationRecord(
-                document_id=result.document_id,
-                chunk_id=result.chunk_id,
-                label=f"[{i}]",
-                state=CitationState.VALID,
-            )
-            items.append(EvidenceItem(
-                chunk_id=result.chunk_id,
-                document_id=result.document_id,
-                text=result.snippet or f"Evidence from {result.document_id}",
-                citation=citation,
-                relevance_score=result.rrf_score,
-            ))
-        return VerifiedEvidenceSet(
-            items=tuple(items), query_fragments=tuple(fragments)
-        )
+
+def _looks_like_code_query(query_text: str) -> bool:
+    return bool(_CODE_QUERY_RE.search(query_text))
+
+
+def _document_query_phrases(query_text: str) -> tuple[str, ...]:
+    tokens = [token for token in _PHRASE_TOKEN_RE.findall(query_text) if len(token) >= 2]
+    phrases: list[str] = []
+    for size in range(2, min(4, len(tokens)) + 1):
+        for index in range(0, len(tokens) - size + 1):
+            phrase = " ".join(tokens[index:index + size]).strip()
+            compact = phrase.replace(" ", "")
+            if compact in _PHRASE_STOPWORDS:
+                continue
+            if len(compact) < 4:
+                continue
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return tuple(phrases)
+
+
+def _document_chunk_boost(
+    *,
+    query_text: str,
+    query_phrases: tuple[str, ...],
+    heading_path: str,
+    chunk_text: str,
+) -> float:
+    boost = 0.0
+    normalized_chunk = " ".join(chunk_text.split())
+    compact_chunk = normalized_chunk.replace(" ", "")
+
+    phrase_matches = 0
+    for phrase in query_phrases:
+        compact_phrase = phrase.replace(" ", "")
+        if compact_phrase and compact_phrase in compact_chunk:
+            phrase_matches += 1
+    if phrase_matches:
+        boost += _DOCUMENT_PHRASE_BOOST * min(2, phrase_matches)
+
+    heading_lower = heading_path.lower()
+    if "table-row" not in heading_lower and "table-summary" not in heading_lower:
+        if _DOCUMENT_EXPLANATORY_RE.search(normalized_chunk):
+            boost += _DOCUMENT_EXPLANATORY_BOOST
+        if _DOCUMENT_REFERENCE_RE.search(normalized_chunk) and phrase_matches == 0:
+            boost -= _DOCUMENT_REFERENCE_PENALTY
+
+    if "기본 구조" in query_text and "기본 구조" in normalized_chunk:
+        boost += _DOCUMENT_PHRASE_BOOST
+
+    return boost
+
+
+def _is_code_path(path: str) -> bool:
+    return Path(path).suffix.lower() in _CODE_EXTENSIONS
