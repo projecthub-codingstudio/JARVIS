@@ -29,6 +29,7 @@ from jarvis.contracts import (
     EvidenceItem,
     VerifiedEvidenceSet,
 )
+from jarvis.core.action_resolver import execute_action, parse_action_target
 from jarvis.core.intent_policy import resolve_menu_intent_policy
 from jarvis.identifier_restoration import build_identifier_lexicon, score_identifier_candidates
 from jarvis.query_normalization import normalize_spoken_code_query
@@ -985,12 +986,11 @@ def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse |
 
     # Action intent: parse and execute via ActionResolver
     if resolution.policy.intent == "action":
-        from jarvis.core.action_resolver import parse_action_target, execute_action
-
         target = parse_action_target(query)
         if target is None:
             return None  # fall through to RAG
         result = execute_action(target)
+        loop_stage = "idle" if result.success else "error"
         return MenuBarResponse(
             query=query,
             response=result.display_response,
@@ -1017,7 +1017,7 @@ def _intent_override_response(query: str, *, model_id: str) -> MenuBarResponse |
             guide_directive=MenuBarGuideDirective(
                 intent="action",
                 skill="action_resolver",
-                loop_stage="idle",
+                loop_stage=loop_stage,
                 should_hold=False,
             ),
             full_response_path="",
