@@ -25,6 +25,7 @@ from jarvis.cli.menu_bridge import (
     _warmup_tts,
 )
 from jarvis.app.runtime_context import shutdown_runtime_context
+from jarvis.service.builtin_capabilities import resolve_builtin_capability
 from jarvis.service.protocol import RpcRequest, RpcResponse, error_response, ok_response
 from jarvis.spoken_response_prefetch import predict_prefetchable_spoken_response
 from jarvis.transcript_repair import build_transcript_repair
@@ -258,6 +259,326 @@ def _infer_question_prompt(text: str) -> str:
     return ""
 
 
+def _artifact_viewer_kind(type_name: str) -> str:
+    normalized = type_name.strip().lower()
+    if normalized in {"code_file", "code_symbol"}:
+        return "code"
+    if normalized in {"html", "html_document"}:
+        return "html"
+    if normalized == "document":
+        return "document"
+    if normalized == "image":
+        return "image"
+    if normalized == "video":
+        return "video"
+    if normalized == "web":
+        return "web"
+    return "text"
+
+
+def _artifact_type_for_source(
+    *,
+    source_type: str,
+    path: str = "",
+    kind: str = "",
+) -> str:
+    normalized_source = source_type.strip().lower()
+    normalized_kind = kind.strip().lower()
+    normalized_path = path.strip().lower()
+    if normalized_path.startswith(("http://", "https://")):
+        return "web"
+    if normalized_path.endswith((".html", ".htm")):
+        return "html"
+    if normalized_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg")):
+        return "image"
+    if normalized_path.endswith((".mp4", ".mov", ".m4v", ".webm")):
+        return "video"
+    if normalized_source == "web":
+        return "web"
+    if normalized_source == "document":
+        return "document"
+    if normalized_kind == "code_symbol":
+        return "code_symbol"
+    if normalized_source == "code":
+        return "code_file"
+    return "text"
+
+
+def _artifact_type_for_exploration_kind(kind: str) -> str:
+    normalized = kind.strip().lower()
+    if normalized == "document":
+        return "document"
+    if normalized == "filename":
+        return "code_file"
+    if normalized in {"class", "function"}:
+        return "code_symbol"
+    return "text"
+
+
+def _artifact_type_for_exploration_item(*, kind: str, path: str) -> str:
+    normalized_path = path.strip().lower()
+    if normalized_path.startswith(("http://", "https://")):
+        return "web"
+    if normalized_path.endswith((".html", ".htm")):
+        return "html"
+    if normalized_path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg")):
+        return "image"
+    if normalized_path.endswith((".mp4", ".mov", ".m4v", ".webm")):
+        return "video"
+    return _artifact_type_for_exploration_kind(kind)
+
+
+def _artifact_subtitle_for_exploration_kind(kind: str) -> str:
+    normalized = kind.strip().lower()
+    if normalized == "document":
+        return "문서 후보"
+    if normalized == "filename":
+        return "파일 후보"
+    if normalized == "class":
+        return "클래스 후보"
+    if normalized == "function":
+        return "함수 후보"
+    return "관련 항목"
+
+
+def _is_absolute_path(path: str) -> bool:
+    normalized = path.strip()
+    return normalized.startswith("/") or normalized.startswith("http://") or normalized.startswith("https://")
+
+
+def _workspace_title(interaction_mode: str, selected_type: str = "") -> str:
+    normalized_type = selected_type.strip().lower()
+    if normalized_type in {"image", "video"}:
+        return "Media Workspace"
+    if normalized_type in {"web", "html"}:
+        return "Web Workspace"
+    if normalized_type in {"code_file", "code_symbol"}:
+        return "Code Workspace"
+    if interaction_mode == "source_exploration":
+        return "Source Workspace"
+    if interaction_mode == "document_exploration":
+        return "Document Workspace"
+    return "Jarvis Workspace"
+
+
+def _workspace_subtitle(
+    *,
+    artifact_count: int,
+    citation_count: int,
+    selected_label: str,
+) -> str:
+    parts = [f"항목 {artifact_count}개", f"근거 {citation_count}개"]
+    if selected_label:
+        parts.append(f"현재 선택: {selected_label}")
+    return " · ".join(parts)
+
+
+def _build_presentation_payload(data: dict[str, object]) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    builtin_presentation = data.get("builtin_presentation")
+    builtin_artifacts = data.get("builtin_artifacts")
+    if isinstance(builtin_presentation, dict) and isinstance(builtin_artifacts, list):
+        return builtin_presentation, [
+            artifact for artifact in builtin_artifacts if isinstance(artifact, dict)
+        ]
+
+    render_hints = data.get("render_hints") or {}
+    exploration = data.get("exploration") or {}
+    source_presentation = data.get("source_presentation") or {}
+    citations = data.get("citations") or []
+    interaction_mode = str(render_hints.get("interaction_mode", "")).strip()
+    response_text = str(data.get("response", "")).strip()
+
+    artifacts: list[dict[str, object]] = []
+    artifact_index = 0
+    artifact_ids_by_key: dict[tuple[str, str, str, str], str] = {}
+
+    def add_artifact(
+        *,
+        type_name: str,
+        title: str,
+        subtitle: str = "",
+        path: str = "",
+        full_path: str = "",
+        preview: str = "",
+        source_type: str = "",
+    ) -> str:
+        nonlocal artifact_index
+        safe_title = str(title).strip()
+        safe_path = str(path).strip()
+        safe_full_path = str(full_path).strip()
+        safe_subtitle = str(subtitle).strip()
+        key = (type_name, safe_full_path or safe_path, safe_title, safe_subtitle)
+        if key in artifact_ids_by_key:
+            return artifact_ids_by_key[key]
+        artifact_index += 1
+        artifact_id = f"artifact_{artifact_index}"
+        artifacts.append({
+            "id": artifact_id,
+            "type": type_name,
+            "title": safe_title,
+            "subtitle": safe_subtitle,
+            "path": safe_path,
+            "full_path": safe_full_path if _is_absolute_path(safe_full_path) else "",
+            "preview": str(preview).strip(),
+            "source_type": str(source_type).strip(),
+            "viewer_kind": _artifact_viewer_kind(type_name),
+        })
+        artifact_ids_by_key[key] = artifact_id
+        return artifact_id
+
+    list_artifact_ids: list[str] = []
+    exploration_groups = (
+        ("document", exploration.get("document_candidates", [])),
+        ("filename", exploration.get("file_candidates", [])),
+        ("class", exploration.get("class_candidates", [])),
+        ("function", exploration.get("function_candidates", [])),
+    )
+    for kind, raw_items in exploration_groups:
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            title = str(raw_item.get("label", "")).strip()
+            if not title:
+                continue
+            artifact_id = add_artifact(
+                type_name=_artifact_type_for_exploration_item(
+                    kind=kind,
+                    path=str(raw_item.get("path", "")).strip(),
+                ),
+                title=title,
+                subtitle=_artifact_subtitle_for_exploration_kind(kind),
+                path=str(raw_item.get("path", "")).strip(),
+                full_path=str(raw_item.get("path", "")).strip(),
+                preview=str(raw_item.get("preview", "")).strip(),
+                source_type="document" if kind == "document" else "code",
+            )
+            list_artifact_ids.append(artifact_id)
+
+    source_artifact_id = ""
+    if isinstance(source_presentation, dict) and source_presentation:
+        preview_lines = source_presentation.get("preview_lines", [])
+        preview_text = "\n".join(
+            str(line).strip() for line in preview_lines if str(line).strip()
+        ).strip()
+        source_artifact_id = add_artifact(
+            type_name=_artifact_type_for_source(
+                source_type=str(source_presentation.get("source_type", "")),
+                path=str(source_presentation.get("full_source_path", "")).strip()
+                or str(source_presentation.get("source_path", "")).strip(),
+                kind=str(source_presentation.get("kind", "")),
+            ),
+            title=str(source_presentation.get("title", "")).strip()
+            or str(source_presentation.get("source_path", "")).strip()
+            or "주요 자료",
+            subtitle=str(source_presentation.get("heading_path", "")).strip()
+            or "주요 근거 미리보기",
+            path=str(source_presentation.get("source_path", "")).strip(),
+            full_path=str(source_presentation.get("full_source_path", "")).strip(),
+            preview=preview_text or str(source_presentation.get("quote", "")).strip(),
+            source_type=str(source_presentation.get("source_type", "")).strip(),
+        )
+
+    selected_artifact_id = source_artifact_id or (list_artifact_ids[0] if list_artifact_ids else "")
+    selected_title = ""
+    selected_type = ""
+    if selected_artifact_id:
+        for artifact in artifacts:
+            if artifact.get("id") == selected_artifact_id:
+                selected_title = str(artifact.get("title", "")).strip()
+                selected_type = str(artifact.get("type", "")).strip()
+                break
+
+    blocks: list[dict[str, object]] = []
+    if response_text:
+        blocks.append({
+            "id": "answer",
+            "kind": "answer",
+            "title": "AI 응답",
+            "subtitle": "현재 요청에 대한 설명",
+            "artifact_ids": [],
+            "citation_labels": [],
+            "empty_state": "",
+        })
+    if list_artifact_ids:
+        blocks.append({
+            "id": "list",
+            "kind": "list",
+            "title": "자료 목록" if interaction_mode == "document_exploration" else "소스 목록",
+            "subtitle": "항목을 선택하면 상세 뷰가 바뀝니다",
+            "artifact_ids": list_artifact_ids,
+            "citation_labels": [],
+            "empty_state": "표시할 후보가 없습니다.",
+        })
+    if selected_artifact_id:
+        blocks.append({
+            "id": "detail",
+            "kind": "detail",
+            "title": "상세 보기",
+            "subtitle": "선택한 항목의 미리보기",
+            "artifact_ids": [selected_artifact_id],
+            "citation_labels": [],
+            "empty_state": "왼쪽 목록에서 항목을 선택하세요.",
+        })
+    citation_labels = [
+        str(citation.get("label", "")).strip()
+        for citation in citations
+        if isinstance(citation, dict) and str(citation.get("label", "")).strip()
+    ]
+    if citation_labels:
+        blocks.append({
+            "id": "evidence",
+            "kind": "evidence",
+            "title": "근거 자료",
+            "subtitle": "응답에 사용된 출처",
+            "artifact_ids": [],
+            "citation_labels": citation_labels,
+            "empty_state": "표시할 근거가 없습니다.",
+        })
+
+    if not blocks:
+        return None, artifacts
+
+    artifact_types = {
+        str(artifact.get("type", "")).strip().lower()
+        for artifact in artifacts
+        if str(artifact.get("type", "")).strip()
+    }
+    rich_detail_types = {"document", "html", "web", "video"}
+    layout = "stack"
+    if list_artifact_ids and artifact_types and artifact_types.issubset({"image"}):
+        layout = "gallery"
+    elif (
+        list_artifact_ids
+        and selected_artifact_id
+        and citation_labels
+        and selected_type.lower() in rich_detail_types
+    ):
+        layout = "tabs"
+    elif list_artifact_ids and selected_artifact_id:
+        layout = "master_detail"
+    elif (
+        selected_artifact_id
+        and citation_labels
+        and selected_type.lower() in rich_detail_types
+    ):
+        layout = "split"
+    elif selected_artifact_id and citation_labels:
+        layout = "stack"
+
+    presentation = {
+        "layout": layout,
+        "title": _workspace_title(interaction_mode, selected_type),
+        "subtitle": _workspace_subtitle(
+            artifact_count=len(artifacts),
+            citation_count=len(citation_labels),
+            selected_label=selected_title,
+        ),
+        "selected_artifact_id": selected_artifact_id,
+        "blocks": blocks,
+    }
+    return presentation, artifacts
+
+
 def _build_guide_payload(response: object) -> dict[str, object]:
     data = _payload_dict(response)
     directive = data.get("guide_directive") or {}
@@ -274,6 +595,7 @@ def _build_guide_payload(response: object) -> dict[str, object]:
             + [item.get("label", "") for item in exploration.get("function_candidates", [])[:2]]
         )
     has_clarification = bool(clarification_prompt or missing_slots)
+    presentation, artifacts = _build_presentation_payload(data)
     return {
         "loop_stage": directive.get(
             "loop_stage",
@@ -296,6 +618,8 @@ def _build_guide_payload(response: object) -> dict[str, object]:
         "exploration_mode": exploration.get("mode", ""),
         "target_file": exploration.get("target_file", ""),
         "target_document": exploration.get("target_document", ""),
+        "presentation": presentation,
+        "artifacts": artifacts,
     }
 
 
@@ -526,14 +850,16 @@ class JarvisApplicationService:
                         code="INVALID_ARGUMENT",
                         message="text is required",
                     )
-                envelope = _run_menu_bridge_ask_with_fallback(query=text)
-                response_payload = envelope.get("query_result")
-                if not isinstance(response_payload, dict):
-                    return error_response(
-                        request=request,
-                        code="INVALID_RESPONSE",
-                        message="menu_bridge ask returned no query_result",
-                    )
+                response_payload = resolve_builtin_capability(text)
+                if response_payload is None:
+                    envelope = _run_menu_bridge_ask_with_fallback(query=text)
+                    response_payload = envelope.get("query_result")
+                    if not isinstance(response_payload, dict):
+                        return error_response(
+                            request=request,
+                            code="INVALID_RESPONSE",
+                            message="menu_bridge ask returned no query_result",
+                        )
                 _prime_tts_cache_async(response_payload)
                 return ok_response(
                     request=request,

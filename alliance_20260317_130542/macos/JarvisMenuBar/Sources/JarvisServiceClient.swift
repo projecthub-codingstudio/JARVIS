@@ -534,7 +534,9 @@ actor JarvisServiceClient: JarvisBackendClient {
                             interactionMode: response.renderHints?.interactionMode ?? "",
                             explorationMode: response.exploration?.mode ?? "",
                             targetFile: response.exploration?.targetFile ?? "",
-                            targetDocument: response.exploration?.targetDocument ?? ""
+                            targetDocument: response.exploration?.targetDocument ?? "",
+                            presentation: nil,
+                            artifacts: nil
                         )
                     }
                     let answerText = guide?.clarificationPrompt.isEmpty == false
