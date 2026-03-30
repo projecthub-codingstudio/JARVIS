@@ -51,6 +51,17 @@ _MENU_INTENT_POLICIES: dict[str, IntentPolicy] = {
         skill="capability_notice",
         suggested_replies=("날씨 기능 연결", "다른 질문 하기"),
     ),
+    "action": IntentPolicy(
+        intent="action",
+        mode="action_execute",
+        response_text="",  # dynamic, filled by ActionResolver
+        skill="action_resolver",
+        suggested_replies=(),
+        interaction_mode="action",
+        response_type="action_result",
+        primary_source_type="none",
+        source_profile="none",
+    ),
 }
 
 
