@@ -35,6 +35,11 @@ _KOREAN_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
 _ASCII_RE = re.compile(r"[A-Za-z]+")
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_./-]+")
 _NEGATION_SUFFIX_RE = re.compile(r"(말고|제외하고|제외|아니라)")
+_ACTION_VERB_RE = re.compile(
+    r"(열어줘|열어|실행해줘|실행해|켜줘|켜(?:[^가-힣]|$)|틀어줘|틀어|재생해줘|재생해|시작해줘|시작해)"
+    r"|\b(open|launch|start|run|play)\b",
+    re.IGNORECASE,
+)
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "to", "for", "of", "and", "or", "what", "how",
     "알려줘", "알려주세요", "보여줘", "보여주세요", "찾아줘", "찾아주세요",
@@ -596,6 +601,10 @@ def _classify_intent(raw_text: str, *, tokens: list[str], target_file: str) -> s
         return "weather"
     if any(token in lowered for token in ("지하철", "버스", "경로", "길찾기", "가는 길", "가는길")):
         return "route_guidance"
+    # Action intent: verbs like 열어줘, 켜줘, open, launch
+    if _ACTION_VERB_RE.search(raw_text):
+        return "action"
+
     return "qa"
 
 
