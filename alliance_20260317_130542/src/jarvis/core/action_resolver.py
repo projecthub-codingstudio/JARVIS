@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,8 @@ def parse_action_target(query: str) -> ActionTarget | None:
         return None
 
     normalized = target_name.lower().replace(" ", "")
-    for key, (action_type, target, label) in _KNOWN_TARGETS.items():
+    for key in sorted(_KNOWN_TARGETS, key=len, reverse=True):
+        action_type, target, label = _KNOWN_TARGETS[key]
         if key == normalized or key in normalized:
             return ActionTarget(
                 action_type=action_type,
@@ -138,10 +142,13 @@ def execute_action(target: ActionTarget) -> ActionResult:
     """Execute the action via macOS open command."""
     try:
         if target.action_type == "open_url":
+            logger.debug("Executing action: %s %s", target.action_type, target.target)
             subprocess.run(["open", target.target], timeout=5, check=True)
         else:
+            logger.debug("Executing action: %s %s", target.action_type, target.target)
             subprocess.run(["open", "-a", target.target], timeout=5, check=True)
     except subprocess.CalledProcessError:
+        logger.warning("Action failed: %s not found", target.target)
         return ActionResult(
             success=False,
             spoken_response=f"{target.label}을 찾을 수 없습니다.",
@@ -152,6 +159,7 @@ def execute_action(target: ActionTarget) -> ActionResult:
             error_message="app_not_found",
         )
     except subprocess.TimeoutExpired:
+        logger.warning("Action timed out: %s", target.target)
         return ActionResult(
             success=False,
             spoken_response="실행 중 시간이 초과되었습니다.",
@@ -160,6 +168,17 @@ def execute_action(target: ActionTarget) -> ActionResult:
             action_type=target.action_type,
             target=target.target,
             error_message="timeout",
+        )
+    except OSError as exc:
+        logger.error("OS error executing action: %s", exc)
+        return ActionResult(
+            success=False,
+            spoken_response="명령을 실행할 수 없습니다.",
+            display_response="명령을 실행할 수 없습니다.",
+            label=target.label,
+            action_type=target.action_type,
+            target=target.target,
+            error_message="os_error",
         )
 
     if target.action_type == "open_url":
