@@ -1,6 +1,25 @@
 import AVFoundation
 import AudioToolbox
 
+struct WakeCommandSilenceGate {
+    let silenceThreshold: Float
+    let requiredDuration: TimeInterval
+    private(set) var silenceStartTime: TimeInterval?
+
+    mutating func register(level rms: Float, at time: TimeInterval) -> Bool {
+        if rms <= silenceThreshold {
+            if let silenceStartTime {
+                return (time - silenceStartTime) >= requiredDuration
+            }
+            silenceStartTime = time
+            return false
+        }
+
+        silenceStartTime = nil
+        return false
+    }
+}
+
 /// Records microphone audio to a WAV file using AVAudioEngine.
 ///
 /// AVAudioEngine handles format negotiation with the audio hardware.
@@ -48,11 +67,20 @@ final class NativeAudioRecorder: @unchecked Sendable {
     /// Set this to feed audio to the Python wake word detector.
     var onWakeWordAudioChunk: ((Data) -> Void)?
 
+    /// Callback for passive wake-word transcript fallback buffers.
+    /// Uses the same mono tap buffer while the recorder is not actively writing.
+    var onPassiveWakeAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     /// Callback for live partial speech recognition while recording.
     var onLiveAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
 
     /// Cached downsample ratio (native rate / 16000), set during activate()
     private var _wakeDownsampleRatio: Int = 3  // default 48kHz/16kHz
+    private var pendingWakeCommandGapWait: (
+        gate: WakeCommandSilenceGate,
+        deadline: TimeInterval,
+        continuation: CheckedContinuation<Bool, Never>
+    )?
 
     var isSessionRunning: Bool { engine.isRunning }
 
@@ -100,6 +128,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
     func record(deviceID: String?, duration: Double) async throws -> URL {
         try activate(deviceID: deviceID)
+        cancelPendingWakeCommandGapWait(result: false)
         stopTimer?.cancel()
 
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -148,6 +177,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
 
     func deactivate() {
         guard engineReady else { return }  // Don't touch engine if never started
+        cancelPendingWakeCommandGapWait(result: false)
         isWriting = false
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
@@ -157,11 +187,34 @@ final class NativeAudioRecorder: @unchecked Sendable {
         engineReady = false
     }
 
+    func waitForWakeCommandGap(
+        requiredSilence: TimeInterval = 0.35,
+        timeout: TimeInterval = 2.4
+    ) async -> Bool {
+        guard engineReady, engine.isRunning, !isWriting else { return false }
+
+        let calibratedThreshold = noiseFloorCalibrated ? silenceThreshold * 1.35 : silenceThreshold * 1.5
+        let silenceThreshold = max(calibratedThreshold, 0.0075)
+
+        return await withCheckedContinuation { continuation in
+            cancelPendingWakeCommandGapWait(result: false)
+            pendingWakeCommandGapWait = (
+                gate: WakeCommandSilenceGate(
+                    silenceThreshold: silenceThreshold,
+                    requiredDuration: requiredSilence
+                ),
+                deadline: CFAbsoluteTimeGetCurrent() + timeout,
+                continuation: continuation
+            )
+        }
+    }
+
     // MARK: - Private
 
     private func finishRecording() {
         stopTimer?.cancel()
         stopTimer = nil
+        cancelPendingWakeCommandGapWait(result: false)
         isWriting = false
         vadState = .idle
         silenceStartTime = 0
@@ -207,6 +260,30 @@ final class NativeAudioRecorder: @unchecked Sendable {
             }
             cont.resume(returning: url)
         }
+    }
+
+    private func cancelPendingWakeCommandGapWait(result: Bool) {
+        guard let wait = pendingWakeCommandGapWait else { return }
+        pendingWakeCommandGapWait = nil
+        wait.continuation.resume(returning: result)
+    }
+
+    private func updatePendingWakeCommandGapWait(rms: Float, now: TimeInterval) {
+        guard var wait = pendingWakeCommandGapWait else { return }
+
+        if now >= wait.deadline {
+            pendingWakeCommandGapWait = nil
+            wait.continuation.resume(returning: false)
+            return
+        }
+
+        if wait.gate.register(level: rms, at: now) {
+            pendingWakeCommandGapWait = nil
+            wait.continuation.resume(returning: true)
+            return
+        }
+
+        pendingWakeCommandGapWait = wait
     }
 
     private func setInputDevice(uniqueID: String) {
@@ -259,9 +336,17 @@ final class NativeAudioRecorder: @unchecked Sendable {
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0, let channelData = buffer.floatChannelData?[0] else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        var sumSquares: Float = 0
+        for i in 0..<frameCount {
+            sumSquares += channelData[i] * channelData[i]
+        }
+        let rms = sqrtf(sumSquares / Float(frameCount))
 
         // --- Wake word audio forwarding (only when NOT recording) ---
         if let wakeCallback = onWakeWordAudioChunk, !isWriting {
+            onPassiveWakeAudioBuffer?(buffer)
+            updatePendingWakeCommandGapWait(rms: rms, now: now)
             // Downsample float32 to Int16 at ~16kHz (ratio cached on activation)
             let ratio = max(1, _wakeDownsampleRatio)
             let outputCount = frameCount / ratio
@@ -275,9 +360,7 @@ final class NativeAudioRecorder: @unchecked Sendable {
                     }
                 }
                 let pcmData = Data(bytes: &int16Samples, count: outputCount * 2)
-                DispatchQueue.global(qos: .utility).async {
-                    wakeCallback(pcmData)
-                }
+                wakeCallback(pcmData)
             }
             return  // Don't process VAD when in wake word mode
         }
@@ -287,11 +370,6 @@ final class NativeAudioRecorder: @unchecked Sendable {
         onLiveAudioBuffer?(buffer)
 
         // --- VAD ---
-        var sumSquares: Float = 0
-        for i in 0..<frameCount {
-            sumSquares += channelData[i] * channelData[i]
-        }
-        let rms = sqrtf(sumSquares / Float(frameCount))
         let inputLevel = normalizedInputLevel(from: rms)
         if let levelCallback = onInputLevelChanged {
             DispatchQueue.main.async {
@@ -299,7 +377,6 @@ final class NativeAudioRecorder: @unchecked Sendable {
             }
         }
         totalFramesWritten += 1
-        let now = CFAbsoluteTimeGetCurrent()
         let previousState = vadState
         let elapsed = now - recordingStartTime
 

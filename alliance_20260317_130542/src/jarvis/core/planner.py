@@ -67,8 +67,16 @@ _WEATHER_RE = re.compile(
 _CODE_NORMALIZATION_HINT_RE = re.compile(
     r"(소스|코드|클래스|함수|메서드|메소드|변수|필드|심볼|식별자|모듈|임포트|"
     r"파이썬|자바스크립트|타입스크립트|스위프트|러스트|고랭|경로|path|"
+    r"점\s*(?:파이|티에스|티에스엑스|제이에스|제이슨|에스큐엘|엠디|시에스브이|피디에프|에이치더블유피(?:엑스)?)|"
+    r"닷\s*(?:파이|티에스|티에스엑스|제이에스|제이슨|에스큐엘|엠디|시에스브이|피디에프|에이치더블유피(?:엑스)?)|"
     r"\bclass\b|\bdef\b|\bfunction\b|\bmethod\b|\bmodule\b|\bimport\b|"
     r"\.py\b|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.sql\b|\.java\b|\.kt\b|\.go\b|\.rs\b|\.cpp\b)",
+    re.IGNORECASE,
+)
+_FILENAME_REWRITE_HINT_RE = re.compile(
+    r"(파일|소스|경로|path|이름|filename|확장자|"
+    r"\.py\b|\.ts\b|\.tsx\b|\.js\b|\.jsx\b|\.sql\b|\.md\b|\.txt\b|\.json\b|"
+    r"\.ya?ml\b|\.csv\b|\.docx\b|\.pptx\b|\.xlsx\b|\.pdf\b|\.hwpx?\b)",
     re.IGNORECASE,
 )
 _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
@@ -441,7 +449,7 @@ class Planner:
             raw_text,
             knowledge_base_path=self._knowledge_base_path,
         )
-        if any(candidate.kind == "filename" for candidate in rewrite.candidates):
+        if _should_apply_filename_rewrite(raw_text, rewrite.candidates):
             return rewrite.rewritten_query
         return raw_text
 
@@ -530,6 +538,17 @@ class Planner:
             confidence=max(analysis.confidence, keyword_enriched.confidence),
             source=source,
         )
+
+
+def _should_apply_filename_rewrite(raw_text: str, candidates: Sequence[object]) -> bool:
+    if not _FILENAME_REWRITE_HINT_RE.search(raw_text):
+        return False
+    for candidate in candidates:
+        if getattr(candidate, "kind", "") != "filename":
+            continue
+        if float(getattr(candidate, "score", 0.0) or 0.0) >= 0.82:
+            return True
+    return False
 
 
 # --- Complexity classification heuristics ---

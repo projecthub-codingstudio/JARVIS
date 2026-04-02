@@ -56,6 +56,22 @@ def test_parse_settings_open():
     assert target.target == "System Preferences"
 
 
+def test_does_not_match_single_letter_x_inside_other_words():
+    target = parse_action_target("text 다시 열어줘")
+    assert target is not None
+    assert target.action_type == "open_app"
+    assert target.target == "text 다시"
+    assert target.confidence == "low"
+
+
+def test_parse_single_letter_x_exact_match():
+    target = parse_action_target("x 열어줘")
+    assert target is not None
+    assert target.action_type == "open_url"
+    assert target.target == "https://x.com"
+    assert target.label == "X"
+
+
 def test_execute_url_success(monkeypatch):
     monkeypatch.setattr(
         "jarvis.core.action_resolver.subprocess.run",

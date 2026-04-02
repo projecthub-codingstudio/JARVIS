@@ -16,19 +16,33 @@ _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣+/_\.-]+")
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z가-힣]+")
 _MAX_CHUNK_ROWS = 120
 _KOREAN_RE = re.compile(r"[가-힣]")
+_GLOBAL_VOCABULARY_TERMS = (
+    "헤이 자비스",
+    "헤이자비스",
+    "이 자비스",
+    "예 자비스",
+    "왜 자비스",
+    "Hey Jarvis",
+    "Jarvis",
+    "자비스",
+    "자비스야",
+)
 
 
 def build_vocabulary_hint(knowledge_base_path: Path | None) -> str:
     """Extract a compact STT vocabulary hint from local indexed source files."""
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    for term in _GLOBAL_VOCABULARY_TERMS:
+        _add_term(term, terms, seen)
+
     if knowledge_base_path is None:
-        return ""
+        return _build_prompt(terms)
 
     resolved_kb_path = knowledge_base_path.expanduser().resolve()
     if not resolved_kb_path.exists():
-        return ""
-
-    terms: list[str] = []
-    seen: set[str] = set()
+        return _build_prompt(terms)
 
     for entry in build_identifier_lexicon(resolved_kb_path):
         _add_term(entry.canonical, terms, seen)
@@ -42,9 +56,12 @@ def build_vocabulary_hint(knowledge_base_path: Path | None) -> str:
         if len(terms) >= _MAX_TERMS:
             break
 
+    return _build_prompt(terms)
+
+
+def _build_prompt(terms: list[str]) -> str:
     if not terms:
         return ""
-
     prompt = "Local vocabulary: " + ", ".join(terms[:_MAX_TERMS])
     return prompt[:_MAX_PROMPT_CHARS]
 

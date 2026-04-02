@@ -76,6 +76,14 @@ class StaticEvidenceBuilder:
         return VerifiedEvidenceSet(items=make_evidence().items, query_fragments=tuple(fragments))
 
 
+class CustomEvidenceBuilder:
+    def __init__(self, items: tuple[EvidenceItem, ...]) -> None:
+        self._items = items
+
+    def build(self, results, fragments) -> VerifiedEvidenceSet:
+        return VerifiedEvidenceSet(items=self._items, query_fragments=tuple(fragments))
+
+
 class StaticFTSRetriever:
     def search(self, fragments, top_k: int = 10):
         return []
@@ -181,6 +189,42 @@ class TestOrchestratorStream:
         for _ in streaming_orchestrator.handle_turn_stream("답변 테스트"):
             pass
         assert streaming_orchestrator.last_answer is not None
+
+    def test_handle_turn_stream_blocks_unsupported_query_before_generation(self) -> None:
+        weak_item = EvidenceItem(
+            chunk_id="chunk-weak",
+            document_id="doc-weak",
+            text="로컬 워크스페이스 설정 안내",
+            citation=CitationRecord(
+                document_id="doc-weak",
+                chunk_id="chunk-weak",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.01,
+            source_path="/tmp/setup-guide.md",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((weak_item,)),
+            llm_generator=MLXRuntime(backend=FakeStreamingBackend()),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        items = list(orch.handle_turn_stream("마이그레이션 일정이 언제인지 알려줘"))
+
+        assert len(items) == 1
+        assert isinstance(items[0], ConversationTurn)
+        assert items[0].has_evidence is False
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "abstain"
 
 
 class TestStripThinkTags:

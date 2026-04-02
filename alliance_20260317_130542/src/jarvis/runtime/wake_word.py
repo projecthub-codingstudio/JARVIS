@@ -17,8 +17,7 @@ import os
 import struct
 import threading
 from collections.abc import Callable
-
-import numpy as np
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +25,7 @@ _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = 1280  # 80ms at 16kHz
 _DEFAULT_THRESHOLD = 0.2  # Low threshold for Korean accent tolerance
 _DEFAULT_MODEL = "hey_jarvis_v0.1"
+_CUSTOM_MODEL_PATH = Path.home() / ".jarvis" / "models" / "hey_jarvis_ko.onnx"
 
 # Virtual/aggregate device keywords to skip when auto-selecting
 _VIRTUAL_DEVICE_KEYWORDS = (
@@ -82,8 +82,8 @@ class WakeWordDetector:
         device_index: int | None = None,
     ) -> None:
         self._on_wake = on_wake
-        self._model_name = model_name
-        self._threshold = threshold
+        self._model_names = [model_name] if model_name != _DEFAULT_MODEL else resolve_wakeword_models()
+        self._threshold = threshold if threshold != _DEFAULT_THRESHOLD else resolve_wakeword_threshold()
         self._device_index = device_index
         self._running = False
         self._paused = False
@@ -122,6 +122,7 @@ class WakeWordDetector:
         """Background thread: capture audio and run wake word detection."""
         try:
             import pyaudio
+            import numpy as np
             from openwakeword.model import Model
         except ImportError as exc:
             logger.warning("Wake word dependencies missing: %s", exc)
@@ -130,13 +131,14 @@ class WakeWordDetector:
 
         try:
             oww_model = Model(
-                wakeword_models=[self._model_name],
+                wakeword_models=self._model_names,
                 inference_framework="onnx",
             )
         except Exception as exc:
             logger.warning("Wake word model load failed: %s", exc)
             self._running = False
             return
+        logger.info("Wake word models: %s (threshold=%.2f)", self._model_names, self._threshold)
 
         audio = None
         stream = None
@@ -224,6 +226,8 @@ class WakeWordDetector:
 
 def _resample_pcm(pcm_bytes: bytes, from_rate: int, to_rate: int) -> bytes:
     """Simple PCM resampling via linear interpolation."""
+    import numpy as np
+
     samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
     ratio = to_rate / from_rate
     new_length = int(len(samples) * ratio)
@@ -240,3 +244,27 @@ def is_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def resolve_wakeword_models() -> list[str]:
+    """Resolve wake word models, preferring a custom Korean model when present."""
+    configured = os.getenv("JARVIS_WAKE_MODEL", "").strip()
+    models: list[str] = []
+    if configured:
+        models.append(configured)
+    if _CUSTOM_MODEL_PATH.exists():
+        models.append(str(_CUSTOM_MODEL_PATH))
+    if _DEFAULT_MODEL not in models:
+        models.append(_DEFAULT_MODEL)
+    return models
+
+
+def resolve_wakeword_threshold() -> float:
+    raw = os.getenv("JARVIS_WAKE_THRESHOLD", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            return min(0.95, max(0.05, value))
+        except ValueError:
+            logger.warning("Invalid JARVIS_WAKE_THRESHOLD=%r, using default %.2f", raw, _DEFAULT_THRESHOLD)
+    return _DEFAULT_THRESHOLD

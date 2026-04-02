@@ -15,6 +15,7 @@
 		58A1F0032F74200200DBD265 /* JarvisSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0022F74200200DBD265 /* JarvisSocketTransport.swift */; };
 		58A1F0052F74200300DBD265 /* JarvisServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0042F74200300DBD265 /* JarvisServiceManager.swift */; };
 		58A1F0072F74200400DBD265 /* JarvisRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A1F0062F74200400DBD265 /* JarvisRuntimeSupport.swift */; };
+		58B200012F76000100DBD265 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 58B200002F76000100DBD265 /* AppIntents.framework */; };
 		A1000001 /* JarvisMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001 /* JarvisMenuBarApp.swift */; };
 		A1000003 /* MenuModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000003 /* MenuModels.swift */; };
 /* End PBXBuildFile section */
@@ -28,6 +29,7 @@
 		58A1F0022F74200200DBD265 /* JarvisSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisSocketTransport.swift; sourceTree = "<group>"; };
 		58A1F0042F74200300DBD265 /* JarvisServiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisServiceManager.swift; sourceTree = "<group>"; };
 		58A1F0062F74200400DBD265 /* JarvisRuntimeSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisRuntimeSupport.swift; sourceTree = "<group>"; };
+		58B200002F76000100DBD265 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		B1000001 /* JarvisMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisMenuBarApp.swift; sourceTree = "<group>"; };
 		B1000002 /* JarvisBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisBridge.swift; sourceTree = "<group>"; };
 		B1000003 /* MenuModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuModels.swift; sourceTree = "<group>"; };
@@ -36,12 +38,24 @@
 		B1000020 /* JarvisMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		58B200022F76000100DBD265 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				58B200012F76000100DBD265 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXGroup section */
 		C1000001 = {
 			isa = PBXGroup;
 			children = (
 				C1000002 /* Sources */,
 				C1000003 /* Resources */,
+				C1000005 /* Frameworks */,
 				C1000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -81,6 +95,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		C1000005 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				58B200002F76000100DBD265 /* AppIntents.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -88,6 +110,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = E1000003 /* Build configuration list for PBXNativeTarget "JarvisMenuBar" */;
 			buildPhases = (
+				58B200022F76000100DBD265 /* Frameworks */,
 				D1000002 /* Sources */,
 			);
 			buildRules = (
@@ -189,6 +212,7 @@
 		E1000020 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Resources/JarvisMenuBar.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -206,6 +230,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jarvis.menubar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_CONST_VALUE_PROTOCOLS = "AppIntents.AppIntent AppIntents.AppEntity AppIntents.AppEnum AppIntents.AppShortcutsProvider AppIntents.AppShortcutsPackage";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 			};
@@ -214,6 +239,7 @@
 		E1000021 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Resources/JarvisMenuBar.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -231,6 +257,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jarvis.menubar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_CONST_VALUE_PROTOCOLS = "AppIntents.AppIntent AppIntents.AppEntity AppIntents.AppEnum AppIntents.AppShortcutsProvider AppIntents.AppShortcutsPackage";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 			};

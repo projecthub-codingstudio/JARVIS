@@ -45,11 +45,48 @@ func appLog(_ message: String) {
     fputs("[JarvisMenuBar] \(message)\n", stderr)
 }
 
-private final class SpeechSynthDelegateBox: NSObject, NSSpeechSynthesizerDelegate {
+@MainActor
+private final class SpeechSynthDelegateBox: NSObject, AVSpeechSynthesizerDelegate {
     var onFinish: ((Bool) -> Void)?
 
-    func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
-        onFinish?(finishedSpeaking)
+    private func resolve(_ finishedSpeaking: Bool) {
+        guard let onFinish else { return }
+        self.onFinish = nil
+        onFinish(finishedSpeaking)
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in
+            self?.resolve(true)
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in
+            self?.resolve(false)
+        }
+    }
+}
+
+@MainActor
+private final class SpeechSynthesisCompletionBox {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var resolvedValue: Bool?
+
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        if let resolvedValue {
+            continuation.resume(returning: resolvedValue)
+            return
+        }
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Bool) {
+        guard resolvedValue == nil else { return }
+        resolvedValue = value
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: value)
     }
 }
 
@@ -70,6 +107,21 @@ private func monotonicSeconds() -> Double {
 private func formatElapsed(_ seconds: Double) -> String {
     String(format: "%.2fs", seconds)
 }
+
+private let wakePhraseOnlyPattern = try! NSRegularExpression(
+    pattern: #"^\s*(?:hey|헤이|해이|에이|하이)\s*(?:자비스(?:야)?|jarvis)\s*$"#,
+    options: [.caseInsensitive]
+)
+
+private let wakePhrasePrefixPattern = try! NSRegularExpression(
+    pattern: #"^\s*(?:hey|헤이|해이|에이|하이)\s*(?:자비스(?:야)?|jarvis)(?:\s+|[,.!]\s*)?(.*)$"#,
+    options: [.caseInsensitive]
+)
+
+private let exitPhraseOnlyPattern = try! NSRegularExpression(
+    pattern: #"^\s*(?:bye|바이)\s*(?:자비스(?:야)?|jarvis)\s*$"#,
+    options: [.caseInsensitive]
+)
 
 enum MenuBarIconFactory {
     static let image: NSImage = {
@@ -100,6 +152,7 @@ enum MenuBarIconFactory {
 
 enum VoiceLoopPhase: String {
     case idle = "idle"
+    case awaitingCommand = "awaiting_command"
     case recording = "recording"
     case pauseDetected = "pause_detected"
     case transcribing = "transcribing"
@@ -310,6 +363,7 @@ final class AudioBypassMonitor {
 @MainActor
 final class JarvisMenuBarViewModel: ObservableObject {
     private static let selectedInputDeviceDefaultsKey = "selectedInputDeviceID"
+    private static let wakeWordEnabledDefaultsKey = "wakeWordEnabled"
     private static let knowledgeBaseDirectoryDefaultsKey = "knowledgeBaseDirectoryPath"
     private static let knowledgeBaseBookmarkDefaultsKey = "knowledgeBaseDirectoryBookmark"
     private static let diagnosticsDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -337,10 +391,23 @@ final class JarvisMenuBarViewModel: ObservableObject {
         didSet { syncGuideRuntimeState() }
     }
     @Published var wakeWordEnabled = false {
-        didSet { syncGuideRuntimeState() }
+        didSet {
+            syncGuideRuntimeState()
+            UserDefaults.standard.set(wakeWordEnabled, forKey: Self.wakeWordEnabledDefaultsKey)
+        }
     }
     private var wakeWordSession: WakeWordSession?
-    @Published var voiceLoopPhase: VoiceLoopPhase = .idle
+    private let wakeWordQueue = DispatchQueue(label: "jarvis.wake.word")
+    private var wakeWordTriggerPending = false
+    private var wakeAcknowledgementPlayer: AVAudioPlayer?
+    private var wakeAcknowledgementProcess: Process?
+    private let wakePhraseTranscriber = LiveSpeechTranscriber()
+    private var passiveWakeFallbackEnabled = false
+    nonisolated(unsafe) private var passiveWakeFallbackSuppressesBridge = false
+    private var pendingWakeBufferedQuery: String?
+    @Published var voiceLoopPhase: VoiceLoopPhase = .idle {
+        didSet { syncGuideRuntimeState() }
+    }
     @Published var isSpeaking = false {
         didSet { syncGuideRuntimeState() }
     }
@@ -410,6 +477,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         self.bridge = bridge
         self.ttsPrefetchBridge = ttsPrefetchBridge
         self.pttDurationSeconds = Double(ProcessInfo.processInfo.environment["JARVIS_PTT_SECONDS"] ?? "20") ?? 20
+        self.wakeWordEnabled = UserDefaults.standard.object(forKey: Self.wakeWordEnabledDefaultsKey) as? Bool ?? true
         self.selectedInputDeviceID = UserDefaults.standard.string(forKey: Self.selectedInputDeviceDefaultsKey) ?? ""
         let restoredKnowledgeBaseURL = Self.restoreKnowledgeBaseDirectoryURL()
         let defaultKnowledgeBasePath = restoredKnowledgeBaseURL?.path
@@ -442,6 +510,13 @@ final class JarvisMenuBarViewModel: ObservableObject {
             }
         }
 
+        wakePhraseTranscriber.onPartialTranscript = { [weak self] transcript in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.handlePassiveWakeTranscript(transcript)
+            }
+        }
+
         // Pre-warm the audio engine so the first recording doesn't have
         // a cold-start delay. Runs on background to avoid blocking UI.
         Task.detached { [nativeRecorder, selectedInputDeviceID] in
@@ -454,6 +529,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
             }
         }
         syncGuideRuntimeState()
+        prepareWakeAcknowledgementTone()
+        if wakeWordEnabled {
+            startWakeWord()
+        }
     }
 
     private func startLiveTranscription() {
@@ -493,8 +572,48 @@ final class JarvisMenuBarViewModel: ObservableObject {
             isSpeaking: isSpeaking,
             voiceLoopEnabled: voiceLoopEnabled,
             wakeWordEnabled: wakeWordEnabled,
-            partialTranscriptionActive: partialTranscriptionActive
+            partialTranscriptionActive: partialTranscriptionActive,
+            ambientStatusText: guideAmbientStatusText
         )
+    }
+
+    private var guideAmbientStatusText: String {
+        if voiceLoopEnabled {
+            return phaseStatusText
+        }
+
+        if wakeWordEnabled {
+            switch voiceLoopPhase {
+            case .idle, .stopped:
+                return ""
+            case .awaitingCommand:
+                return "신호음 후에 새 명령을 말씀해 주세요."
+            case .recording, .pauseDetected, .transcribing, .answering, .cooldown:
+                return ""
+            case .error:
+                return errorMessage ?? ""
+            }
+        }
+
+        return ""
+    }
+
+    private func clearGuideForAmbientSession() {
+        guide.clear()
+        syncGuideRuntimeState()
+    }
+
+    private func disarmWakeWordMonitoring() {
+        wakeWordTriggerPending = false
+        pendingWakeBufferedQuery = nil
+        stopPassiveWakeFallback()
+        nativeRecorder.onWakeWordAudioChunk = nil
+        if let session = wakeWordSession {
+            wakeWordQueue.async {
+                session.stop()
+            }
+        }
+        wakeWordSession = nil
     }
 
     private func normalizeLiveQuery(_ rawQuery: String) {
@@ -509,7 +628,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
         navigationUpdateTask?.cancel()
         guard !trimmed.isEmpty else {
             pendingClarificationContext = nil
-            guide.clear()
+            if voiceLoopEnabled {
+                clearGuideForAmbientSession()
+            } else {
+                guide.clear()
+            }
             return
         }
         let interactionMode = currentInteractionMode
@@ -735,6 +858,85 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
     }
 
+    private func runWakeWordTurn() async {
+        do {
+            let turnStart = monotonicSeconds()
+            isLoading = true
+            errorMessage = nil
+            beginRecordingPhase()
+
+            let deviceID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            startLiveTranscription()
+            let recordingStart = monotonicSeconds()
+            let audioURL = try await nativeRecorder.record(
+                deviceID: deviceID,
+                duration: pttDurationSeconds
+            )
+            let liveTranscript = await finishLiveTranscription()
+            appLog("Wake recording done in \(formatElapsed(monotonicSeconds() - recordingStart)): \(audioURL.path)")
+
+            cancelPhaseTransition()
+            voiceLoopPhase = .transcribing
+
+            let transcriptText: String
+            let transcriptSource: String
+            if !liveTranscript.isEmpty {
+                transcriptText = liveTranscript
+                transcriptSource = "live"
+            } else {
+                appLog("Wake live transcription unavailable; falling back to whisper-cli")
+                let transcript = try await bridge.transcribeFile(audioPath: audioURL.path)
+                transcriptText = transcript.transcript
+                transcriptSource = "whisper"
+            }
+
+            let repairedTranscript = resolvedWakeCommand(
+                from: try await repairTranscriptForSubmission(transcriptText)
+            )
+            appLog(
+                "Wake transcription ready in \(formatElapsed(monotonicSeconds() - recordingStart)) [\(transcriptSource)]: \(Self.logPreview(for: repairedTranscript.displayText))"
+            )
+            lastTranscript = repairedTranscript.rawText
+            query = repairedTranscript.displayText
+            refreshNavigationWindow(for: repairedTranscript.displayText)
+            guard let resolvedQuery = prepareQueryForSubmission(repairedTranscript.finalQuery) else {
+                isLoading = false
+                cancelPhaseTransition()
+                voiceLoopPhase = .idle
+                return
+            }
+
+            guide.prepareForNewTurn(mode: currentInteractionMode)
+            voiceLoopPhase = .answering
+            submittedQueryForPendingContext = resolvedQuery
+            startTTSPrefetchIfSupported(for: resolvedQuery)
+            let answerStart = monotonicSeconds()
+            let payload = try await bridge.ask(resolvedQuery)
+            appLog(
+                "Wake answer ready in \(formatElapsed(monotonicSeconds() - answerStart)) / total \(formatElapsed(monotonicSeconds() - turnStart))"
+            )
+            applyResponsePayload(payload, rawUserQuery: repairedTranscript.displayText)
+            exportMessage = nil
+            isLoading = false
+
+            speakResponse(guide.audibleResponseText)
+            await waitForSpeechPlaybackToFinish()
+            cancelPhaseTransition()
+            voiceLoopPhase = .idle
+        } catch {
+            stopLiveTranscription()
+            pendingWakeBufferedQuery = nil
+            if Task.isCancelled {
+                return
+            }
+            appLog("wake word interaction failed: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+            isLoading = false
+            cancelPhaseTransition()
+            voiceLoopPhase = .error
+        }
+    }
+
     func toggleVoiceLoop() {
         if voiceLoopEnabled {
             stopVoiceLoop()
@@ -754,18 +956,218 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     private func startWakeWord() {
+        guard !voiceLoopEnabled else {
+            wakeWordEnabled = true
+            return
+        }
+        guard wakeWordSession == nil else {
+            wakeWordEnabled = true
+            return
+        }
         wakeWordEnabled = true
-        appLog("JARVIS mode active — continuous voice interaction")
-        // Start continuous voice loop with TTS responses
-        if !voiceLoopEnabled {
+        wakeWordTriggerPending = false
+        pendingWakeBufferedQuery = nil
+        errorMessage = nil
+        exportMessage = "헤이 자비스 대기 중"
+        voiceLoopPhase = .idle
+        appLog("Wake word mode active — waiting for 'Hey JARVIS'")
+
+        Task { [weak self] in
+            guard let self else { return }
+            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            guard granted else {
+                self.wakeWordEnabled = false
+                self.errorMessage = "마이크 권한이 거부되었습니다. 시스템 설정에서 허용해 주세요."
+                return
+            }
+
+            do {
+                let session = try await self.bridge.startWakeWordSession()
+                let deviceID = self.selectedInputDeviceID.isEmpty ? nil : self.selectedInputDeviceID
+                try self.nativeRecorder.activate(deviceID: deviceID)
+                self.microphoneReady = true
+                self.wakeWordSession = session
+                await self.startPassiveWakeFallbackIfAvailable()
+                self.nativeRecorder.onWakeWordAudioChunk = { [weak self, session] pcmData in
+                    guard let self else { return }
+                    self.wakeWordQueue.async {
+                        guard !self.passiveWakeFallbackSuppressesBridge else { return }
+                        guard session.sendAudioChunk(pcmData) else { return }
+                        Task { @MainActor [weak self] in
+                            guard let self, self.wakeWordEnabled, !self.wakeWordTriggerPending else { return }
+                            self.wakeWordTriggerPending = true
+                            await self.handleWakeWordDetected()
+                        }
+                    }
+                }
+            } catch {
+                self.nativeRecorder.onWakeWordAudioChunk = nil
+                self.wakeWordSession = nil
+                self.wakeWordEnabled = false
+                self.errorMessage = "wake word 시작 실패: \(error.localizedDescription)"
+                appLog("Wake word start failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func handleWakeWordDetected() async {
+        guard wakeWordEnabled, !voiceLoopEnabled else {
+            wakeWordTriggerPending = false
+            return
+        }
+
+        pendingWakeBufferedQuery = nil
+        appLog("Wake word detected — waiting for a fresh post-chime command")
+        exportMessage = "헤이 자비스 감지됨 · 신호음 후 명령을 말씀해 주세요"
+        stopPassiveWakeFallback()
+        stopTTS()
+        cancelPhaseTransition()
+        voiceLoopPhase = .awaitingCommand
+        playWakeAcknowledgementTone()
+
+        do {
+            try? await Task.sleep(for: .milliseconds(260))
+            let readyForFreshCommand = await nativeRecorder.waitForWakeCommandGap(
+                requiredSilence: 0.35,
+                timeout: 2.4
+            )
+            guard readyForFreshCommand else {
+                appLog("Wake word follow-up ignored: no silence gap after acknowledgement")
+                exportMessage = "연속 발화는 실행하지 않습니다. 신호음 후 다시 말씀해 주세요."
+                cancelPhaseTransition()
+                voiceLoopPhase = .idle
+                return
+            }
+            exportMessage = "듣고 있습니다"
             startVoiceLoop()
+        }
+
+        if wakeWordEnabled && !voiceLoopEnabled {
+            await startPassiveWakeFallbackIfAvailable()
+        }
+        wakeWordTriggerPending = false
+    }
+
+    private func handlePassiveWakeTranscript(_ transcript: String) {
+        guard wakeWordEnabled, !voiceLoopEnabled else { return }
+        guard passiveWakeFallbackEnabled else { return }
+
+        let compact = Self.compactInputText(transcript)
+        guard !compact.isEmpty else { return }
+        guard Self.isWakePhraseOnly(compact) else {
+            if let wakeRemainder = Self.wakePhraseRemainder(in: compact), !wakeRemainder.isEmpty {
+                pendingWakeBufferedQuery = nil
+                appLog("Ignored inline wake command until post-chime utterance: \(Self.logPreview(for: wakeRemainder))")
+            }
+            return
+        }
+
+        appLog("Passive wake transcript matched exact wake phrase: \(Self.logPreview(for: compact))")
+        guard !wakeWordTriggerPending else { return }
+        wakeWordTriggerPending = true
+        Task { [weak self] in
+            await self?.handleWakeWordDetected()
+        }
+    }
+
+    private func startPassiveWakeFallbackIfAvailable() async {
+        guard wakeWordEnabled else { return }
+        guard !passiveWakeFallbackEnabled else { return }
+        let transcriber = wakePhraseTranscriber
+        let authorized = await transcriber.requestAuthorizationIfNeeded()
+        guard authorized else {
+            passiveWakeFallbackEnabled = false
+            passiveWakeFallbackSuppressesBridge = false
+            nativeRecorder.onPassiveWakeAudioBuffer = nil
+            appLog("Passive wake fallback unavailable: speech authorization denied")
+            return
+        }
+        passiveWakeFallbackEnabled = true
+        passiveWakeFallbackSuppressesBridge = true
+        nativeRecorder.onPassiveWakeAudioBuffer = { [transcriber] buffer in
+            transcriber.append(buffer)
+        }
+        await transcriber.start()
+        appLog("Passive wake fallback started")
+    }
+
+    private func stopPassiveWakeFallback() {
+        passiveWakeFallbackEnabled = false
+        passiveWakeFallbackSuppressesBridge = false
+        nativeRecorder.onPassiveWakeAudioBuffer = nil
+        wakePhraseTranscriber.stop()
+        appLog("Passive wake fallback stopped")
+    }
+
+    private func prepareWakeAcknowledgementTone() {
+        guard wakeAcknowledgementPlayer == nil else { return }
+        do {
+            let soundURL = URL(fileURLWithPath: "/System/Library/Sounds/Glass.aiff")
+            let player = try AVAudioPlayer(contentsOf: soundURL)
+            player.volume = 1.0
+            player.prepareToPlay()
+            wakeAcknowledgementPlayer = player
+            appLog("Wake acknowledgement sound loaded")
+        } catch {
+            appLog("Wake acknowledgement sound preload failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func playWakeAcknowledgementTone() {
+        AudioServicesPlayAlertSound(kSystemSoundID_UserPreferredAlert)
+        NSSound.beep()
+
+        do {
+            if let existing = wakeAcknowledgementProcess, existing.isRunning {
+                existing.terminate()
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+            process.arguments = ["/System/Library/Sounds/Glass.aiff"]
+            try process.run()
+            wakeAcknowledgementProcess = process
+            appLog("Wake acknowledgement tone played via afplay")
+            return
+        } catch {
+            appLog("Wake acknowledgement afplay fallback failed: \(error.localizedDescription)")
+        }
+
+        do {
+            let player: AVAudioPlayer
+            if let wakeAcknowledgementPlayer {
+                player = wakeAcknowledgementPlayer
+            } else {
+                let soundURL = URL(fileURLWithPath: "/System/Library/Sounds/Glass.aiff")
+                let loadedPlayer = try AVAudioPlayer(contentsOf: soundURL)
+                loadedPlayer.volume = 1.0
+                loadedPlayer.prepareToPlay()
+                wakeAcknowledgementPlayer = loadedPlayer
+                player = loadedPlayer
+                appLog("Wake acknowledgement sound loaded on demand")
+            }
+
+            if player.isPlaying {
+                player.stop()
+            }
+            player.currentTime = 0
+            guard player.play() else {
+                throw NSError(
+                    domain: "JarvisMenuBar",
+                    code: 7,
+                    userInfo: [NSLocalizedDescriptionKey: "wake acknowledgement tone playback failed"]
+                )
+            }
+            appLog("Wake acknowledgement tone played")
+        } catch {
+            appLog("Wake acknowledgement AVAudioPlayer fallback failed: \(error.localizedDescription)")
+            NSSound.beep()
         }
     }
 
     // MARK: - TTS Playback
 
     private var audioPlayer: AVAudioPlayer?
-    private var speechSynthesizer: NSSpeechSynthesizer?
+    private var speechSynthesizer: AVSpeechSynthesizer?
     private var speechSynthDelegateBox: SpeechSynthDelegateBox?
 
     private func dismissGuideAfterSpeechIfNeeded() {
@@ -773,6 +1175,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
         guard !guide.autoCloseDisabled else { return }
         guard !guide.finalResponseText.isEmpty else { return }
         clearTransientVoiceUIState()
+        if voiceLoopEnabled {
+            clearGuideForAmbientSession()
+            return
+        }
         guide.clear()
     }
 
@@ -781,6 +1187,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
         clearTransientVoiceUIState()
         pendingClarificationContext = nil
         endGuideWorkspaceSession()
+        if voiceLoopEnabled {
+            clearGuideForAmbientSession()
+            return
+        }
         guide.clear()
     }
 
@@ -879,10 +1289,10 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     @MainActor
-    private func directSpeechVoiceIdentifier(
+    private func directSpeechVoice(
         for text: String,
         preferredLanguage: DirectSpeechLanguage? = nil
-    ) -> NSSpeechSynthesizer.VoiceName? {
+    ) -> AVSpeechSynthesisVoice? {
         let env = ProcessInfo.processInfo.environment
         let language = preferredLanguage ?? Self.dominantDirectSpeechLanguage(for: text)
         let exactOverride: String = {
@@ -894,34 +1304,35 @@ final class JarvisMenuBarViewModel: ObservableObject {
             return env["JARVIS_TTS_VOICE"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }()
 
-        let voices = NSSpeechSynthesizer.availableVoices
+        let voices = AVSpeechSynthesisVoice.speechVoices()
 
-        func voiceEntries() -> [(id: NSSpeechSynthesizer.VoiceName, name: String)] {
+        func voiceEntries() -> [(id: String, name: String, language: String)] {
             voices.compactMap { identifier in
-                let attributes = NSSpeechSynthesizer.attributes(forVoice: identifier)
-                guard let name = (attributes[.name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !name.isEmpty else {
+                let trimmedName = identifier.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedName.isEmpty else {
                     return nil
                 }
-                return (identifier, name)
+                return (identifier.identifier, trimmedName, identifier.language)
             }
         }
 
         let entries = voiceEntries()
 
-        func resolveExact(_ targetName: String) -> NSSpeechSynthesizer.VoiceName? {
-            for entry in entries where entry.name == targetName {
-                return entry.id
+        func resolveExact(_ targetName: String) -> AVSpeechSynthesisVoice? {
+            let normalizedTarget = targetName.trimmingCharacters(in: .whitespacesAndNewlines)
+            for entry in entries where entry.name == normalizedTarget || entry.id == normalizedTarget {
+                return AVSpeechSynthesisVoice(identifier: entry.id)
             }
             return nil
         }
 
-        func resolveContaining(_ candidates: [String]) -> NSSpeechSynthesizer.VoiceName? {
+        func resolveContaining(_ candidates: [String]) -> AVSpeechSynthesisVoice? {
             let normalizedCandidates = candidates.map { $0.lowercased() }
             for entry in entries {
                 let loweredName = entry.name.lowercased()
-                if normalizedCandidates.contains(where: { loweredName.contains($0) }) {
-                    return entry.id
+                let loweredLanguage = entry.language.lowercased()
+                if normalizedCandidates.contains(where: { loweredName.contains($0) || loweredLanguage.contains($0) }) {
+                    return AVSpeechSynthesisVoice(identifier: entry.id)
                 }
             }
             return nil
@@ -936,7 +1347,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
         switch language {
         case .korean:
             exactCandidates = ["Yuna (Premium)", "Yuna", "Reed (한국어(대한민국))"]
-            partialCandidates = ["yuna", "유나", "한국어", "korean", "ko_", "ko-", "대한민국", "reed"]
+            partialCandidates = ["yuna", "유나", "한국어", "korean", "ko_", "ko-", "ko-kr", "대한민국", "reed"]
         case .english:
             exactCandidates = [
                 "Samantha",
@@ -961,6 +1372,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 "english",
                 "en_",
                 "en-",
+                "en-us",
+                "en-gb",
             ]
         }
 
@@ -976,39 +1389,39 @@ final class JarvisMenuBarViewModel: ObservableObject {
     private func playDirectSpeech(
         _ text: String,
         preferredLanguage: DirectSpeechLanguage? = nil
-    ) async throws -> Bool {
-        let synthesizer = NSSpeechSynthesizer()
-        if let voiceIdentifier = directSpeechVoiceIdentifier(for: text, preferredLanguage: preferredLanguage) {
-            synthesizer.setVoice(voiceIdentifier)
-        }
-        synthesizer.rate = 155
+    ) async -> Bool {
+        let synthesizer = AVSpeechSynthesizer()
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = directSpeechVoice(for: text, preferredLanguage: preferredLanguage)
+        utterance.rate = 0.52
+        let completion = SpeechSynthesisCompletionBox()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let delegate = SpeechSynthDelegateBox()
-            delegate.onFinish = { [weak self, weak synthesizer] finishedSpeaking in
-                if let self, self.speechSynthesizer === synthesizer {
-                    self.speechSynthesizer = nil
-                    self.speechSynthDelegateBox = nil
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let delegate = SpeechSynthDelegateBox()
+                delegate.onFinish = { [weak self, weak synthesizer] finishedSpeaking in
+                    Task { @MainActor [weak self] in
+                        completion.resolve(finishedSpeaking)
+                        guard let self else { return }
+                        if self.speechSynthesizer === synthesizer {
+                            self.clearDirectSpeechPlaybackState()
+                        }
+                    }
                 }
-                continuation.resume(returning: finishedSpeaking)
-            }
 
-            self.speechSynthDelegateBox = delegate
-            self.speechSynthesizer = synthesizer
-            synthesizer.delegate = delegate
-            guard synthesizer.startSpeaking(text) else {
-                self.speechSynthesizer = nil
-                self.speechSynthDelegateBox = nil
-                continuation.resume(
-                    throwing: NSError(
-                        domain: "JarvisMenuBar",
-                        code: 6,
-                        userInfo: [NSLocalizedDescriptionKey: "NSSpeechSynthesizer가 재생을 시작하지 못했습니다."]
-                    )
-                )
-                return
+                completion.install(continuation)
+                self.speechSynthDelegateBox = delegate
+                self.speechSynthesizer = synthesizer
+                synthesizer.delegate = delegate
+                synthesizer.speak(utterance)
+                appLog("TTS direct playback started")
             }
-            appLog("TTS direct playback started")
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                completion.resolve(false)
+                self?.speechSynthesizer?.stopSpeaking(at: .immediate)
+                self?.clearDirectSpeechPlaybackState()
+            }
         }
     }
 
@@ -1022,10 +1435,11 @@ final class JarvisMenuBarViewModel: ObservableObject {
         for utterance in normalizedUtterances {
             try Task.checkCancellation()
             appLog("TTS direct segment [\(utterance.language == .english ? "en" : "ko")]: \(Self.logPreview(for: utterance.text))")
-            let finished = try await playDirectSpeech(
+            let finished = await playDirectSpeech(
                 utterance.text,
                 preferredLanguage: utterance.language
             )
+            try Task.checkCancellation()
             guard finished else { return false }
         }
         return true
@@ -1179,13 +1593,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
 
         appendCurrent()
+        let fallback = DirectSpeechUtterance(
+            text: trimmed,
+            language: dominantDirectSpeechLanguage(for: trimmed)
+        )
         if utterances.isEmpty {
-            utterances.append(
-                DirectSpeechUtterance(
-                    text: trimmed,
-                    language: dominantDirectSpeechLanguage(for: trimmed)
-                )
-            )
+            return [fallback]
+        }
+        if shouldPreferSingleDirectSpeechUtterance(for: trimmed, utterances: utterances) {
+            return [fallback]
         }
         return utterances
     }
@@ -1208,6 +1624,39 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     private static func dominantDirectSpeechLanguage(for text: String) -> DirectSpeechLanguage {
+        let counts = directSpeechLanguageCounts(for: text)
+        return counts.english > counts.korean ? .english : .korean
+    }
+
+    private static func shouldPreferSingleDirectSpeechUtterance(
+        for text: String,
+        utterances: [DirectSpeechUtterance]
+    ) -> Bool {
+        guard utterances.count > 1 else { return false }
+        let dominantLanguage = dominantDirectSpeechLanguage(for: text)
+        let counts = directSpeechLanguageCounts(for: text)
+        let dominantCount = dominantLanguage == .english ? counts.english : counts.korean
+        let secondaryCount = dominantLanguage == .english ? counts.korean : counts.english
+
+        guard dominantCount > 0 else { return true }
+        if utterances.count > 2 {
+            return true
+        }
+        if secondaryCount < 12 {
+            return true
+        }
+        if Double(secondaryCount) / Double(max(1, dominantCount + secondaryCount)) < 0.35 {
+            return true
+        }
+
+        let longestSecondaryRun = utterances
+            .filter { $0.language != dominantLanguage }
+            .map { directSpeechContentLength(for: $0.text) }
+            .max() ?? 0
+        return longestSecondaryRun < 10
+    }
+
+    private static func directSpeechLanguageCounts(for text: String) -> (korean: Int, english: Int) {
         var koreanScore = 0
         var englishScore = 0
         for character in text {
@@ -1220,7 +1669,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
                 continue
             }
         }
-        return englishScore > koreanScore ? .english : .korean
+        return (korean: koreanScore, english: englishScore)
+    }
+
+    private static func directSpeechContentLength(for text: String) -> Int {
+        text.reduce(into: 0) { count, character in
+            if directSpeechCharacterCategory(for: character) != .neutral {
+                count += 1
+            }
+        }
     }
 
     private func playSegmentedSpeech(
@@ -1392,11 +1849,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
         ttsPlaybackTask = nil
         audioPlayer?.stop()
         audioPlayer = nil
-        speechSynthesizer?.stopSpeaking()
-        speechSynthesizer = nil
-        speechSynthDelegateBox = nil
+        speechSynthesizer?.stopSpeaking(at: .immediate)
         isSpeaking = false
         voiceInputLevel = 0
+    }
+
+    @MainActor
+    private func clearDirectSpeechPlaybackState() {
+        speechSynthesizer = nil
+        speechSynthDelegateBox = nil
     }
 
     private func waitForSpeechPlaybackToFinish() async {
@@ -1411,10 +1872,13 @@ final class JarvisMenuBarViewModel: ObservableObject {
     private func stopWakeWord() {
         wakeWordEnabled = false
         if voiceLoopEnabled {
-            stopVoiceLoop()
+            stopVoiceLoop(resumeWakeWord: false)
         }
+        disarmWakeWordMonitoring()
         stopTTS()
-        appLog("JARVIS mode stopped")
+        voiceLoopPhase = .idle
+        exportMessage = nil
+        appLog("Wake word mode stopped")
     }
 
     func shutdownBridge() async {
@@ -1806,10 +2270,13 @@ final class JarvisMenuBarViewModel: ObservableObject {
         guard voiceLoopTask == nil else {
             return
         }
+        if wakeWordSession != nil || passiveWakeFallbackEnabled {
+            disarmWakeWordMonitoring()
+        }
         voiceLoopEnabled = true
         errorMessage = nil
         exportMessage = nil
-        voiceLoopPhase = .recording
+        voiceLoopPhase = .awaitingCommand
         consecutiveLoopErrors = 0
 
         voiceLoopTask = Task { [weak self] in
@@ -1826,10 +2293,15 @@ final class JarvisMenuBarViewModel: ObservableObject {
         }
     }
 
-    private func stopVoiceLoop() {
+    private func stopVoiceLoop(
+        resumeWakeWord: Bool = true,
+        playSessionTone: Bool = false
+    ) {
+        let shouldResumeWakeWord = resumeWakeWord && wakeWordEnabled
         voiceLoopEnabled = false
         voiceLoopTask?.cancel()
         voiceLoopTask = nil
+        nativeRecorder.cancel()
         stopLiveTranscription()
         stopTTS()
         voiceInputLevel = 0
@@ -1839,6 +2311,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
         isLoading = false
         voiceLoopPhase = .stopped
         consecutiveLoopErrors = 0
+        if playSessionTone {
+            playWakeAcknowledgementTone()
+        }
+        if shouldResumeWakeWord {
+            startWakeWord()
+        }
     }
 
     private func runVoiceLoopIteration() async -> Duration? {
@@ -1876,6 +2354,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
             refreshNavigationWindow(for: repairedTranscript.displayText)
             guard let resolvedQuery = prepareQueryForSubmission(repairedTranscript.finalQuery) else {
                 isLoading = false
+                if Task.isCancelled || !voiceLoopEnabled {
+                    return nil
+                }
                 voiceLoopPhase = .cooldown
                 return successLoopDelay
             }
@@ -2002,7 +2483,7 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     var shouldShowGuidePanel: Bool {
-        guide.shouldShowPanel(isSpeaking: isSpeaking)
+        guide.shouldShowPanel()
     }
 
     func candidateNumber(for item: MenuExplorationItem) -> Int? {
@@ -2025,6 +2506,20 @@ final class JarvisMenuBarViewModel: ObservableObject {
     }
 
     func prepareQueryForSubmission(_ rawQuery: String) -> String? {
+        let compact = Self.compactInputText(rawQuery)
+        if (wakeWordEnabled || voiceLoopEnabled) && Self.isWakePhraseOnly(compact) {
+            if wakeWordEnabled && !voiceLoopEnabled && !wakeWordTriggerPending {
+                wakeWordTriggerPending = true
+                Task { [weak self] in
+                    await self?.handleWakeWordDetected()
+                }
+            }
+            return nil
+        }
+        if voiceLoopEnabled && Self.isExitPhraseOnly(compact) {
+            _ = processLocalVoiceCommand(rawQuery)
+            return nil
+        }
         if processLocalVoiceCommand(rawQuery) {
             return nil
         }
@@ -2035,6 +2530,64 @@ final class JarvisMenuBarViewModel: ObservableObject {
             return rawQuery
         }
         return resolvedSubmissionQuery(rawQuery)
+    }
+
+    static func isWakePhraseOnly(_ text: String) -> Bool {
+        let trimmed = compactInputText(text)
+        guard !trimmed.isEmpty else { return false }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        return wakePhraseOnlyPattern.firstMatch(in: trimmed, options: [], range: range) != nil
+    }
+
+    static func wakePhraseRemainder(in text: String) -> String? {
+        let trimmed = compactInputText(text)
+        guard !trimmed.isEmpty else { return nil }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = wakePhrasePrefixPattern.firstMatch(in: trimmed, options: [], range: range) else {
+            return nil
+        }
+        guard match.numberOfRanges > 1,
+              let remainderRange = Range(match.range(at: 1), in: trimmed)
+        else {
+            return ""
+        }
+        return compactInputText(String(trimmed[remainderRange]))
+    }
+
+    static func isExitPhraseOnly(_ text: String) -> Bool {
+        let trimmed = compactInputText(text)
+        guard !trimmed.isEmpty else { return false }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        return exitPhraseOnlyPattern.firstMatch(in: trimmed, options: [], range: range) != nil
+    }
+
+    private func resolvedWakeCommand(
+        from repairedTranscript: TranscriptRepairPayload
+    ) -> TranscriptRepairPayload {
+        let bufferedQuery = pendingWakeBufferedQuery.map(Self.compactInputText)
+        defer {
+            pendingWakeBufferedQuery = nil
+        }
+
+        let compactFinalQuery = Self.compactInputText(repairedTranscript.finalQuery)
+        let hasCapturedCommand =
+            !compactFinalQuery.isEmpty
+            && !Self.isWakePhraseOnly(compactFinalQuery)
+            && compactFinalQuery.count >= 3
+        guard !hasCapturedCommand,
+              let bufferedQuery,
+              !bufferedQuery.isEmpty
+        else {
+            return repairedTranscript
+        }
+
+        appLog("Using buffered wake fallback query: \(Self.logPreview(for: bufferedQuery))")
+        return TranscriptRepairPayload(
+            rawText: repairedTranscript.rawText,
+            repairedText: bufferedQuery,
+            displayText: bufferedQuery,
+            finalQuery: bufferedQuery
+        )
     }
 
     private func repairTranscriptForSubmission(_ rawQuery: String) async throws -> TranscriptRepairPayload {
@@ -2137,6 +2690,12 @@ final class JarvisMenuBarViewModel: ObservableObject {
 
     private func processLocalVoiceCommand(_ rawQuery: String) -> Bool {
         let lowered = rawQuery.lowercased()
+        if voiceLoopEnabled && Self.isExitPhraseOnly(rawQuery) {
+            errorMessage = nil
+            exportMessage = nil
+            stopVoiceLoop(playSessionTone: true)
+            return true
+        }
         if processGuideCloseCommand(rawQuery, lowered: lowered) {
             return true
         }
@@ -2540,6 +3099,8 @@ final class JarvisMenuBarViewModel: ObservableObject {
         return switch voiceLoopPhase {
         case .idle:
             "voice loop idle"
+        case .awaitingCommand:
+            "wake word acknowledged, waiting for a fresh command"
         case .recording:
             "recording"
         case .pauseDetected:
@@ -2574,7 +3135,9 @@ final class JarvisMenuBarViewModel: ObservableObject {
     var phaseStatusText: String {
         switch voiceLoopPhase {
         case .idle:
-            return "대기 중"
+            return "자비스 세션 활성화됨. 명령을 말씀해 주세요."
+        case .awaitingCommand:
+            return "🔔 신호음 후 새 명령을 말씀해 주세요."
         case .recording:
             return "녹음 중 \(recordingElapsedLabel) / \(maxRecordingLabel)"
         case .pauseDetected:
@@ -2787,6 +3350,8 @@ struct VoicePhaseIndicator: View {
         switch phase {
         case .idle, .stopped:
             return JarvisTheme.textMuted
+        case .awaitingCommand:
+            return JarvisTheme.green
         case .recording:
             return JarvisTheme.amber
         case .pauseDetected:
@@ -2806,6 +3371,8 @@ struct VoicePhaseIndicator: View {
         switch phase {
         case .idle:
             return "Ready"
+        case .awaitingCommand:
+            return "Armed"
         case .recording:
             return "Listening"
         case .pauseDetected:
@@ -3119,6 +3686,8 @@ struct JarvisMenuContentView: View {
         switch viewModel.voiceLoopPhase {
         case .idle, .stopped:
             return JarvisTheme.textMuted
+        case .awaitingCommand:
+            return JarvisTheme.green
         case .recording:
             return JarvisTheme.amber
         case .pauseDetected:
@@ -3357,6 +3926,7 @@ struct JarvisMenuContentView: View {
 
                                 Spacer()
                             }
+
                         }
                     }
                 } else {
@@ -3413,6 +3983,7 @@ struct JarvisMenuContentView: View {
 
                             Spacer()
                         }
+
                     }
                 }
                 if let errorMessage = viewModel.errorMessage, !errorMessage.isEmpty {

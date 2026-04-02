@@ -29,6 +29,7 @@ def test_build_vocabulary_hint_includes_indexed_chunk_terms(tmp_path: Path, monk
 
     hint = build_vocabulary_hint(kb)
 
+    assert "헤이 자비스" in hint
     assert "순두부" in hint
     assert "피망" in hint
     assert "Dinner" in hint
