@@ -145,4 +145,4 @@ export interface SystemLog {
 }
 
 // ── View ──────────────────────────────────────
-export type ViewState = 'dashboard' | 'detail_report' | 'detail_image' | 'detail_code' | 'admin';
+export type ViewState = 'dashboard' | 'detail_viewer' | 'repository' | 'admin';
