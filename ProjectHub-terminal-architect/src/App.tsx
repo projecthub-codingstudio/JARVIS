@@ -34,11 +34,7 @@ import {
   ShieldCheck,
   Sun,
   Moon,
-  User as UserIcon,
-  LogOut,
-  LogIn,
   BarChart3,
-  Camera,
   AlertCircle,
   Info,
   AlertTriangle,
@@ -47,42 +43,16 @@ import {
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { VoiceWaveform } from './components/VoiceWaveform';
-import { Message, Asset, ViewState, UserProfile, SystemLog } from './types';
+import { Message, Asset, ViewState, SystemLog } from './types';
 import { INITIAL_MESSAGES, ASSETS } from './constants';
-import { 
-  auth, 
-  db, 
-  googleProvider, 
-  signInWithPopup, 
-  signOut, 
-  onAuthStateChanged, 
-  doc, 
-  getDoc, 
-  setDoc, 
-  updateDoc, 
-  collection, 
-  query, 
-  orderBy, 
-  limit, 
-  onSnapshot, 
-  Timestamp,
-  User,
-  OperationType,
-  handleFirestoreError
-} from './firebase';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('dashboard');
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [adminLogs, setAdminLogs] = useState<SystemLog[]>([]);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [adminLogs] = useState<SystemLog[]>([]);
   const [isMobileCmdOpen, setIsMobileCmdOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isContextSummaryOpen, setIsContextSummaryOpen] = useState(true);
@@ -108,109 +78,6 @@ export default function App() {
       root.classList.remove('dark');
     }
   }, [theme]);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        try {
-          const profileDoc = await getDoc(doc(db, 'users', currentUser.uid));
-          if (profileDoc.exists()) {
-            setProfile(profileDoc.data() as UserProfile);
-          } else {
-            // Create initial profile
-            const newProfile: UserProfile = {
-              uid: currentUser.uid,
-              displayName: currentUser.displayName || 'Anonymous',
-              email: currentUser.email || '',
-              photoURL: currentUser.photoURL || '',
-              role: currentUser.email === import.meta.env.VITE_ADMIN_EMAIL ? 'admin' : 'user',
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            };
-            await setDoc(doc(db, 'users', currentUser.uid), newProfile);
-            setProfile(newProfile);
-            
-            // Log creation
-            await addSystemLog('info', `New user registered: ${newProfile.email}`, currentUser.uid);
-          }
-        } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `users/${currentUser.uid}`);
-        }
-      } else {
-        setProfile(null);
-      }
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (profile?.role === 'admin') {
-      const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(50));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SystemLog));
-        setAdminLogs(logs);
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'system_logs');
-      });
-      return () => unsubscribe();
-    }
-  }, [profile]);
-
-  const addSystemLog = async (type: 'info' | 'warning' | 'error', message: string, userId?: string) => {
-    try {
-      await setDoc(doc(collection(db, 'system_logs')), {
-        timestamp: new Date().toISOString(),
-        type,
-        message,
-        userId: userId || user?.uid
-      });
-    } catch (error) {
-      console.error('Failed to add system log:', error);
-    }
-  };
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    setLoginError(null);
-    try {
-      await signInWithPopup(auth, googleProvider);
-      setView('dashboard');
-    } catch (error: any) {
-      if (error.code === 'auth/popup-closed-by-user') {
-        setLoginError('로그인 창이 닫혔습니다. 다시 시도해 주세요.');
-      } else if (error.code === 'auth/cancelled-popup-request') {
-        // Ignore this error as it's usually a duplicate request
-      } else {
-        console.error('Login failed:', error);
-        setLoginError('로그인 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
-      }
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      setView('dashboard');
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
-
-  const updateProfile = async (data: Partial<UserProfile>) => {
-    if (!user) return;
-    try {
-      const updatedData = { ...data, updatedAt: new Date().toISOString() };
-      await updateDoc(doc(db, 'users', user.uid), updatedData);
-      setProfile(prev => prev ? { ...prev, ...updatedData } : null);
-      await addSystemLog('info', 'User profile updated', user.uid);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
-    }
-  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -340,8 +207,7 @@ export default function App() {
                   <span className="text-[10px] font-medium">네트워크</span>
                 </button>
 
-                {profile?.role === 'admin' && (
-                  <button 
+                <button
                     onClick={() => setView('admin')}
                     className={cn(
                       "flex flex-col items-center gap-1 w-full py-4 transition-all",
@@ -351,31 +217,8 @@ export default function App() {
                     <BarChart3 size={20} />
                     <span className="text-[10px] font-medium">관리자</span>
                   </button>
-                )}
               </div>
               <div className="flex flex-col gap-6 mb-4 items-center w-full min-w-[80px]">
-                {user ? (
-                  <button 
-                    onClick={() => setView('profile')}
-                    className={cn(
-                      "p-2 rounded-full transition-all",
-                      view === 'profile' ? "ring-2 ring-primary" : "text-on-surface-variant opacity-80 hover:text-on-surface"
-                    )}
-                  >
-                    {profile?.photoURL ? (
-                      <img src={profile.photoURL} alt="Profile" className="w-6 h-6 rounded-full object-cover" />
-                    ) : (
-                      <UserIcon size={18} />
-                    )}
-                  </button>
-                ) : (
-                  <button 
-                    onClick={() => setView('login')}
-                    className="text-on-surface-variant opacity-80 hover:text-on-surface"
-                  >
-                    <LogIn size={18} />
-                  </button>
-                )}
                 <button className="text-on-surface-variant opacity-80 hover:text-on-surface"><MicOff size={18} /></button>
                 <button className="text-on-surface-variant opacity-80 hover:text-on-surface"><SlidersHorizontal size={18} /></button>
               </div>
@@ -397,20 +240,9 @@ export default function App() {
           <button onClick={() => setView('dashboard')} className="p-2 text-on-surface-variant">
             <FolderOpen size={20} />
           </button>
-          {profile?.role === 'admin' && (
-            <button onClick={() => setView('admin')} className={cn("p-2", view === 'admin' ? "text-primary" : "text-on-surface-variant")}>
+          <button onClick={() => setView('admin')} className={cn("p-2", view === 'admin' ? "text-primary" : "text-on-surface-variant")}>
               <BarChart3 size={20} />
-            </button>
-          )}
-          {user ? (
-            <button onClick={() => setView('profile')} className={cn("p-2 rounded-full", view === 'profile' ? "ring-2 ring-primary" : "text-on-surface-variant")}>
-              {profile?.photoURL ? <img src={profile.photoURL} className="w-5 h-5 rounded-full" /> : <UserIcon size={20} />}
-            </button>
-          ) : (
-            <button onClick={() => setView('login')} className={cn("p-2", view === 'login' ? "text-primary" : "text-on-surface-variant")}>
-              <LogIn size={20} />
-            </button>
-          )}
+          </button>
         </nav>
 
         {/* Main Content Area */}
@@ -975,148 +807,6 @@ export default function App() {
                   </div>
                 </footer>
               </motion.div>
-            ) : view === 'login' ? (
-              <motion.div 
-                key="login"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="h-full flex items-center justify-center p-8"
-              >
-                <div className="max-w-md w-full bg-surface-low border border-outline/20 p-10 space-y-8 shadow-2xl">
-                  <div className="text-center space-y-4">
-                    <div className="inline-flex p-4 bg-primary/10 rounded-full">
-                      <Terminal size={48} className="text-primary" />
-                    </div>
-                    <h1 className="text-3xl font-headline font-bold tracking-tight">시스템 로그인</h1>
-                    <p className="text-on-surface-variant text-sm">터미널 아키텍트 시스템에 접속하려면 인증이 필요합니다.</p>
-                  </div>
-
-                  {loginError && (
-                    <div className="p-4 bg-red-500/10 border border-red-500/20 text-red-500 text-xs text-center font-medium animate-pulse">
-                      {loginError}
-                    </div>
-                  )}
-
-                  <button 
-                    onClick={handleLogin}
-                    disabled={isLoggingIn}
-                    className={cn(
-                      "w-full py-4 bg-primary text-on-primary font-headline font-bold flex items-center justify-center gap-3 hover:opacity-90 transition-all shadow-lg shadow-primary/20",
-                      isLoggingIn && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    {isLoggingIn ? (
-                      <div className="w-5 h-5 border-2 border-on-primary/30 border-t-on-primary rounded-full animate-spin" />
-                    ) : (
-                      <LogIn size={20} />
-                    )}
-                    {isLoggingIn ? '인증 중...' : 'Google 계정으로 로그인'}
-                  </button>
-                </div>
-              </motion.div>
-            ) : view === 'profile' ? (
-              <motion.div 
-                key="profile"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="h-full flex flex-col p-10 max-w-4xl mx-auto w-full"
-              >
-                <div className="flex items-center justify-between mb-12">
-                  <h1 className="text-4xl font-headline font-bold tracking-tighter">개인 프로필 설정</h1>
-                  <button 
-                    onClick={handleLogout}
-                    className="flex items-center gap-2 px-6 py-2 border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white transition-all text-sm font-bold uppercase tracking-widest"
-                  >
-                    <LogOut size={16} /> 로그아웃
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
-                  <div className="flex flex-col items-center gap-6">
-                    <div className="relative group">
-                      <div className="w-48 h-48 rounded-full overflow-hidden border-4 border-primary/20 bg-surface-highest">
-                        {profile?.photoURL ? (
-                          <img src={profile.photoURL} alt="Profile" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-outline">
-                            <UserIcon size={64} />
-                          </div>
-                        )}
-                      </div>
-                      <label className="absolute bottom-2 right-2 p-3 bg-primary text-on-primary rounded-full shadow-xl hover:scale-110 transition-transform cursor-pointer">
-                        <Camera size={20} />
-                        <input 
-                          type="file" 
-                          className="hidden" 
-                          accept="image/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const reader = new FileReader();
-                              reader.onloadend = () => {
-                                updateProfile({ photoURL: reader.result as string });
-                              };
-                              reader.readAsDataURL(file);
-                            }
-                          }}
-                        />
-                      </label>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-xs font-mono text-primary uppercase tracking-widest mb-1">{profile?.role}</p>
-                      <p className="text-on-surface-variant text-[10px] font-mono">UID: {profile?.uid.slice(0, 12)}...</p>
-                    </div>
-                  </div>
-
-                  <div className="md:col-span-2 space-y-8">
-                    <div className="grid grid-cols-1 gap-6">
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase font-bold text-outline tracking-widest">사용자 이름</label>
-                        <input 
-                          type="text" 
-                          defaultValue={profile?.displayName}
-                          onBlur={(e) => updateProfile({ displayName: e.target.value })}
-                          className="w-full bg-surface-low border border-outline/20 p-4 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
-                        />
-                      </div>
-                      <div className="space-y-2 opacity-60">
-                        <label className="text-[10px] uppercase font-bold text-outline tracking-widest">이메일 주소 (수정 불가)</label>
-                        <input 
-                          type="email" 
-                          value={profile?.email}
-                          disabled
-                          className="w-full bg-surface-highest border border-outline/20 p-4 cursor-not-allowed"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase font-bold text-outline tracking-widest">프로필 사진 URL</label>
-                        <input 
-                          type="text" 
-                          defaultValue={profile?.photoURL}
-                          onBlur={(e) => updateProfile({ photoURL: e.target.value })}
-                          className="w-full bg-surface-low border border-outline/20 p-4 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
-                          placeholder="https://example.com/photo.jpg"
-                        />
-                      </div>
-                    </div>
-                    <div className="pt-6 border-t border-outline/10">
-                      <p className="text-[10px] text-outline uppercase tracking-widest mb-4">계정 정보</p>
-                      <div className="flex gap-8">
-                        <div>
-                          <p className="text-[10px] text-on-surface-variant">생성일</p>
-                          <p className="text-xs font-mono">{profile?.createdAt ? new Date(profile.createdAt).toLocaleDateString() : '-'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-on-surface-variant">마지막 업데이트</p>
-                          <p className="text-xs font-mono">{profile?.updatedAt ? new Date(profile.updatedAt).toLocaleDateString() : '-'}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
             ) : view === 'admin' ? (
               <motion.div 
                 key="admin"
@@ -1165,7 +855,6 @@ export default function App() {
                                 <span className="text-[8px] font-mono px-1 bg-surface-highest text-on-surface-variant uppercase">{log.type}</span>
                               </div>
                               <p className="text-xs leading-relaxed">{log.message}</p>
-                              {log.userId && <p className="text-[9px] font-mono text-outline">USER_ID: {log.userId}</p>}
                             </div>
                           </div>
                         ))}
