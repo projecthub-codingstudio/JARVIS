@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import { ChevronDown } from 'lucide-react';
@@ -19,16 +19,48 @@ function detectLanguage(path: string): string {
 
 const LINES_PER_PAGE = 40;
 
-const CodeRenderer: React.FC<RendererProps> = ({ artifact, content }) => {
-  const fullCode = content || artifact.preview || '';
+const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch full file content when fileUrl is available
+  useEffect(() => {
+    if (!fileUrl) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
+
+    fetch(fileUrl, { signal: controller.signal })
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to fetch');
+        return res.text();
+      })
+      .then(text => { if (!cancelled) { setFileContent(text); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; controller.abort(); };
+  }, [fileUrl]);
+
+  const fullCode = fileContent || content || artifact.preview || '';
   const language = detectLanguage(artifact.path || artifact.full_path || '');
 
   const allLines = useMemo(() => fullCode.split('\n'), [fullCode]);
   const [visibleCount, setVisibleCount] = useState(LINES_PER_PAGE);
 
+  // Reset visible count when content changes (e.g., file loaded)
+  useEffect(() => { setVisibleCount(LINES_PER_PAGE); }, [fullCode]);
+
   const visibleCode = allLines.slice(0, visibleCount).join('\n');
   const hasMore = visibleCount < allLines.length;
   const remaining = allLines.length - visibleCount;
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full overflow-auto custom-scrollbar">
