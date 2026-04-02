@@ -17,22 +17,11 @@ export interface Asset {
   content?: string;
 }
 
-export interface UserProfile {
-  uid: string;
-  displayName: string;
-  email: string;
-  photoURL: string;
-  role: 'admin' | 'user';
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface SystemLog {
   id: string;
   timestamp: string;
   type: 'info' | 'warning' | 'error';
   message: string;
-  userId?: string;
 }
 
-export type ViewState = 'dashboard' | 'detail_report' | 'detail_image' | 'detail_code' | 'login' | 'profile' | 'admin';
+export type ViewState = 'dashboard' | 'detail_report' | 'detail_image' | 'detail_code' | 'admin';
