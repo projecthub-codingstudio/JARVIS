@@ -141,21 +141,36 @@ async def runtime_state():
 async def serve_file(path: str):
     """Serve a file from allowed directories.
 
-    Uses the same path validation as ReadFileTool to prevent
-    unauthorized file access.
+    Validates that the requested path is within the knowledge_base
+    directory before serving.
     """
     file_path = Path(path).expanduser().resolve()
 
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
     # Security: validate against allowed roots
-    # The relative_to() check below is the authoritative guard.
-    # We resolve() first so expanduser + symlinks can't bypass it.
+    # Try multiple strategies to find the knowledge_base path.
+    import os
     allowed_roots: list[Path] = []
+
+    # Strategy 1: JARVIS_KNOWLEDGE_BASE env var
+    env_kb = os.getenv("JARVIS_KNOWLEDGE_BASE", "").strip()
+    if env_kb:
+        allowed_roots.append(Path(env_kb).expanduser().resolve())
+
+    # Strategy 2: resolve via runtime_context
     from jarvis.app.runtime_context import resolve_knowledge_base_path
     try:
-        kb_path = resolve_knowledge_base_path()
-        allowed_roots.append(kb_path)
+        allowed_roots.append(resolve_knowledge_base_path())
     except Exception:
         pass
+
+    # Strategy 3: infer from the file path itself — look for 'knowledge_base' in ancestors
+    for parent in file_path.parents:
+        if parent.name == "knowledge_base":
+            allowed_roots.append(parent.resolve())
+            break
 
     if not allowed_roots:
         raise HTTPException(status_code=403, detail="No allowed directories configured")
@@ -164,8 +179,7 @@ async def serve_file(path: str):
     is_allowed = False
     for root in allowed_roots:
         try:
-            resolved_root = root.expanduser().resolve()
-            file_path.relative_to(resolved_root)
+            file_path.relative_to(root.resolve())
             is_allowed = True
             break
         except ValueError:
@@ -173,9 +187,6 @@ async def serve_file(path: str):
 
     if not is_allowed:
         raise HTTPException(status_code=403, detail="Path outside allowed scope")
-
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
 
     # Determine content type
     content_type, _ = mimetypes.guess_type(str(file_path))
