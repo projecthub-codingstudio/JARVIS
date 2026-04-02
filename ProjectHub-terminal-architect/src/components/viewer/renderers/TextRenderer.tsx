@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import type { Artifact } from '../../../types';
 
 export interface RendererProps {
@@ -7,15 +8,22 @@ export interface RendererProps {
   content?: string;
 }
 
+const LINES_PER_PAGE = 30;
+
 const TextRenderer: React.FC<RendererProps> = ({ artifact, content }) => {
   const text = content || artifact.preview || '내용 없음';
-  const lines = text.split('\n');
+  const allLines = text.split('\n');
+  const [visibleCount, setVisibleCount] = useState(LINES_PER_PAGE);
+
+  const visibleLines = allLines.slice(0, visibleCount);
+  const hasMore = visibleCount < allLines.length;
+  const remaining = allLines.length - visibleCount;
 
   return (
     <div className="h-full overflow-auto custom-scrollbar bg-surface-low p-6 font-mono text-sm">
       <table className="w-full border-collapse">
         <tbody>
-          {lines.map((line, i) => (
+          {visibleLines.map((line, i) => (
             <tr key={i} className="hover:bg-surface-highest/30">
               <td className="pr-4 text-right text-outline select-none w-12 align-top text-xs">
                 {i + 1}
@@ -27,6 +35,15 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, content }) => {
           ))}
         </tbody>
       </table>
+      {hasMore && (
+        <button
+          onClick={() => setVisibleCount(prev => prev + LINES_PER_PAGE)}
+          className="w-full mt-4 py-3 flex items-center justify-center gap-2 text-primary border border-primary/30 hover:bg-primary/10 transition-all text-xs font-mono uppercase tracking-widest"
+        >
+          <ChevronDown size={14} />
+          더 보기 ({remaining}줄 남음)
+        </button>
+      )}
     </div>
   );
 };
