@@ -100,16 +100,19 @@ export const useJarvis = () => {
         message: `Query processed: ${text.slice(0, 50)}...`,
       });
 
-      // Handle clarification prompts
-      if (response.guide.has_clarification && response.guide.clarification_prompt) {
+      // Handle clarification prompts (only when genuinely asking for clarification, not echoing the answer)
+      if (response.guide.has_clarification
+        && response.guide.clarification_prompt
+        && response.guide.missing_slots.length > 0
+        && response.guide.clarification_prompt !== response.answer.text) {
         const clarificationMessage: Message = {
           id: (Date.now() + 2).toString(),
           role: 'architect',
-          timestamp: new Date().toLocaleTimeString([], { 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit', 
-            hour12: false 
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
           }),
           content: response.guide.clarification_prompt,
         };

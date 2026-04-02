@@ -15,8 +15,6 @@ import {
   MicOff,
   Mic,
   SlidersHorizontal,
-  FileIcon,
-  ExternalLink,
   Download,
   Share2,
   Printer,
@@ -49,7 +47,6 @@ import { ClarificationPrompt } from './components/ClarificationPrompt';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
 import { Message, Asset, ViewState, SystemLog, Artifact, Citation } from './types';
-import { INITIAL_MESSAGES, ASSETS } from './constants';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('dashboard');
@@ -62,23 +59,47 @@ export default function App() {
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+
   // Use Zustand store
-  const { 
-    messages, 
-    assets, 
-    citations, 
-    guide, 
-    presentation, 
-    isLoading, 
+  const {
+    messages,
+    assets,
+    citations,
+    guide,
+    presentation,
+    isLoading,
     error,
     logs,
-    addMessage, 
+    addMessage,
     setAssets,
-    addLog 
+    addLog
   } = useAppStore();
 
   // Use JARVIS hook
   const { sendMessage, handleSuggestedReply } = useJarvis();
+
+  // Backend health check on mount
+  useEffect(() => {
+    const checkBackend = async () => {
+      try {
+        const res = await fetch(
+          `${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`
+        );
+        if (res.ok) {
+          setBackendStatus('online');
+          addLog({ id: Date.now().toString(), timestamp: new Date().toISOString(), type: 'info', message: 'JARVIS 백엔드 연결됨' });
+        } else {
+          setBackendStatus('offline');
+        }
+      } catch {
+        setBackendStatus('offline');
+      }
+    };
+    checkBackend();
+    const interval = setInterval(checkBackend, 30_000);
+    return () => clearInterval(interval);
+  }, [addLog]);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -155,10 +176,21 @@ export default function App() {
           <span className="text-sm md:text-lg font-bold tracking-[0.2em] text-primary font-headline whitespace-nowrap">TERMINAL ARCHITECT</span>
           <nav className="hidden md:flex gap-6">
             <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              <span className="text-xs font-bold uppercase tracking-wider">시스템: 온라인</span>
+              <span className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                backendStatus === 'online' ? "bg-primary animate-pulse" :
+                backendStatus === 'checking' ? "bg-yellow-500 animate-pulse" : "bg-red-500"
+              )} />
+              <span className="text-xs font-bold uppercase tracking-wider">
+                시스템: {backendStatus === 'online' ? '온라인' : backendStatus === 'checking' ? '확인중' : '오프라인'}
+              </span>
             </div>
-            <span className="text-on-surface-variant text-xs uppercase tracking-wider">AI: 활성화</span>
+            <span className={cn(
+              "text-xs uppercase tracking-wider",
+              backendStatus === 'online' ? "text-primary" : "text-on-surface-variant"
+            )}>
+              AI: {backendStatus === 'online' ? '활성화' : '대기'}
+            </span>
           </nav>
         </div>
         <div className="flex items-center gap-2 md:gap-4">
@@ -275,9 +307,15 @@ export default function App() {
                     <div className="flex items-center justify-between mb-4 md:mb-8">
                       <div>
                         <h2 className="text-primary font-headline font-bold text-sm uppercase tracking-widest">세션_활성화</h2>
-                        <p className="text-on-surface-variant text-[10px] font-mono">ID: 0x4F92-ARCHITECT</p>
+                        <p className="text-on-surface-variant text-[10px] font-mono">ID: {useAppStore.getState().sessionId.slice(0, 8)}</p>
                       </div>
-                      <span className="text-[10px] text-outline px-2 py-1 bg-surface-high">v4.0.2-phosphor</span>
+                      <span className={cn(
+                        "text-[10px] px-2 py-1",
+                        backendStatus === 'online' ? "text-primary bg-primary/10" :
+                        backendStatus === 'checking' ? "text-yellow-500 bg-yellow-500/10" : "text-red-500 bg-red-500/10"
+                      )}>
+                        {backendStatus === 'online' ? 'JARVIS 연결됨' : backendStatus === 'checking' ? '연결 확인중...' : 'JARVIS 오프라인'}
+                      </span>
                     </div>
 
                     {messages.map((msg) => (
@@ -387,16 +425,18 @@ export default function App() {
                   </div>
                 </section>
 
-                {/* Right Panel: Assets */}
+                {/* Right Panel: Assets & Results */}
                 <section className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 md:space-y-10 custom-scrollbar h-[50vh] md:h-full">
                   <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-outline/10 pb-4 gap-2">
                     <h3 className="text-primary-dim font-headline text-xl md:text-2xl font-light tracking-tight terminal-glow">
-                      {assets.length > 0 ? 'JARVIS 검색 결과' : '자산_합성_뷰'}
+                      {assets.length > 0 ? 'JARVIS 검색 결과' : '워크스페이스'}
                     </h3>
-                    <div className="flex gap-4 text-[10px] md:text-[11px] font-mono text-on-surface-variant">
-                      <span>후보: {assets.length || 4}개</span>
-                      <span>근거: {citations.length || 0}개</span>
-                    </div>
+                    {(assets.length > 0 || citations.length > 0) && (
+                      <div className="flex gap-4 text-[10px] md:text-[11px] font-mono text-on-surface-variant">
+                        <span>자산: {assets.length}개</span>
+                        <span>근거: {citations.length}개</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Clarification Prompt */}
@@ -408,98 +448,35 @@ export default function App() {
                     />
                   )}
 
-                  {/* Assets Grid */}
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    {assets.length > 0 ? (
-                      assets.map((artifact) => (
+                  {/* Assets Grid or Empty State */}
+                  {assets.length > 0 ? (
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                      {assets.map((artifact) => (
                         <AssetCard
                           key={artifact.id}
                           artifact={artifact}
                           onClick={() => openAsset(artifact)}
                         />
-                      ))
-                    ) : (
-                      ASSETS.map((asset) => (
-                        <div
-                          key={asset.id}
-                          onClick={() => openAsset({
-                            id: asset.id,
-                            type: asset.type,
-                            title: asset.name,
-                            subtitle: asset.status || '',
-                            path: '',
-                            full_path: '',
-                            preview: asset.description || '',
-                            source_type: 'document',
-                            viewer_kind: asset.type,
-                          })}
-                          className={cn(
-                            "bg-surface-high group hover:bg-surface-highest transition-colors flex flex-col cursor-pointer border border-outline/10",
-                            asset.type === 'image' && "xl:row-span-2"
-                          )}
-                        >
-                          <div className="p-4 border-b border-outline/10 flex justify-between items-center">
-                            <div className="flex items-center gap-3">
-                              <FileIcon size={16} className={cn(
-                                asset.type === 'pdf' ? "text-red-500" :
-                                asset.type === 'image' ? "text-blue-400" :
-                                asset.type === 'docx' ? "text-primary" : "text-yellow-500"
-                              )} />
-                              <span className="text-xs font-mono text-on-surface uppercase tracking-widest">{asset.name}</span>
-                            </div>
-                            {asset.size && <span className="text-[10px] text-outline">{asset.size}</span>}
-                          </div>
-
-                          {asset.type === 'image' ? (
-                            <div className="flex-1 relative overflow-hidden bg-black min-h-[300px]">
-                              <img
-                                src={asset.imageUrl}
-                                alt={asset.name}
-                                className="w-full h-full object-cover opacity-60 grayscale group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700"
-                                referrerPolicy="no-referrer"
-                              />
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex flex-col justify-end p-6">
-                                <p className="text-[10px] font-mono text-primary mb-1">데이터_오버레이: 활성화</p>
-                                <p className="text-sm font-headline text-on-surface">{asset.description}</p>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="p-6 flex-1 flex flex-col justify-center gap-4">
-                              {asset.status && (
-                                <div className="flex items-center gap-4">
-                                  <div className={cn(
-                                    "px-2 py-1 text-[8px] font-black",
-                                    asset.status === 'LEGACY_FORMAT' ? "bg-red-500/20 text-red-500" : "bg-primary/20 text-primary"
-                                  )}>
-                                    {asset.status.toUpperCase()}
-                                  </div>
-                                </div>
-                              )}
-                              {asset.type === 'docx' ? (
-                                <div className="space-y-3">
-                                  <div className="h-2 w-full bg-outline/20" />
-                                  <div className="h-2 w-3/4 bg-outline/20" />
-                                  <div className="h-2 w-full bg-outline/20" />
-                                  <div className="h-2 w-1/2 bg-primary/20" />
-                                </div>
-                              ) : (
-                                <p className="text-xs text-on-surface-variant font-headline leading-relaxed">
-                                  {asset.description || "System analysis pending. Encryption protocols active for this segment."}
-                                </p>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="p-4 flex justify-between items-center bg-surface-low/30">
-                            <button className="text-[10px] uppercase font-bold text-primary tracking-tighter hover:underline">
-                              {asset.type === 'hwp' ? '지금_변환' : asset.type === 'pdf' ? '데이터_추출' : '요약하기'}
-                            </button>
-                            <ExternalLink size={14} className="text-outline" />
-                          </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-6">
+                      <div className="w-16 h-16 rounded-full border-2 border-outline/20 flex items-center justify-center">
+                        <Terminal size={28} className="text-outline/40" />
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-sm font-headline text-on-surface-variant">대기 상태</p>
+                        <p className="text-xs text-outline max-w-xs">
+                          좌측 터미널에서 명령을 입력하면 검색 결과와 관련 자산이 여기에 표시됩니다.
+                        </p>
+                      </div>
+                      {backendStatus === 'offline' && (
+                        <div className="px-4 py-2 bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-mono">
+                          JARVIS 백엔드가 오프라인입니다. 서버를 시작해 주세요.
                         </div>
-                      ))
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Citations */}
                   {citations.length > 0 && (
@@ -513,20 +490,29 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Status Bar */}
                   <div className="bg-surface-low p-6 flex flex-wrap items-center gap-8 border border-outline/10">
                     <div className="flex items-center gap-3">
-                      <div className="w-3 h-3 bg-primary animate-pulse" />
-                      <span className="text-[10px] font-mono text-on-surface uppercase">실시간_분석_피드</span>
+                      <div className={cn(
+                        "w-3 h-3",
+                        backendStatus === 'online' ? "bg-primary animate-pulse" : "bg-outline/30"
+                      )} />
+                      <span className="text-[10px] font-mono text-on-surface uppercase">
+                        {backendStatus === 'online' ? '실시간_분석_피드' : '대기중'}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono text-outline">CPU:</span>
-                      <div className="w-24 h-1 bg-surface-highest">
-                        <div className="w-1/3 h-full bg-primary" />
-                      </div>
+                      <span className="text-[10px] font-mono text-outline">백엔드:</span>
+                      <span className={cn(
+                        "text-[10px] font-mono font-bold",
+                        backendStatus === 'online' ? "text-primary" : "text-red-500"
+                      )}>
+                        {backendStatus === 'online' ? '연결됨' : '미연결'}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono text-outline">신경망_링크:</span>
-                      <span className="text-[10px] font-mono text-primary font-bold">안정적</span>
+                      <span className="text-[10px] font-mono text-outline">메시지:</span>
+                      <span className="text-[10px] font-mono text-primary font-bold">{messages.length}</span>
                     </div>
                   </div>
                 </section>
