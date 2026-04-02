@@ -13,23 +13,8 @@ import {
   FileText,
   Network,
   MicOff,
-  Mic,
   SlidersHorizontal,
-  Download,
-  Share2,
-  Printer,
-  ArrowLeft,
-  Search,
-  Maximize2,
-  ZoomIn,
-  ZoomOut,
-  CheckCircle2,
-  Database,
   Sparkles,
-  Code,
-  Smartphone,
-  Monitor,
-  ShieldCheck,
   Sun,
   Moon,
   BarChart3,
@@ -46,16 +31,17 @@ import { CitationList } from './components/CitationList';
 import { ClarificationPrompt } from './components/ClarificationPrompt';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
+import { ViewerShell } from './components/viewer/ViewerShell';
 import { Message, Asset, ViewState, SystemLog, Artifact, Citation } from './types';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('dashboard');
   const [inputValue, setInputValue] = useState('');
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isMobileCmdOpen, setIsMobileCmdOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [isContextSummaryOpen, setIsContextSummaryOpen] = useState(true);
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -105,7 +91,6 @@ export default function App() {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
-      if (mobile) setIsContextSummaryOpen(false);
     };
     checkMobile();
     window.addEventListener('resize', checkMobile);
@@ -134,20 +119,18 @@ export default function App() {
   };
 
   const openAsset = (artifact: Artifact) => {
-    // Convert Artifact to Asset for compatibility
-    const asset: Asset = {
+    setSelectedArtifact(artifact);
+    setSelectedAsset({
       id: artifact.id,
-      type: artifact.type.includes('code') ? 'html' : 
-            artifact.type.includes('image') ? 'image' : 
+      type: artifact.type.includes('code') ? 'html' :
+            artifact.type.includes('image') ? 'image' :
             artifact.type.includes('pdf') ? 'pdf' : 'docx',
       name: artifact.title,
       description: artifact.preview,
       status: artifact.source_type,
-    };
-    setSelectedAsset(asset);
-    if (artifact.type.includes('image')) setView('detail_image');
-    else if (artifact.type.includes('pdf') || artifact.type.includes('doc')) setView('detail_report');
-    else setView('detail_code');
+      content: artifact.preview,
+    });
+    setView('detail_viewer');
   };
 
   useEffect(() => {
@@ -239,11 +222,23 @@ export default function App() {
                   <LayoutDashboard size={20} />
                   <span className="text-[10px] font-medium">터미널</span>
                 </button>
-                <button className="flex flex-col items-center gap-1 text-on-surface-variant opacity-80 hover:text-white hover:bg-surface-highest w-full py-4 transition-all">
+                <button
+                  onClick={() => setView('repository')}
+                  className={cn(
+                    "flex flex-col items-center gap-1 w-full py-4 transition-all",
+                    view === 'repository' ? "text-primary border-l-2 border-primary bg-surface-highest/20" : "text-on-surface-variant opacity-80 hover:text-white hover:bg-surface-highest"
+                  )}
+                >
                   <FolderOpen size={20} />
                   <span className="text-[10px] font-medium">저장소</span>
                 </button>
-                <button className="flex flex-col items-center gap-1 text-on-surface-variant opacity-80 hover:text-white hover:bg-surface-highest w-full py-4 transition-all">
+                <button
+                  onClick={() => selectedArtifact ? setView('detail_viewer') : null}
+                  className={cn(
+                    "flex flex-col items-center gap-1 w-full py-4 transition-all",
+                    view === 'detail_viewer' ? "text-primary border-l-2 border-primary bg-surface-highest/20" : "text-on-surface-variant opacity-80 hover:text-white hover:bg-surface-highest"
+                  )}
+                >
                   <FileText size={20} />
                   <span className="text-[10px] font-medium">자산</span>
                 </button>
@@ -276,17 +271,17 @@ export default function App() {
           <button onClick={() => setView('dashboard')} className={cn("p-2", view === 'dashboard' ? "text-primary" : "text-on-surface-variant")}>
             <LayoutDashboard size={20} />
           </button>
-          <button 
-            onClick={() => setIsMobileCmdOpen(!isMobileCmdOpen)} 
+          <button
+            onClick={() => setIsMobileCmdOpen(!isMobileCmdOpen)}
             className={cn("p-2", isMobileCmdOpen ? "text-primary" : "text-on-surface-variant")}
           >
             <Terminal size={20} />
           </button>
-          <button onClick={() => setView('dashboard')} className="p-2 text-on-surface-variant">
+          <button onClick={() => setView('repository')} className={cn("p-2", view === 'repository' ? "text-primary" : "text-on-surface-variant")}>
             <FolderOpen size={20} />
           </button>
           <button onClick={() => setView('admin')} className={cn("p-2", view === 'admin' ? "text-primary" : "text-on-surface-variant")}>
-              <BarChart3 size={20} />
+            <BarChart3 size={20} />
           </button>
         </nav>
 
@@ -517,368 +512,31 @@ export default function App() {
                   </div>
                 </section>
               </motion.div>
-            ) : view === 'detail_report' ? (
-              <motion.div 
-                key="report"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                className="h-full flex flex-col overflow-hidden"
-              >
-                <div className="px-4 md:px-10 pt-6 bg-surface-low shrink-0">
-                  <nav className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-on-surface-variant mb-4">
-                    <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">대시보드</button>
-                    <span>/</span>
-                    <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">자산</button>
-                    <span>/</span>
-                    <span className="text-primary-dim">{selectedAsset?.name || '보고서'}</span>
-                  </nav>
-                  <div className="flex flex-col md:flex-row md:justify-between md:items-center pb-6 gap-4">
-                    <div>
-                      <h1 className="text-lg md:text-xl font-bold tracking-tight text-primary-dim font-headline">결과 상세 보기 (한글)</h1>
-                      <p className="text-on-surface-variant text-[10px] font-mono uppercase tracking-widest mt-1">Report ID: ARCH-992-KOR-ALPHA</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2 md:gap-3">
-                      <button 
-                        onClick={() => setIsContextSummaryOpen(!isContextSummaryOpen)}
-                        className={cn(
-                          "flex-1 md:flex-none px-3 md:px-5 py-2 border border-outline transition-all text-[10px] md:text-xs flex items-center justify-center gap-2",
-                          isContextSummaryOpen ? "bg-primary/10 text-primary border-primary" : "text-on-surface-variant hover:text-white hover:bg-surface-highest"
-                        )}
-                      >
-                        <Info size={14} /> {isContextSummaryOpen ? '요약_숨기기' : '요약_보기'}
-                      </button>
-                      <button className="flex-1 md:flex-none px-3 md:px-5 py-2 border border-outline text-on-surface-variant hover:text-white hover:bg-surface-highest transition-all text-[10px] md:text-xs flex items-center justify-center gap-2">
-                        <Share2 size={14} /> 공유
-                      </button>
-                      <button className="flex-1 md:flex-none px-3 md:px-5 py-2 border border-outline text-on-surface-variant hover:text-white hover:bg-surface-highest transition-all text-[10px] md:text-xs flex items-center justify-center gap-2">
-                        <Printer size={14} /> 인쇄
-                      </button>
-                      <button className="w-full md:w-auto px-4 md:px-6 py-2 bg-primary text-on-primary font-bold hover:opacity-80 transition-all text-[10px] md:text-xs flex items-center justify-center gap-2">
-                        <Download size={14} /> 다운로드
-                      </button>
-                    </div>
-                  </div>
+            ) : view === 'detail_viewer' ? (
+              selectedArtifact ? (
+                <ViewerShell
+                  artifact={selectedArtifact}
+                  citations={citations}
+                  onBack={() => setView('dashboard')}
+                  isMobile={isMobile}
+                />
+              ) : (
+                <div className="h-full flex items-center justify-center text-on-surface-variant">
+                  <p>선택된 문서가 없습니다.</p>
                 </div>
-
-                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-                  <section className="flex-1 overflow-y-auto p-6 md:p-12 custom-scrollbar">
-                    <div className="max-w-4xl mx-auto">
-                      <div className="mb-12">
-                        <div className="flex items-center gap-3 mb-4">
-                          <span className="text-primary font-mono">&gt;</span>
-                          <span className="text-primary font-mono text-xs">EXECUTE RAG_SYNTHESIS --target="KR_FIN_REPORT_2024"</span>
-                          <span className="w-2 h-4 bg-primary animate-pulse" />
-                        </div>
-                        <h2 className="text-2xl font-black font-headline text-on-surface leading-tight uppercase">2024년 4분기 시장 분석 및 전략 보고서</h2>
-                      </div>
-
-                      <div className="space-y-10">
-                        <div className="relative pl-8">
-                          <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-primary" />
-                          <h3 className="text-primary-dim font-headline text-lg mb-4">I. 요약 (Executive Summary)</h3>
-                          <p className="text-on-surface-variant leading-relaxed text-base">
-                            본 보고서는 2024년 4분기 국내 시장의 주요 기술 트렌드와 경제 지표를 기반으로 한 RAG(Retrieval-Augmented Generation) 분석 결과입니다. 주요 지표에 따르면 클라우드 인프라 확장과 AI 도입 가속화가 시장 성장의 핵심 동인으로 나타났습니다.
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-6">
-                          <div className="bg-surface-low p-6 border-l-2 border-primary">
-                            <h4 className="text-on-surface font-headline font-bold mb-2 text-sm">주요 성장률</h4>
-                            <span className="text-2xl font-mono text-primary font-black">+14.2%</span>
-                            <p className="text-on-surface-variant text-[10px] mt-2 uppercase font-mono">Core Tech Sector Growth</p>
-                          </div>
-                          <div className="bg-surface-low p-6 border-l-2 border-primary-dim">
-                            <h4 className="text-on-surface font-headline font-bold mb-2 text-sm">위험 지수</h4>
-                            <span className="text-2xl font-mono text-primary-dim font-black">LOW</span>
-                            <p className="text-on-surface-variant text-[10px] mt-2 uppercase font-mono">Risk Assessment Level</p>
-                          </div>
-                        </div>
-
-                        <div className="relative pl-8">
-                          <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-primary" />
-                          <h3 className="text-primary-dim font-headline text-lg mb-4">II. 상세 분석 (Deep Dive)</h3>
-                          <div className="space-y-6 text-on-surface-variant leading-relaxed text-sm">
-                            <p>1. <strong className="text-on-surface">시장 환경 분석:</strong> 최근 통계청 및 산업통상자원부 데이터를 추출한 결과, 반도체 및 인공지능 관련 수출액이 전년 대비 18% 증가했습니다.</p>
-                            <p>2. <strong className="text-on-surface">RAG 기반 통찰:</strong> 시스템은 1,200개 이상의 금융 보고서를 참조하여 현재의 금리 기조가 IT 투자 심리에 미치는 영향을 분석했습니다.</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-
-                  <AnimatePresence>
-                    {isContextSummaryOpen && (
-                      <motion.aside 
-                        initial={isMobile ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
-                        animate={isMobile ? { height: 'auto', opacity: 1 } : { width: 320, opacity: 1 }}
-                        exit={isMobile ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
-                        className="w-full md:w-80 bg-surface-low border-t md:border-t-0 md:border-l border-outline/10 shrink-0 overflow-hidden"
-                      >
-                        <div className="p-6 md:p-8 h-full overflow-y-auto custom-scrollbar">
-                          <h4 className="text-primary text-xs font-mono mb-6 uppercase tracking-widest">Context Summary</h4>
-                          <div className="space-y-6 mb-10">
-                            <div>
-                              <p className="text-xs text-on-surface-variant uppercase mb-1">문서 신뢰도</p>
-                              <div className="h-1 bg-surface-highest w-full">
-                                <div className="h-full bg-primary w-[94%]" />
-                              </div>
-                              <p className="text-right text-[10px] font-mono mt-1 text-primary">94.2% 신뢰도</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-on-surface-variant uppercase mb-1">처리 소요 시간</p>
-                              <p className="text-lg font-mono text-on-surface">1.24s</p>
-                            </div>
-                          </div>
-                          <div className="relative aspect-video w-full bg-surface-highest overflow-hidden mb-8">
-                            <img 
-                              src="https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&q=80&w=500" 
-                              alt="Visual"
-                              className="w-full h-full object-cover opacity-50"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="absolute inset-0 bg-gradient-to-t from-surface-low to-transparent" />
-                            <p className="absolute bottom-2 left-2 text-[10px] font-mono text-primary">데이터_비주얼_01</p>
-                          </div>
-                          <button className="w-full py-3 border border-primary text-primary font-mono text-xs hover:bg-primary/10 transition-all uppercase tracking-tighter">
-                            원시 JSON 데이터 보기
-                          </button>
-                        </div>
-                      </motion.aside>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </motion.div>
-            ) : view === 'detail_image' ? (
-              <motion.div 
-                key="image"
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.05 }}
-                className="h-full flex flex-col md:flex-row overflow-hidden"
-              >
-                <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 relative bg-black/40 overflow-hidden">
-                  <div className="absolute top-4 md:top-6 left-4 md:left-6 flex flex-col gap-4">
-                    <nav className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-on-surface-variant">
-                      <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">대시보드</button>
-                      <span>/</span>
-                      <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">자산</button>
-                      <span>/</span>
-                      <span className="text-primary-dim">{selectedAsset?.name || '이미지'}</span>
-                    </nav>
-                  </div>
-
-                  <div className="absolute top-4 md:top-6 right-4 md:right-6">
-                    <button 
-                      onClick={() => setIsContextSummaryOpen(!isContextSummaryOpen)}
-                      className={cn(
-                        "p-2 md:px-4 md:py-2 border border-outline transition-all text-[10px] md:text-xs flex items-center gap-2 bg-surface-low/80 backdrop-blur-md",
-                        isContextSummaryOpen ? "text-primary border-primary" : "text-on-surface-variant hover:text-white"
-                      )}
-                    >
-                      <Info size={14} /> <span className="hidden md:inline">{isContextSummaryOpen ? '메타데이터_숨기기' : '메타데이터_보기'}</span>
-                    </button>
-                  </div>
-
-                  <div className="relative max-w-full max-h-[70vh] md:max-h-[80%] border border-outline/20 shadow-2xl overflow-hidden bg-black group">
-                    <img 
-                      src={selectedAsset?.imageUrl} 
-                      alt="Analysis"
-                      className="opacity-90 group-hover:opacity-100 transition-opacity duration-500 object-contain max-h-[60vh] md:max-h-[70vh]"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 pointer-events-none border-t border-primary/20 bg-gradient-to-b from-primary/5 to-transparent h-1/4 animate-pulse" />
-                    <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-primary/60" />
-                    <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-primary/60" />
-                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-primary/60" />
-                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-primary/60" />
-                  </div>
-
-                  <div className="mt-6 md:absolute md:bottom-8 flex items-center gap-px bg-surface-highest/80 backdrop-blur-xl border border-outline/30 p-1">
-                    <button className="p-2 md:p-3 hover:bg-primary hover:text-on-primary transition-all"><ZoomIn size={18} /></button>
-                    <button className="p-2 md:p-3 hover:bg-primary hover:text-on-primary transition-all"><ZoomOut size={18} /></button>
-                    <div className="w-px h-6 bg-outline/30 mx-2" />
-                    <button className="p-2 md:p-3 hover:bg-primary hover:text-on-primary transition-all"><Maximize2 size={18} /></button>
-                    <button className="p-2 md:p-3 hover:bg-primary hover:text-on-primary transition-all"><Download size={18} /></button>
-                    <div className="w-px h-6 bg-outline/30 mx-2" />
-                    <div className="px-4 font-mono text-xs text-primary/80">150%</div>
-                  </div>
-                </div>
-
-                <AnimatePresence>
-                  {isContextSummaryOpen && (
-                    <motion.aside 
-                      initial={isMobile ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
-                      animate={isMobile ? { height: 'auto', opacity: 1 } : { width: 400, opacity: 1 }}
-                      exit={isMobile ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
-                      className="w-full md:w-[400px] bg-surface-low border-t md:border-t-0 md:border-l border-outline/10 shrink-0 overflow-hidden"
-                    >
-                      <div className="p-6 md:p-8 flex flex-col gap-6 md:gap-10 h-full overflow-y-auto custom-scrollbar">
-                        <div className="space-y-6">
-                          <h2 className="font-headline text-xs font-bold uppercase tracking-[0.2em] text-primary/90">Metadata // 파일 속성</h2>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1">
-                              <p className="text-[10px] uppercase text-on-surface-variant tracking-wider">해상도</p>
-                              <p className="font-mono text-sm">3840 x 2160</p>
-                            </div>
-                            <div className="space-y-1">
-                              <p className="text-[10px] uppercase text-on-surface-variant tracking-wider">포맷</p>
-                              <p className="font-mono text-sm">RAW / EXR</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-6">
-                          <div className="flex items-center justify-between">
-                            <h2 className="font-headline text-xs font-bold uppercase tracking-[0.2em] text-primary/90">AI Analysis // 분석 리포트</h2>
-                            <span className="flex h-2 w-2 rounded-full bg-primary animate-pulse" />
-                          </div>
-                          <div className="bg-surface p-6 space-y-4 border-l-2 border-primary relative overflow-hidden">
-                            <Sparkles size={32} className="absolute top-2 right-2 opacity-10" />
-                            <p className="font-mono text-xs text-on-surface-variant italic">[ARCHITECT_ENGINE_v4.2] :: 분석 완료</p>
-                            <p className="text-sm leading-relaxed">
-                              본 이미지는 복합적인 고밀도 데이터 네트워크 아키텍처를 시각화하고 있습니다. 중앙 집중식 노드 구조에서 파생되는 72개의 서브-프로세스 레이어가 감지되었습니다.
-                            </p>
-                            <ul className="space-y-2 pt-2">
-                              <li className="flex items-start gap-2 text-xs text-on-surface-variant">
-                                <CheckCircle2 size={14} className="text-primary shrink-0" /> 감지된 주요 패턴: 하이브리드 토폴로지 구조
-                              </li>
-                            </ul>
-                          </div>
-                        </div>
-
-                        <div className="space-y-4">
-                          <h2 className="font-headline text-xs font-bold uppercase tracking-[0.2em] text-primary/90">Tags // 키워드</h2>
-                          <div className="flex flex-wrap gap-2">
-                            {['NETWORK_ARCH', 'DATA_VISUAL', 'SYSTEM_FLOW', 'EMERALD_PROTO'].map(tag => (
-                              <span key={tag} className="px-3 py-1 bg-surface-highest text-[10px] font-mono text-on-surface-variant border border-outline/20">{tag}</span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </motion.aside>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            ) : view === 'detail_code' ? (
-              <motion.div 
-                key="code"
+              )
+            ) : view === 'repository' ? (
+              <motion.div
+                key="repository"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="h-full flex flex-col p-4 md:p-8 overflow-hidden"
+                className="h-full flex items-center justify-center text-on-surface-variant"
               >
-                <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-6 md:mb-8 gap-4">
-                  <div className="space-y-4">
-                    <nav className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-on-surface-variant">
-                      <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">대시보드</button>
-                      <span>/</span>
-                      <button onClick={() => setView('dashboard')} className="hover:text-primary transition-colors">자산</button>
-                      <span>/</span>
-                      <span className="text-primary-dim">{selectedAsset?.name || '소스'}</span>
-                    </nav>
-                    <h1 className="text-xl md:text-2xl font-headline font-bold tracking-tight uppercase">텍스트 & HTML 뷰어 상세</h1>
-                  </div>
-                  <div className="flex gap-2 md:gap-4">
-                    <button className="flex-1 md:flex-none border border-outline px-4 md:px-6 py-2 flex items-center justify-center gap-2 text-[10px] md:text-xs uppercase tracking-widest hover:bg-surface-highest transition-all">
-                      <FileText size={14} /> 복사
-                    </button>
-                    <button className="flex-1 md:flex-none border border-outline px-4 md:px-6 py-2 flex items-center justify-center gap-2 text-[10px] md:text-xs uppercase tracking-widest hover:bg-surface-highest transition-all">
-                      <Download size={14} /> 다운로드
-                    </button>
-                  </div>
+                <div className="text-center space-y-4">
+                  <FolderOpen size={48} className="mx-auto opacity-30" />
+                  <p className="text-sm">저장소 탐색기 (준비 중)</p>
                 </div>
-
-                <div className="flex-1 flex flex-col lg:grid lg:grid-cols-2 gap-px bg-outline/20 border border-outline/30 overflow-hidden">
-                  <div className="flex flex-col bg-surface-low h-1/2 lg:h-full">
-                    <div className="flex items-center justify-between px-4 py-2 bg-surface-highest border-b border-outline/30">
-                      <div className="flex items-center gap-2">
-                        <Code size={14} className="text-primary" />
-                        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant">SOURCE_VIEW.HTML</span>
-                      </div>
-                      <span className="font-mono text-[10px] text-on-surface-variant">LN 1, COL 1</span>
-                    </div>
-                    <div className="flex-1 p-4 md:p-6 font-mono text-xs md:text-sm leading-relaxed text-primary-dim overflow-auto bg-black/20 custom-scrollbar">
-                      <pre><code>{`<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <title>시스템 아키텍처 상세</title>
-</head>
-<body>
-    <section class="container">
-        <h1>디지털 아키텍트의 미래</h1>
-        <p>본 시스템은 최첨단 터미널 인터페이스를 통해 
-           데이터를 시각화하며, 사용자에게 직관적인 
-           피드백을 제공합니다.</p>
-        
-        <div id="status-indicator">
-            현재 상태: 최적화됨
-        </div>
-    </section>
-</body>
-</html>`}</code></pre>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col bg-surface h-1/2 lg:h-full">
-                    <div className="flex items-center justify-between px-4 py-2 bg-surface-highest border-b border-outline/30">
-                      <div className="flex items-center gap-2">
-                        <Monitor size={14} className="text-primary" />
-                        <span className="text-[10px] uppercase tracking-widest text-on-surface-variant">RENDERED_PREVIEW</span>
-                      </div>
-                      <div className="flex gap-3">
-                        <Smartphone size={14} className="text-on-surface-variant cursor-pointer" />
-                        <Monitor size={14} className="text-primary cursor-pointer" />
-                      </div>
-                    </div>
-                    <div className="flex-1 bg-white text-black p-6 md:p-12 overflow-auto custom-scrollbar">
-                      <div className="max-w-2xl mx-auto space-y-6 md:space-y-8 font-sans">
-                        <header className="border-l-4 border-black pl-4">
-                          <h2 className="text-xl md:text-2xl font-bold tracking-tighter">디지털 아키텍트의 미래</h2>
-                        </header>
-                        <p className="text-sm md:text-base leading-relaxed text-gray-700">
-                          본 시스템은 최첨단 터미널 인터페이스를 통해 데이터를 시각화하며, 사용자에게 직관적인 피드백을 제공합니다. 텍스트와 코드의 조화를 통해 새로운 디지털 경험을 설계하십시오.
-                        </p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          <div className="bg-gray-100 p-4 md:p-6">
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">현재 상태</p>
-                            <p className="text-base md:text-lg font-bold">최적화됨</p>
-                          </div>
-                          <div className="bg-gray-100 p-4 md:p-6">
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">성능 지표</p>
-                            <p className="text-base md:text-lg font-bold">99.9%</p>
-                          </div>
-                        </div>
-                        <div className="h-32 md:h-48 bg-gray-900 flex items-center justify-center overflow-hidden">
-                           <img 
-                            src="https://images.unsplash.com/photo-1558494949-ef010cbdcc51?auto=format&fit=crop&q=80&w=1000" 
-                            alt="Visual"
-                            className="w-full h-full object-cover opacity-50 grayscale"
-                            referrerPolicy="no-referrer"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <footer className="flex flex-col sm:flex-row sm:items-center justify-between py-4 border-t border-outline/20 mt-6 shrink-0 gap-4">
-                  <div className="flex gap-8">
-                    <div className="flex flex-col">
-                      <span className="text-[10px] text-on-surface-variant uppercase tracking-widest">인코딩</span>
-                      <span className="text-xs font-headline font-medium">UTF-8</span>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-[10px] text-on-surface-variant uppercase tracking-widest">라인 수</span>
-                      <span className="text-xs font-headline font-medium">1,402</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck size={14} className="text-primary" />
-                    <span className="text-[10px] text-primary uppercase tracking-widest">체크섬 확인됨</span>
-                  </div>
-                </footer>
               </motion.div>
             ) : view === 'admin' ? (
               <motion.div 

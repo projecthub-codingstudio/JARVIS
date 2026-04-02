@@ -100,4 +100,8 @@ export const apiClient = {
 
     return response.json();
   },
+
+  getFileUrl(fullPath: string): string {
+    return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath)}`;
+  },
 };
