@@ -32,7 +32,8 @@ const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         setSheets(parsed);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('[XlsxRenderer] Failed to load:', fileUrl, err);
         setError(true);
         setLoading(false);
       });
@@ -43,6 +44,10 @@ const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
   if (error || !fileUrl) {
     return (
       <div className="h-full overflow-auto p-6 custom-scrollbar">
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 text-xs font-mono">
+          {error ? '⚠ XLSX 파일 로드 실패 — 텍스트 미리보기로 표시합니다' : '⚠ 파일 경로가 없습니다'}
+          {fileUrl && <span className="block mt-1 text-[10px] opacity-60">{fileUrl}</span>}
+        </div>
         <pre className="text-on-surface-variant text-sm whitespace-pre-wrap">
           {artifact.preview || 'XLSX를 불러올 수 없습니다.'}
         </pre>
