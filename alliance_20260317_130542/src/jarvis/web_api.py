@@ -183,6 +183,39 @@ async def serve_file(path: str):
     if content_type is None:
         content_type = "application/octet-stream"
 
+    # For text files, detect encoding and serve as UTF-8
+    _TEXT_TYPES = {
+        "text/", "application/json", "application/xml",
+        "application/sql", "application/javascript",
+    }
+    _TEXT_EXTS = {
+        ".sql", ".txt", ".csv", ".tsv", ".log", ".md", ".rst",
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".htm", ".css",
+        ".yaml", ".yml", ".json", ".xml", ".toml", ".cfg", ".ini",
+        ".sh", ".bash", ".zsh", ".java", ".go", ".rs", ".swift",
+        ".kt", ".rb", ".c", ".cpp", ".h",
+    }
+    suffix = file_path.suffix.lower()
+    is_text = any(content_type.startswith(t) for t in _TEXT_TYPES) or suffix in _TEXT_EXTS
+
+    if is_text:
+        raw = file_path.read_bytes()
+        # Try multiple encodings (same as ReadFileTool)
+        decoded = None
+        for encoding in ("utf-8", "utf-8-sig", "cp949", "euc-kr", "utf-16", "latin-1"):
+            try:
+                decoded = raw.decode(encoding)
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        if decoded is not None:
+            from fastapi.responses import Response
+            return Response(
+                content=decoded,
+                media_type=f"{content_type}; charset=utf-8",
+                headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+            )
+
     return FileResponse(
         path=str(file_path),
         media_type=content_type,
