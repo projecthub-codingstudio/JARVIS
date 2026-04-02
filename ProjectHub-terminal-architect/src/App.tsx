@@ -124,7 +124,7 @@ export default function App() {
               displayName: currentUser.displayName || 'Anonymous',
               email: currentUser.email || '',
               photoURL: currentUser.photoURL || '',
-              role: currentUser.email === 'codingstudio.projecthub@gmail.com' ? 'admin' : 'user',
+              role: currentUser.email === import.meta.env.VITE_ADMIN_EMAIL ? 'admin' : 'user',
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
             };
