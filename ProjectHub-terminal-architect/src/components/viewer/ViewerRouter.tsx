@@ -57,10 +57,18 @@ function selectRendererByExtension(ext: string) {
   return null;
 }
 
+function findExtension(artifact: Artifact): string {
+  // full_path가 보통 실제 파일 경로 (확장자 포함) — 우선 확인
+  const fullPathExt = getExtension(artifact.full_path || '');
+  if (fullPathExt && fullPathExt.length <= 5) return fullPathExt;
+  const pathExt = getExtension(artifact.path || '');
+  if (pathExt && pathExt.length <= 5) return pathExt;
+  return '';
+}
+
 function selectRenderer(artifact: Artifact) {
   const viewerKind = (artifact.viewer_kind || '').toLowerCase();
-  const path = artifact.path || artifact.full_path || '';
-  const ext = getExtension(path);
+  const ext = findExtension(artifact);
 
   // 1차: viewer_kind가 명확한 경우 바로 매핑
   switch (viewerKind) {
