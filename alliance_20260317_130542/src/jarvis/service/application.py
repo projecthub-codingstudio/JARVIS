@@ -498,6 +498,18 @@ def _build_presentation_payload(data: dict[str, object]) -> tuple[dict[str, obje
             source_type=str(source_presentation.get("source_type", "")).strip(),
         )
 
+    # Move the source artifact (most relevant) to the front of the list
+    if source_artifact_id:
+        source_artifact = None
+        rest = []
+        for a in artifacts:
+            if a.get("id") == source_artifact_id:
+                source_artifact = a
+            else:
+                rest.append(a)
+        if source_artifact:
+            artifacts[:] = [source_artifact] + rest
+
     selected_artifact_id = source_artifact_id or (list_artifact_ids[0] if list_artifact_ids else "")
     selected_title = ""
     selected_type = ""
