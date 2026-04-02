@@ -41,31 +41,68 @@ function getExtension(path: string): string {
   return (path.split('.').pop() || '').toLowerCase();
 }
 
-function selectRenderer(viewerKind: string, path: string) {
+const EXT_TO_RENDERER: Record<string, typeof TextRenderer> = {};
+
+function selectRendererByExtension(ext: string) {
+  if (ext === 'pdf') return PdfRenderer;
+  if (ext === 'docx') return DocxRenderer;
+  if (ext === 'pptx') return PptxRenderer;
+  if (ext === 'xlsx' || ext === 'xls') return XlsxRenderer;
+  if (ext === 'hwp' || ext === 'hwpx') return HwpRenderer;
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'bmp'].includes(ext)) return ImageRenderer;
+  if (['mp4', 'mov', 'webm', 'm4v'].includes(ext)) return VideoRenderer;
+  if (['html', 'htm'].includes(ext)) return HtmlRenderer;
+  if (['py', 'js', 'ts', 'tsx', 'jsx', 'rs', 'go', 'java', 'swift', 'kt', 'rb',
+       'sh', 'bash', 'yml', 'yaml', 'json', 'css', 'sql', 'toml', 'xml'].includes(ext)) return CodeRenderer;
+  return null;
+}
+
+function selectRenderer(artifact: Artifact) {
+  const viewerKind = (artifact.viewer_kind || '').toLowerCase();
+  const path = artifact.path || artifact.full_path || '';
+  const ext = getExtension(path);
+
+  // 1차: viewer_kind가 명확한 경우 바로 매핑
   switch (viewerKind) {
-    case 'image':
-      return ImageRenderer;
-    case 'video':
-      return VideoRenderer;
-    case 'code':
-      return CodeRenderer;
-    case 'html':
-      return HtmlRenderer;
-    case 'web':
-      return WebRenderer;
+    case 'image': return ImageRenderer;
+    case 'video': return VideoRenderer;
+    case 'code': return CodeRenderer;
+    case 'html': return HtmlRenderer;
+    case 'web': return WebRenderer;
     case 'document': {
-      const ext = getExtension(path);
-      if (ext === 'pdf') return PdfRenderer;
-      if (ext === 'docx') return DocxRenderer;
-      if (ext === 'pptx') return PptxRenderer;
-      if (ext === 'xlsx' || ext === 'xls') return XlsxRenderer;
-      if (ext === 'hwp' || ext === 'hwpx') return HwpRenderer;
-      return TextRenderer;
+      const byExt = selectRendererByExtension(ext);
+      if (byExt) return byExt;
+      // document인데 확장자를 모르면 텍스트 + 다운로드
+      return HwpRenderer;
     }
-    case 'text':
-    default:
-      return TextRenderer;
   }
+
+  // 2차: viewer_kind가 없거나 'text'인 경우, 파일 확장자로 렌더러 추론
+  if (ext) {
+    const byExt = selectRendererByExtension(ext);
+    if (byExt) return byExt;
+  }
+
+  // 3차: source_type 필드로 추론
+  const sourceType = (artifact.source_type || '').toLowerCase();
+  if (sourceType === 'document') {
+    // document인데 확장자를 모르면 텍스트 + 다운로드
+    return HwpRenderer;
+  }
+  if (sourceType === 'code') return CodeRenderer;
+  if (sourceType === 'web') return WebRenderer;
+
+  // 4차: artifact.type 필드로 추론
+  const artType = (artifact.type || '').toLowerCase();
+  if (artType.includes('spreadsheet') || artType.includes('excel') || artType.includes('xlsx')) return XlsxRenderer;
+  if (artType.includes('presentation') || artType.includes('pptx')) return PptxRenderer;
+  if (artType.includes('pdf')) return PdfRenderer;
+  if (artType.includes('doc')) return DocxRenderer;
+  if (artType.includes('image')) return ImageRenderer;
+  if (artType.includes('video')) return VideoRenderer;
+  if (artType.includes('code')) return CodeRenderer;
+
+  return TextRenderer;
 }
 
 const LoadingSpinner = () => (
@@ -75,10 +112,18 @@ const LoadingSpinner = () => (
 );
 
 export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, content }) => {
-  const Renderer = selectRenderer(
-    artifact.viewer_kind || 'text',
-    artifact.path || artifact.full_path || '',
-  );
+  const Renderer = selectRenderer(artifact);
+
+  if (import.meta.env.DEV) {
+    console.log('[ViewerRouter]', {
+      viewer_kind: artifact.viewer_kind,
+      type: artifact.type,
+      source_type: artifact.source_type,
+      path: artifact.path,
+      full_path: artifact.full_path,
+      renderer: Renderer.displayName || Renderer.name || 'lazy',
+    });
+  }
 
   return (
     <ViewerErrorBoundary fallbackMessage="뷰어를 불러올 수 없습니다.">
