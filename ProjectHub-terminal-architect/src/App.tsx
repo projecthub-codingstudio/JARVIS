@@ -5,14 +5,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Terminal, 
-  Settings, 
-  LayoutDashboard, 
-  FolderOpen, 
-  FileText, 
-  Network, 
-  MicOff, 
+import {
+  Terminal,
+  Settings,
+  LayoutDashboard,
+  FolderOpen,
+  FileText,
+  Network,
+  MicOff,
   Mic,
   SlidersHorizontal,
   FileIcon,
@@ -43,21 +43,42 @@ import {
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { VoiceWaveform } from './components/VoiceWaveform';
-import { Message, Asset, ViewState, SystemLog } from './types';
+import { AssetCard } from './components/AssetCard';
+import { CitationList } from './components/CitationList';
+import { ClarificationPrompt } from './components/ClarificationPrompt';
+import { useAppStore } from './store/app-store';
+import { useJarvis } from './hooks/useJarvis';
+import { Message, Asset, ViewState, SystemLog, Artifact, Citation } from './types';
 import { INITIAL_MESSAGES, ASSETS } from './constants';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('dashboard');
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [adminLogs] = useState<SystemLog[]>([]);
   const [isMobileCmdOpen, setIsMobileCmdOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isContextSummaryOpen, setIsContextSummaryOpen] = useState(true);
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Use Zustand store
+  const { 
+    messages, 
+    assets, 
+    citations, 
+    guide, 
+    presentation, 
+    isLoading, 
+    error,
+    logs,
+    addMessage, 
+    setAssets,
+    addLog 
+  } = useAppStore();
+
+  // Use JARVIS hook
+  const { sendMessage, handleSuggestedReply } = useJarvis();
 
   useEffect(() => {
     const checkMobile = () => {
@@ -83,36 +104,28 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim()) return;
-
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      role: 'operator',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
-      content: inputValue
-    };
-
-    setMessages(prev => [...prev, newMessage]);
+    
+    await sendMessage(inputValue);
     setInputValue('');
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'architect',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
-        content: 'Analyzing request... Cross-referencing with system architecture. Processing complete.'
-      };
-      setMessages(prev => [...prev, aiResponse]);
-    }, 1000);
   };
 
-  const openAsset = (asset: Asset) => {
+  const openAsset = (artifact: Artifact) => {
+    // Convert Artifact to Asset for compatibility
+    const asset: Asset = {
+      id: artifact.id,
+      type: artifact.type.includes('code') ? 'html' : 
+            artifact.type.includes('image') ? 'image' : 
+            artifact.type.includes('pdf') ? 'pdf' : 'docx',
+      name: artifact.title,
+      description: artifact.preview,
+      status: artifact.source_type,
+    };
     setSelectedAsset(asset);
-    if (asset.type === 'image') setView('detail_image');
-    else if (asset.type === 'pdf' || asset.type === 'docx' || asset.type === 'hwp') setView('detail_report');
+    if (artifact.type.includes('image')) setView('detail_image');
+    else if (artifact.type.includes('pdf') || artifact.type.includes('doc')) setView('detail_report');
     else setView('detail_code');
   };
 
@@ -289,6 +302,35 @@ export default function App() {
                         </div>
                       </div>
                     ))}
+                    
+                    {isLoading && (
+                      <div className="flex gap-4 group animate-pulse">
+                        <div className="w-[2px] shrink-0 bg-primary/50" />
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-mono uppercase text-primary">
+                            아키텍트_처리중...
+                          </span>
+                          <p className="text-sm text-on-surface-variant italic">
+                            JARVIS 가 응답을 생성하고 있습니다...
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {error && (
+                      <div className="flex gap-4 group">
+                        <div className="w-[2px] shrink-0 bg-red-500" />
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-mono uppercase text-red-500">
+                            오류_감지
+                          </span>
+                          <p className="text-sm text-red-400">
+                            {error}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div ref={chatEndRef} />
                   </div>
 
@@ -348,83 +390,128 @@ export default function App() {
                 {/* Right Panel: Assets */}
                 <section className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 md:space-y-10 custom-scrollbar h-[50vh] md:h-full">
                   <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-outline/10 pb-4 gap-2">
-                    <h3 className="text-primary-dim font-headline text-xl md:text-2xl font-light tracking-tight terminal-glow">자산_합성_뷰</h3>
+                    <h3 className="text-primary-dim font-headline text-xl md:text-2xl font-light tracking-tight terminal-glow">
+                      {assets.length > 0 ? 'JARVIS 검색 결과' : '자산_합성_뷰'}
+                    </h3>
                     <div className="flex gap-4 text-[10px] md:text-[11px] font-mono text-on-surface-variant">
-                      <span>일치_정밀도: 98.4%</span>
-                      <span>리소스: 04</span>
+                      <span>후보: {assets.length || 4}개</span>
+                      <span>근거: {citations.length || 0}개</span>
                     </div>
                   </div>
 
+                  {/* Clarification Prompt */}
+                  {guide?.has_clarification && guide.clarification_prompt && (
+                    <ClarificationPrompt
+                      prompt={guide.clarification_prompt}
+                      suggestedReplies={guide.suggested_replies || []}
+                      onReplySelect={handleSuggestedReply}
+                    />
+                  )}
+
+                  {/* Assets Grid */}
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    {ASSETS.map((asset) => (
-                      <div 
-                        key={asset.id}
-                        onClick={() => openAsset(asset)}
-                        className={cn(
-                          "bg-surface-high group hover:bg-surface-highest transition-colors flex flex-col cursor-pointer border border-outline/10",
-                          asset.type === 'image' && "xl:row-span-2"
-                        )}
-                      >
-                        <div className="p-4 border-b border-outline/10 flex justify-between items-center">
-                          <div className="flex items-center gap-3">
-                            <FileIcon size={16} className={cn(
-                              asset.type === 'pdf' ? "text-red-500" : 
-                              asset.type === 'image' ? "text-blue-400" : 
-                              asset.type === 'docx' ? "text-primary" : "text-yellow-500"
-                            )} />
-                            <span className="text-xs font-mono text-on-surface uppercase tracking-widest">{asset.name}</span>
-                          </div>
-                          {asset.size && <span className="text-[10px] text-outline">{asset.size}</span>}
-                        </div>
-
-                        {asset.type === 'image' ? (
-                          <div className="flex-1 relative overflow-hidden bg-black min-h-[300px]">
-                            <img 
-                              src={asset.imageUrl} 
-                              alt={asset.name}
-                              className="w-full h-full object-cover opacity-60 grayscale group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700"
-                            />
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex flex-col justify-end p-6">
-                              <p className="text-[10px] font-mono text-primary mb-1">데이터_오버레이: 활성화</p>
-                              <p className="text-sm font-headline text-on-surface">{asset.description}</p>
+                    {assets.length > 0 ? (
+                      assets.map((artifact) => (
+                        <AssetCard
+                          key={artifact.id}
+                          artifact={artifact}
+                          onClick={() => openAsset(artifact)}
+                        />
+                      ))
+                    ) : (
+                      ASSETS.map((asset) => (
+                        <div
+                          key={asset.id}
+                          onClick={() => openAsset({
+                            id: asset.id,
+                            type: asset.type,
+                            title: asset.name,
+                            subtitle: asset.status || '',
+                            path: '',
+                            full_path: '',
+                            preview: asset.description || '',
+                            source_type: 'document',
+                            viewer_kind: asset.type,
+                          })}
+                          className={cn(
+                            "bg-surface-high group hover:bg-surface-highest transition-colors flex flex-col cursor-pointer border border-outline/10",
+                            asset.type === 'image' && "xl:row-span-2"
+                          )}
+                        >
+                          <div className="p-4 border-b border-outline/10 flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                              <FileIcon size={16} className={cn(
+                                asset.type === 'pdf' ? "text-red-500" :
+                                asset.type === 'image' ? "text-blue-400" :
+                                asset.type === 'docx' ? "text-primary" : "text-yellow-500"
+                              )} />
+                              <span className="text-xs font-mono text-on-surface uppercase tracking-widest">{asset.name}</span>
                             </div>
+                            {asset.size && <span className="text-[10px] text-outline">{asset.size}</span>}
                           </div>
-                        ) : (
-                          <div className="p-6 flex-1 flex flex-col justify-center gap-4">
-                            {asset.status && (
-                              <div className="flex items-center gap-4">
-                                <div className={cn(
-                                  "px-2 py-1 text-[8px] font-black",
-                                  asset.status === 'LEGACY_FORMAT' ? "bg-red-500/20 text-red-500" : "bg-primary/20 text-primary"
-                                )}>
-                                  {asset.status.toUpperCase()}
-                                </div>
-                              </div>
-                            )}
-                            {asset.type === 'docx' ? (
-                              <div className="space-y-3">
-                                <div className="h-2 w-full bg-outline/20" />
-                                <div className="h-2 w-3/4 bg-outline/20" />
-                                <div className="h-2 w-full bg-outline/20" />
-                                <div className="h-2 w-1/2 bg-primary/20" />
-                              </div>
-                            ) : (
-                              <p className="text-xs text-on-surface-variant font-headline leading-relaxed">
-                                {asset.description || "System analysis pending. Encryption protocols active for this segment."}
-                              </p>
-                            )}
-                          </div>
-                        )}
 
-                        <div className="p-4 flex justify-between items-center bg-surface-low/30">
-                          <button className="text-[10px] uppercase font-bold text-primary tracking-tighter hover:underline">
-                            {asset.type === 'hwp' ? '지금_변환' : asset.type === 'pdf' ? '데이터_추출' : '요약하기'}
-                          </button>
-                          <ExternalLink size={14} className="text-outline" />
+                          {asset.type === 'image' ? (
+                            <div className="flex-1 relative overflow-hidden bg-black min-h-[300px]">
+                              <img
+                                src={asset.imageUrl}
+                                alt={asset.name}
+                                className="w-full h-full object-cover opacity-60 grayscale group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700"
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex flex-col justify-end p-6">
+                                <p className="text-[10px] font-mono text-primary mb-1">데이터_오버레이: 활성화</p>
+                                <p className="text-sm font-headline text-on-surface">{asset.description}</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="p-6 flex-1 flex flex-col justify-center gap-4">
+                              {asset.status && (
+                                <div className="flex items-center gap-4">
+                                  <div className={cn(
+                                    "px-2 py-1 text-[8px] font-black",
+                                    asset.status === 'LEGACY_FORMAT' ? "bg-red-500/20 text-red-500" : "bg-primary/20 text-primary"
+                                  )}>
+                                    {asset.status.toUpperCase()}
+                                  </div>
+                                </div>
+                              )}
+                              {asset.type === 'docx' ? (
+                                <div className="space-y-3">
+                                  <div className="h-2 w-full bg-outline/20" />
+                                  <div className="h-2 w-3/4 bg-outline/20" />
+                                  <div className="h-2 w-full bg-outline/20" />
+                                  <div className="h-2 w-1/2 bg-primary/20" />
+                                </div>
+                              ) : (
+                                <p className="text-xs text-on-surface-variant font-headline leading-relaxed">
+                                  {asset.description || "System analysis pending. Encryption protocols active for this segment."}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="p-4 flex justify-between items-center bg-surface-low/30">
+                            <button className="text-[10px] uppercase font-bold text-primary tracking-tighter hover:underline">
+                              {asset.type === 'hwp' ? '지금_변환' : asset.type === 'pdf' ? '데이터_추출' : '요약하기'}
+                            </button>
+                            <ExternalLink size={14} className="text-outline" />
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
+
+                  {/* Citations */}
+                  {citations.length > 0 && (
+                    <div className="bg-surface-low/50 p-6 border border-outline/10">
+                      <CitationList
+                        citations={citations}
+                        onCitationClick={(citation: Citation) => {
+                          console.log('Citation clicked:', citation);
+                        }}
+                      />
+                    </div>
+                  )}
 
                   <div className="bg-surface-low p-6 flex flex-wrap items-center gap-8 border border-outline/10">
                     <div className="flex items-center gap-3">
@@ -842,22 +929,28 @@ export default function App() {
                         <button className="text-[10px] text-outline hover:text-primary uppercase tracking-widest">전체 보기</button>
                       </div>
                       <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4">
-                        {adminLogs.map((log) => (
-                          <div key={log.id} className="flex gap-4 p-3 bg-surface-high/50 border-l-2 border-outline/30 hover:border-primary transition-all">
-                            <div className="shrink-0 pt-1">
-                              {log.type === 'error' ? <AlertCircle size={14} className="text-red-500" /> : 
-                               log.type === 'warning' ? <AlertTriangle size={14} className="text-yellow-500" /> : 
-                               <Info size={14} className="text-blue-400" />}
-                            </div>
-                            <div className="flex-1 space-y-1">
-                              <div className="flex justify-between items-center">
-                                <span className="text-[10px] font-mono text-outline">{new Date(log.timestamp).toLocaleString()}</span>
-                                <span className="text-[8px] font-mono px-1 bg-surface-highest text-on-surface-variant uppercase">{log.type}</span>
+                        {logs.length > 0 ? (
+                          logs.map((log) => (
+                            <div key={log.id} className="flex gap-4 p-3 bg-surface-high/50 border-l-2 border-outline/30 hover:border-primary transition-all">
+                              <div className="shrink-0 pt-1">
+                                {log.type === 'error' ? <AlertCircle size={14} className="text-red-500" /> :
+                                 log.type === 'warning' ? <AlertTriangle size={14} className="text-yellow-500" /> :
+                                 <Info size={14} className="text-blue-400" />}
                               </div>
-                              <p className="text-xs leading-relaxed">{log.message}</p>
+                              <div className="flex-1 space-y-1">
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[10px] font-mono text-outline">{new Date(log.timestamp).toLocaleString()}</span>
+                                  <span className="text-[8px] font-mono px-1 bg-surface-highest text-on-surface-variant uppercase">{log.type}</span>
+                                </div>
+                                <p className="text-xs leading-relaxed">{log.message}</p>
+                              </div>
                             </div>
+                          ))
+                        ) : (
+                          <div className="text-center py-10 text-on-surface-variant text-xs">
+                            표시할 로그가 없습니다.
                           </div>
-                        ))}
+                        )}
                       </div>
                     </div>
                   </div>
