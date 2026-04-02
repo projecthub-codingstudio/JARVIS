@@ -21,8 +21,9 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
 }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
 
-  const fileUrl = artifact.full_path
-    ? apiClient.getFileUrl(artifact.full_path)
+  const filePath = artifact.full_path || artifact.path || '';
+  const fileUrl = filePath
+    ? apiClient.getFileUrl(filePath)
     : undefined;
 
   return (
