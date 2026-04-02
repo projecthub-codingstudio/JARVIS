@@ -144,48 +144,38 @@ async def serve_file(path: str):
     Validates that the requested path is within the knowledge_base
     directory before serving.
     """
-    file_path = Path(path).expanduser().resolve()
-
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    # Security: validate against allowed roots
-    # Try multiple strategies to find the knowledge_base path.
     import os
-    allowed_roots: list[Path] = []
+    from jarvis.app.runtime_context import resolve_knowledge_base_path
 
-    # Strategy 1: JARVIS_KNOWLEDGE_BASE env var
+    raw_path = Path(path).expanduser()
+
+    # Resolve knowledge_base root
+    kb_root: Path | None = None
     env_kb = os.getenv("JARVIS_KNOWLEDGE_BASE", "").strip()
     if env_kb:
-        allowed_roots.append(Path(env_kb).expanduser().resolve())
+        kb_root = Path(env_kb).expanduser().resolve()
+    if kb_root is None:
+        try:
+            kb_root = resolve_knowledge_base_path()
+        except Exception:
+            pass
 
-    # Strategy 2: resolve via runtime_context
-    from jarvis.app.runtime_context import resolve_knowledge_base_path
-    try:
-        allowed_roots.append(resolve_knowledge_base_path())
-    except Exception:
-        pass
+    # If path is relative (e.g. "file.xlsx"), resolve against knowledge_base
+    if not raw_path.is_absolute() and kb_root:
+        file_path = (kb_root / raw_path).resolve()
+    else:
+        file_path = raw_path.resolve()
 
-    # Strategy 3: infer from the file path itself — look for 'knowledge_base' in ancestors
-    for parent in file_path.parents:
-        if parent.name == "knowledge_base":
-            allowed_roots.append(parent.resolve())
-            break
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path.name}")
 
-    if not allowed_roots:
+    # Security: validate that file is within knowledge_base
+    if kb_root is None:
         raise HTTPException(status_code=403, detail="No allowed directories configured")
 
-    # Check that resolved path is within an allowed root
-    is_allowed = False
-    for root in allowed_roots:
-        try:
-            file_path.relative_to(root.resolve())
-            is_allowed = True
-            break
-        except ValueError:
-            continue
-
-    if not is_allowed:
+    try:
+        file_path.relative_to(kb_root.resolve())
+    except ValueError:
         raise HTTPException(status_code=403, detail="Path outside allowed scope")
 
     # Determine content type
