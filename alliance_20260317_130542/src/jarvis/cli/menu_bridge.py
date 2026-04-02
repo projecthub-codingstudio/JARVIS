@@ -1708,11 +1708,16 @@ def _run_server(model_id: str) -> int:
                     # Start wake word detection — Swift sends audio chunks via wake-audio
                     try:
                         from openwakeword.model import Model as OWWModel
+                        from jarvis.runtime.wake_word import (
+                            resolve_wakeword_models,
+                            resolve_wakeword_threshold,
+                        )
                         if not hasattr(context, "_oww_model"):
                             context._oww_model = OWWModel(
-                                wakeword_models=["hey_jarvis_v0.1"],
+                                wakeword_models=resolve_wakeword_models(),
                                 inference_framework="onnx",
                             )
+                        context._oww_threshold = resolve_wakeword_threshold()
                         envelope = MenuBarCommandEnvelope(kind="wake_ready")
                     except Exception as exc:
                         envelope = MenuBarCommandEnvelope(
@@ -1727,13 +1732,14 @@ def _run_server(model_id: str) -> int:
                     pcm_bytes = base64.b64decode(pcm_b64)
                     pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
                     oww = getattr(context, "_oww_model", None)
+                    threshold = float(getattr(context, "_oww_threshold", 0.2))
                     detected = False
                     score = 0.0
                     if oww is not None and len(pcm_array) > 0:
                         oww.predict(pcm_array)
                         for model_name in oww.prediction_buffer:
                             scores = oww.prediction_buffer[model_name]
-                            if scores and scores[-1] >= 0.2:
+                            if scores and scores[-1] >= threshold:
                                 detected = True
                                 score = scores[-1]
                                 oww.reset()
@@ -1744,7 +1750,7 @@ def _run_server(model_id: str) -> int:
                         print(json.dumps({"kind": "wake_detected", "score": round(score, 3)}, ensure_ascii=False), flush=True)
                         continue
                     else:
-                        continue  # No output for non-detection (keep it fast)
+                        envelope = MenuBarCommandEnvelope(kind="wake_idle")
                 elif command == "wake-listen-stop":
                     if hasattr(context, "_oww_model"):
                         context._oww_model.reset()

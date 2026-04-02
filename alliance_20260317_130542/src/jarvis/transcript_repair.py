@@ -25,6 +25,14 @@ _LEADING_GREETING_RE = re.compile(
     r"^\s*(?:안녕하세요|안녕(?:하세요)?|반갑습니다|반가워요|반가워|저기요|자비스야)\s*[,.! ]*",
     re.IGNORECASE,
 )
+_WAKE_PHRASE_ONLY_RE = re.compile(
+    r"^\s*(?:(?:hey|헤이|해이|헤|해|에이|하이|이)\s*)?자비스(?:야)?\s*$",
+    re.IGNORECASE,
+)
+_LEADING_EXPLICIT_WAKE_RE = re.compile(
+    r"^\s*(?:(?:hey|헤이|해이|헤|해|에이|하이|이)\s*자비스|자비스야)\s*[,.! ]*",
+    re.IGNORECASE,
+)
 _DIET_QUERY_HINT_RE = re.compile(
     r"(다이어트|식단표|식단|메뉴\s*표|메뉴표|아침|점심|저녁|조식|중식|석식)",
     re.IGNORECASE,
@@ -259,8 +267,37 @@ def _repair_domain_slots(text: str) -> str:
     return normalized
 
 
+def _canonicalize_wake_phrase(text: str) -> str:
+    normalized = _normalize_whitespace(text)
+    if not normalized:
+        return ""
+    if _WAKE_PHRASE_ONLY_RE.fullmatch(normalized):
+        return "헤이 자비스"
+
+    match = _LEADING_EXPLICIT_WAKE_RE.match(normalized)
+    if match is None:
+        return normalized
+
+    remainder = normalized[match.end():].strip()
+    if not remainder:
+        return "헤이 자비스"
+    return f"헤이 자비스 {remainder}"
+
+
+def _strip_leading_wake_phrase_for_query(text: str) -> str:
+    normalized = _normalize_whitespace(text)
+    if not normalized:
+        return ""
+    match = _LEADING_EXPLICIT_WAKE_RE.match(normalized)
+    if match is None:
+        return normalized
+    stripped = normalized[match.end():].strip()
+    return stripped or normalized
+
+
 def repair_stt_transcript(text: str) -> str:
     cleaned = _select_spoken_clauses(text)
+    cleaned = _canonicalize_wake_phrase(cleaned)
     cleaned = _repair_korean_day_expressions(cleaned)
     cleaned = _repair_domain_slots(cleaned)
     return _normalize_whitespace(cleaned)
@@ -271,6 +308,7 @@ def correct_transcript_for_display(text: str) -> str:
     if not cleaned:
         return ""
     cleaned = _LEADING_GREETING_RE.sub("", cleaned, count=1) or cleaned
+    cleaned = _strip_leading_wake_phrase_for_query(cleaned)
 
     lowered = cleaned.lower()
     looks_like_code_query = any(

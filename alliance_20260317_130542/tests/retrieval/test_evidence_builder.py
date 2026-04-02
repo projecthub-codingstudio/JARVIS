@@ -144,6 +144,56 @@ class TestEvidenceBuilderWithDb:
 
         assert evidence.items[0].source_path.endswith("pipeline.py")
 
+    def test_relabels_citations_after_boosted_reordering(self, tmp_path: Path) -> None:
+        config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
+        db = init_database(config)
+        pipeline = IndexPipeline(
+            db=db, parser=DocumentParser(),
+            chunker=Chunker(max_chunk_bytes=512, overlap_bytes=64),
+            tombstone_manager=TombstoneManager(db=db),
+            embedding_runtime=FakeEmbeddingRuntime(),
+        )
+        code_path = tmp_path / "pipeline.py"
+        code_path.write_text(
+            "class Pipeline:\n    def run(self) -> None:\n        pass\n",
+            encoding="utf-8",
+        )
+        doc_path = tmp_path / "guide.md"
+        doc_path.write_text(
+            "Pipeline 클래스는 전체 흐름을 설명하는 개념 문서입니다.\n",
+            encoding="utf-8",
+        )
+        code_record = pipeline.index_file(code_path)
+        doc_record = pipeline.index_file(doc_path)
+        code_chunk_id = db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (code_record.document_id,),
+        ).fetchone()[0]
+        doc_chunk_id = db.execute(
+            "SELECT chunk_id FROM chunks WHERE document_id = ?",
+            (doc_record.document_id,),
+        ).fetchone()[0]
+
+        builder = EvidenceBuilder(db=db)
+        results = [
+            HybridSearchResult(chunk_id=doc_chunk_id, document_id=doc_record.document_id, rrf_score=0.62),
+            HybridSearchResult(chunk_id=code_chunk_id, document_id=code_record.document_id, rrf_score=0.55),
+        ]
+        fragments = [
+            TypedQueryFragment(
+                text="파이선 소스 pipeline.py Pipeline class source",
+                language="mixed",
+                query_type="keyword",
+            )
+        ]
+
+        evidence = builder.build(results, fragments)
+
+        assert evidence.items[0].chunk_id == code_chunk_id
+        assert evidence.items[0].citation.label == "[1]"
+        assert evidence.items[1].chunk_id == doc_chunk_id
+        assert evidence.items[1].citation.label == "[2]"
+
     def test_prefers_explanatory_document_chunk_over_cross_reference(self, tmp_path: Path) -> None:
         config = JarvisConfig(watched_folders=[tmp_path], data_dir=tmp_path / ".jarvis")
         db = init_database(config)

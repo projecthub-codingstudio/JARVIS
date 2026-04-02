@@ -50,6 +50,7 @@ protocol JarvisBackendClient: Sendable {
     func exportDraft(content: String, destination: String, approved: Bool) async throws -> ExportResponse
     func health() async throws -> HealthResponse
     func runtimeState() async -> JarvisRuntimeState
+    func startWakeWordSession() async throws -> WakeWordSession
     func warmup() async
     func shutdown() async
     func updateKnowledgeBasePath(_ path: String?) async
@@ -372,6 +373,14 @@ actor JarvisServiceClient: JarvisBackendClient {
                 errorMessage: error.localizedDescription
             )
         }
+    }
+
+    func startWakeWordSession() async throws -> WakeWordSession {
+        let bridge = JarvisBridge(
+            configuration: configuration,
+            knowledgeBaseOverridePath: knowledgeBaseOverridePath
+        )
+        return try await bridge.startWakeWordSession()
     }
 
     func warmup() async {

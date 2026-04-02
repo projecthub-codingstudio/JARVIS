@@ -78,11 +78,11 @@ from jarvis.contracts import (
 from jarvis.retrieval.context_assembler import ContextAssembler
 
 
-def _item(text: str, heading: str = "", chunk_id: str = "c1") -> EvidenceItem:
+def _item(text: str, heading: str = "", chunk_id: str = "c1", source_path: str = "") -> EvidenceItem:
     return EvidenceItem(
         chunk_id=chunk_id, document_id="d1", text=text,
         citation=CitationRecord(label="[1]", state=CitationState.VALID),
-        relevance_score=0.5, heading_path=heading,
+        relevance_score=0.5, heading_path=heading, source_path=source_path,
     )
 
 
@@ -153,3 +153,18 @@ class TestContextAssembler:
         assert not ctx.has_deterministic_facts
         assert len(ctx.text_passages) == 1
         assert "def foo" in ctx.text_passages[0]
+
+    def test_non_spreadsheet_table_rows_fall_back_to_text_passages(self):
+        ev = _evidence(
+            _item(
+                "[SQL Tables: tbl_day_chart] Day=9 | Lunch=ignored",
+                heading="table-row-sql-0",
+                source_path="/tmp/tbl_day_chart.sql",
+            )
+        )
+
+        ctx = ContextAssembler().assemble(ev, query="그 테이블 구조 설명해줘")
+
+        assert not ctx.has_deterministic_facts
+        assert len(ctx.text_passages) == 1
+        assert "tbl_day_chart" in ctx.text_passages[0]

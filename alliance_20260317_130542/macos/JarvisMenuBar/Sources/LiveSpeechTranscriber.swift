@@ -2,7 +2,16 @@ import AVFoundation
 import Foundation
 import Speech
 
-final class LiveSpeechTranscriber {
+final class LiveSpeechTranscriber: @unchecked Sendable {
+    private static let contextualWakePhrases = [
+        "헤이 자비스",
+        "헤이자비스",
+        "이 자비스",
+        "예 자비스",
+        "왜 자비스",
+        "Hey Jarvis",
+    ]
+
     private let recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -44,6 +53,7 @@ final class LiveSpeechTranscriber {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = false
+        request.contextualStrings = Self.contextualWakePhrases
         self.request = request
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, _ in

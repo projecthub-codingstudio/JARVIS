@@ -19,6 +19,7 @@ from jarvis.contracts import (
 )
 from jarvis.core.governor import GovernorStub
 from jarvis.core.orchestrator import Orchestrator
+from jarvis.core.planner import Planner
 from jarvis.core.tool_registry import ToolRegistry
 from jarvis.memory.conversation_store import ConversationStore
 from jarvis.memory.task_log import TaskLogStore
@@ -81,6 +82,19 @@ class CapturingEvidenceBuilder:
             source_path="/tmp/doc.md",
         )
         return VerifiedEvidenceSet(items=(item,), query_fragments=tuple(fragments))
+
+
+class CustomEvidenceBuilder:
+    def __init__(self, items: tuple[EvidenceItem, ...]) -> None:
+        self._items = items
+
+    def build(self, results: Sequence[object], fragments: Sequence[object]) -> VerifiedEvidenceSet:
+        return VerifiedEvidenceSet(items=self._items, query_fragments=tuple(fragments))
+
+
+class FailingLLM:
+    def generate(self, *args, **kwargs) -> AnswerDraft:
+        raise AssertionError("generation should not run")
 
 
 @pytest.fixture
@@ -304,3 +318,167 @@ class TestOrchestratorTargetedSearch:
         document_ids = [getattr(item, "document_id", "") for item in evidence_builder.last_results]
         assert document_ids
         assert set(document_ids) == {"doc-code"}
+
+
+class TestOrchestratorAnswerabilityGate:
+    def test_abstains_when_evidence_is_weak_and_query_mismatch(self) -> None:
+        weak_item = EvidenceItem(
+            chunk_id="chunk-weak",
+            document_id="doc-weak",
+            text="로컬 워크스페이스 설정 안내",
+            citation=CitationRecord(
+                document_id="doc-weak",
+                chunk_id="chunk-weak",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.01,
+            source_path="/tmp/setup-guide.md",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((weak_item,)),
+            llm_generator=FailingLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        turn = orch.handle_turn("마이그레이션 일정이 언제인지 알려줘")
+
+        assert turn.has_evidence is False
+        assert "전제" in turn.assistant_output or "구체적" in turn.assistant_output
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "abstain"
+
+    def test_clarifies_when_query_is_underspecified_and_sources_compete(self) -> None:
+        item_a = EvidenceItem(
+            chunk_id="chunk-a",
+            document_id="doc-a",
+            text="배포 일정 초안과 검토 일정입니다.",
+            citation=CitationRecord(
+                document_id="doc-a",
+                chunk_id="chunk-a",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.18,
+            source_path="/tmp/alpha-plan.md",
+        )
+        item_b = EvidenceItem(
+            chunk_id="chunk-b",
+            document_id="doc-b",
+            text="배포 일정 확정본과 작업 메모입니다.",
+            citation=CitationRecord(
+                document_id="doc-b",
+                chunk_id="chunk-b",
+                label="[2]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.15,
+            source_path="/tmp/beta-plan.md",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((item_a, item_b)),
+            llm_generator=FailingLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+        )
+
+        turn = orch.handle_turn("그 문서 일정 알려줘")
+
+        assert turn.has_evidence is False
+        assert "어느 쪽" in turn.assistant_output or "불분명" in turn.assistant_output
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "clarify"
+
+    def test_allows_supported_table_lookup_even_with_low_rrf_score(self) -> None:
+        table_item = EvidenceItem(
+            chunk_id="chunk-table",
+            document_id="doc-table",
+            text=(
+                "[Diet+Supplements_14days] Day=3 | Breakfast=구운계란2+요거트+베리 | "
+                "Lunch=닭가슴살+현미밥1/3+김2장 | Dinner=순두부+방울토마토"
+            ),
+            citation=CitationRecord(
+                document_id="doc-table",
+                chunk_id="chunk-table",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.016,
+            source_path="/tmp/14day_diet_supplements_final.xlsx",
+            heading_path="table-row-Diet+Supplements_14days-2",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((table_item,)),
+            llm_generator=MLXRuntime(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+            planner=Planner(),
+        )
+
+        turn = orch.handle_turn("다이어트 식단표에서 3일차 점심을 알려줘")
+
+        assert turn.has_evidence is True
+        assert "핵심 표현과 맞지 않아" not in turn.assistant_output
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id not in {"abstain", "clarify"}
+
+    def test_abstains_table_lookup_when_row_does_not_match(self) -> None:
+        table_item = EvidenceItem(
+            chunk_id="chunk-table",
+            document_id="doc-table",
+            text=(
+                "[Diet+Supplements_14days] Day=3 | Breakfast=구운계란2+요거트+베리 | "
+                "Lunch=닭가슴살+현미밥1/3+김2장 | Dinner=순두부+방울토마토"
+            ),
+            citation=CitationRecord(
+                document_id="doc-table",
+                chunk_id="chunk-table",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.016,
+            source_path="/tmp/14day_diet_supplements_final.xlsx",
+            heading_path="table-row-Diet+Supplements_14days-2",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((table_item,)),
+            llm_generator=FailingLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+            planner=Planner(),
+        )
+
+        turn = orch.handle_turn("다이어트 식단표에서 9일차 점심을 알려줘")
+
+        assert turn.has_evidence is False
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "abstain"

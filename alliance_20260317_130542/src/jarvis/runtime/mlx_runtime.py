@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +39,7 @@ _TABLE_REQUEST_TOKEN_RE = re.compile(
     r"|(?P<meal>아침|조식|breakfast|점심|중식|lunch|저녁|석식|dinner|음료|drink|drinks)",
     re.IGNORECASE,
 )
+_STRUCTURED_TABLE_SUFFIXES = {".xlsx", ".csv", ".tsv"}
 _TABLE_VALUE_TOKEN_RE = re.compile(r"^(.+?)(\d+)(장|개|알|잔|봉|봉지|팩|캡슐|정|스푼|큰술|작은술|g|kg|ml|l)?$")
 _FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 _QUERY_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}|[가-힣]{2,}")
@@ -170,7 +172,10 @@ def _build_table_stub_response(
     *,
     spoken: bool = False,
 ) -> str:
-    table_items = [item for item in evidence.items if item.heading_path and "table-row" in item.heading_path]
+    table_items = [
+        item for item in evidence.items
+        if item.heading_path and "table-row" in item.heading_path and _is_structured_table_item(item)
+    ]
     if not table_items:
         return ""
 
@@ -267,6 +272,12 @@ def _table_field_for_alias(alias: str) -> str | None:
         if lowered in aliases:
             return field
     return None
+
+
+def _is_structured_table_item(item) -> bool:
+    if not item.source_path:
+        return True
+    return Path(item.source_path).suffix.lower() in _STRUCTURED_TABLE_SUFFIXES
 
 
 def _parse_table_row(text: str) -> dict[str, str]:
@@ -535,7 +546,10 @@ def _split_document_segments(text: str) -> list[str]:
     for segment in raw_segments:
         collapsed = re.sub(r"\s+", " ", segment).strip(" -:")
         if len(collapsed) < 12:
-            continue
+            if len(collapsed) < 8:
+                continue
+            if not (_EXPLANATORY_PHRASE_RE.search(collapsed) or collapsed.endswith((".", "!", "?"))):
+                continue
         cleaned_segments.append(_truncate_stub_segment(collapsed))
     return cleaned_segments[:20]
 
@@ -577,7 +591,14 @@ def _expand_stub_excerpt(segment: str, segments: list[str], segment_index: int) 
 
 def _is_useful_followup_segment(segment: str) -> bool:
     compact = segment.strip()
-    if len(compact) < 12 or _is_heading_like_segment(compact):
+    if len(compact) < 12:
+        if len(compact) < 8:
+            return False
+        if not (_EXPLANATORY_PHRASE_RE.search(compact) or compact.endswith((".", "!", "?"))):
+            return False
+    if _is_heading_like_segment(compact) and not (
+        _EXPLANATORY_PHRASE_RE.search(compact) or compact.endswith((".", "!", "?"))
+    ):
         return False
     if _NOISE_TOKEN_RE.match(compact.lower()):
         return False
@@ -640,8 +661,11 @@ def _score_heading_match(heading_path: str, query_terms: list[str], segment: str
 def _score_source_path_match(source_path: str, query_terms: list[str]) -> float:
     if not source_path:
         return 0.0
-    lowered = Path(source_path).name.lower()
-    overlap_terms = [term for term in query_terms if term in lowered]
+    lowered = unicodedata.normalize("NFC", Path(source_path).name).lower()
+    overlap_terms = [
+        term for term in query_terms
+        if unicodedata.normalize("NFC", term).lower() in lowered
+    ]
     if not overlap_terms:
         return 0.0
     return float(len(overlap_terms) * 10)

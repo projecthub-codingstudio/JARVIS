@@ -11,10 +11,12 @@ The table name comes from:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from jarvis.contracts import EvidenceItem, ExtractedFact
 
 _TABLE_ROW_RE = re.compile(r"^\[([^\]]+)\]\s*(.+)$")
+_STRUCTURED_TABLE_SUFFIXES = {".xlsx", ".csv", ".tsv"}
 
 
 class TableExtractor:
@@ -22,6 +24,8 @@ class TableExtractor:
 
     def extract(self, item: EvidenceItem) -> list[ExtractedFact]:
         if not (item.heading_path and "table-row" in item.heading_path):
+            return []
+        if item.source_path and Path(item.source_path).suffix.lower() not in _STRUCTURED_TABLE_SUFFIXES:
             return []
 
         m = _TABLE_ROW_RE.match(item.text)

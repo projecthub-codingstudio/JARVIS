@@ -107,6 +107,15 @@ def _extract_target_name(text: str) -> str:
     return cleaned.strip()
 
 
+def _matches_known_target(*, key: str, normalized_target: str) -> bool:
+    if key == normalized_target:
+        return True
+    # Single-character aliases like "x" are too ambiguous for substring match.
+    if len(key) <= 1:
+        return False
+    return key in normalized_target
+
+
 def parse_action_target(query: str) -> ActionTarget | None:
     """Parse query for action intent. Returns None if no action verb detected."""
     has_ko_verb = _ACTION_VERB_KO_RE.search(query)
@@ -122,7 +131,7 @@ def parse_action_target(query: str) -> ActionTarget | None:
     normalized = target_name.lower().replace(" ", "")
     for key in sorted(_KNOWN_TARGETS, key=len, reverse=True):
         action_type, target, label = _KNOWN_TARGETS[key]
-        if key == normalized or key in normalized:
+        if _matches_known_target(key=key, normalized_target=normalized):
             return ActionTarget(
                 action_type=action_type,
                 target=target,

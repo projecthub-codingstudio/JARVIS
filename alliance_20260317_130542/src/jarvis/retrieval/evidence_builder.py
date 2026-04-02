@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -208,6 +209,7 @@ class EvidenceBuilder:
 
         # Re-sort by boosted score (boosts may reorder results)
         items.sort(key=lambda x: x.relevance_score, reverse=True)
+        items = _relabel_citations(items)
 
         evidence = VerifiedEvidenceSet(
             items=tuple(items), query_fragments=tuple(fragments)
@@ -242,6 +244,14 @@ class EvidenceBuilder:
 
 def _looks_like_code_query(query_text: str) -> bool:
     return bool(_CODE_QUERY_RE.search(query_text))
+
+
+def _relabel_citations(items: Sequence[EvidenceItem]) -> list[EvidenceItem]:
+    relabeled: list[EvidenceItem] = []
+    for index, item in enumerate(items, 1):
+        citation = replace(item.citation, label=f"[{index}]")
+        relabeled.append(replace(item, citation=citation))
+    return relabeled
 
 
 def _document_query_phrases(query_text: str) -> tuple[str, ...]:

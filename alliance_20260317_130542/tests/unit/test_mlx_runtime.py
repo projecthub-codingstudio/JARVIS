@@ -130,6 +130,43 @@ def test_stub_document_response_skips_heading_only_excerpt() -> None:
     assert "하나의 그림 코드에 하나 이상의 개체가 존재할 수 있다" in response
 
 
+def test_stub_document_response_ignores_non_spreadsheet_table_rows() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-doc-1",
+                document_id="doc-hwp",
+                text=(
+                    "그리기 개체 자료 구조 기본 구조 그리기 개체는 여러 개의 개체를 하나의 틀로 묶을 수 있기 때문에, "
+                    "하나의 그림 코드에 하나 이상의 개체가 존재할 수 있다. 파일상에는 다음과 같은 구조로 저장된다."
+                ),
+                citation=CitationRecord(document_id="doc-hwp", chunk_id="chunk-doc-1", label="[1]", state=CitationState.VALID),
+                relevance_score=0.95,
+                source_path="/tmp/hwp-format.hwp",
+                heading_path="section-1",
+            ),
+            EvidenceItem(
+                chunk_id="chunk-sql-1",
+                document_id="doc-sql",
+                text="[tbl_day_chart] Day=9 | Lunch=wrong-answer",
+                citation=CitationRecord(document_id="doc-sql", chunk_id="chunk-sql-1", label="[2]", state=CitationState.VALID),
+                relevance_score=0.4,
+                source_path="/tmp/tbl_day_chart.sql",
+                heading_path="table-row-sql-0",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="그리기 개체 자료 구조 기본 구조", language="ko", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "한글 문서 형식에서 그리기 개체 자료 구조 중 기본 구조에 대해 설명해 주세요",
+        evidence,
+    )
+
+    assert "그리기 개체 자료 구조 기본 구조" in response
+    assert "tbl_day_chart" not in response
+
+
 def test_stub_document_response_keeps_complete_sentence_boundary() -> None:
     evidence = VerifiedEvidenceSet(
         items=(

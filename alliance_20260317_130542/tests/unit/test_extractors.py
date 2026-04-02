@@ -56,6 +56,23 @@ class TestTableExtractor:
         facts = TableExtractor().extract(item)
         assert facts == []
 
+    def test_non_spreadsheet_table_source_returns_empty(self):
+        item = _item(
+            "[tbl_day_chart] Day=9 | Lunch=wrong-answer",
+            heading="table-row-sql-0",
+            doc_id="sql-doc",
+        )
+        item = EvidenceItem(
+            chunk_id=item.chunk_id,
+            document_id=item.document_id,
+            text=item.text,
+            citation=item.citation,
+            relevance_score=item.relevance_score,
+            source_path="/tmp/tbl_day_chart.sql",
+            heading_path=item.heading_path,
+        )
+        assert TableExtractor().extract(item) == []
+
     def test_first_column_is_row_id(self):
         """First column becomes the row identifier in composite keys."""
         item = _item("[Sheet] Name=홍길동 | Age=30 | City=서울", heading="table-row-Sheet-0")

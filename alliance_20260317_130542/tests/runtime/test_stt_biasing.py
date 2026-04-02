@@ -18,12 +18,14 @@ def test_build_vocabulary_hint_extracts_code_terms(tmp_path: Path) -> None:
 
     hint = build_vocabulary_hint(kb)
 
+    assert "헤이 자비스" in hint
     assert "pipeline.py" in hint
     assert "pipeline" in hint
     assert "validate_provider_result" in hint
     assert "provider_result" in hint
 
 
-def test_build_vocabulary_hint_returns_empty_when_path_missing(tmp_path: Path) -> None:
+def test_build_vocabulary_hint_preserves_global_terms_when_path_missing(tmp_path: Path) -> None:
     hint = build_vocabulary_hint(tmp_path / "missing")
-    assert hint == ""
+    assert "헤이 자비스" in hint
+    assert "자비스" in hint

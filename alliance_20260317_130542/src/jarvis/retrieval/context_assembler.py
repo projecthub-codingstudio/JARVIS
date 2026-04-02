@@ -21,6 +21,7 @@ Research basis:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from jarvis.contracts import (
     AssembledContext,
@@ -33,6 +34,7 @@ from jarvis.retrieval.extractors.table import TableExtractor
 from jarvis.retrieval.extractors.text import TextExtractor
 
 _DEFAULT_MAX_CONTEXT_CHARS = 16_384
+_STRUCTURED_TABLE_SUFFIXES = {".xlsx", ".csv", ".tsv"}
 
 # Generic identifier extraction: numbers followed by ordinal/unit markers
 _ROW_ID_RE = re.compile(r"(\d+)\s*(?:일\s*차|일차|일|번째|번|day|row|항)", re.IGNORECASE)
@@ -139,8 +141,14 @@ class ContextAssembler:
         Returns the extractor object directly (ChunkRouter pattern).
         """
         hp = item.heading_path or ""
-        if "table-row" in hp or "table-full" in hp:
+        if ("table-row" in hp or "table-full" in hp) and _is_structured_table_source(item):
             return self._table
         if "code" in hp:
             return self._code
         return self._text
+
+
+def _is_structured_table_source(item: EvidenceItem) -> bool:
+    if not item.source_path:
+        return True
+    return Path(item.source_path).suffix.lower() in _STRUCTURED_TABLE_SUFFIXES

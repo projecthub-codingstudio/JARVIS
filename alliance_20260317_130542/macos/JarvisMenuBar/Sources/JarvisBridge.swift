@@ -913,7 +913,8 @@ final class WakeWordSession: @unchecked Sendable {
         stdinPipe.fileHandleForWriting.write(json)
         stdinPipe.fileHandleForWriting.write("\n".data(using: .utf8)!)
 
-        // Check for detection response (non-blocking read)
+        // Each wake-audio chunk receives either wake_idle or wake_detected.
+        // That keeps the pipe flowing and avoids stalling on the first read.
         let available = stdoutPipe.fileHandleForReading.availableData
         if available.isEmpty { return false }
         buffer.append(available)
@@ -923,12 +924,16 @@ final class WakeWordSession: @unchecked Sendable {
             buffer = Data(buffer[buffer.index(after: newlineIndex)...])
 
             guard !lineData.isEmpty,
-                  let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData)),
-                  envelope.kind == "wake_detected"
+                  let envelope = try? decoder.decode(CommandEnvelope.self, from: Data(lineData))
             else { continue }
 
-            bridgeLog("Wake word detected via bridge (score=\(envelope.score ?? 0))")
-            return true
+            if envelope.kind == "wake_detected" {
+                bridgeLog("Wake word detected via bridge (score=\(envelope.score ?? 0))")
+                return true
+            }
+            if envelope.kind == "wake_idle" {
+                return false
+            }
         }
         return false
     }

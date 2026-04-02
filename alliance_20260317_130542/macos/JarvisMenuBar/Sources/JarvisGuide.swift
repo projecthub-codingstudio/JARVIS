@@ -69,6 +69,7 @@ final class JarvisGuideState: ObservableObject {
     @Published var summaryText = ""
     @Published var liveResponseText = ""
     @Published var finalResponseText = ""
+    @Published var ambientStatusText = ""
     @Published var clarificationPrompt = ""
     @Published var clarificationReasons: [String] = []
     @Published var clarificationOptions: [JarvisGuideClarificationOption] = []
@@ -230,6 +231,7 @@ final class JarvisGuideState: ObservableObject {
             || exploration != nil
             || !phaseLabel.isEmpty
             || !summaryText.isEmpty
+            || !ambientStatusText.isEmpty
             || !liveResponseText.isEmpty
             || !finalResponseText.isEmpty
             || hasClarification
@@ -575,6 +577,7 @@ final class JarvisGuideState: ObservableObject {
         summaryText = ""
         liveResponseText = ""
         finalResponseText = ""
+        ambientStatusText = ""
         clearClarification()
         pinnedByUser = false
         selectedExplorationItemID = ""
@@ -582,30 +585,27 @@ final class JarvisGuideState: ObservableObject {
         interactionMode = .generalQuery
     }
 
-    func shouldShowPanel(
-        isLoading _: Bool = false,
-        voiceLoopEnabled _: Bool = false,
-        wakeWordEnabled _: Bool = false,
-        partialTranscriptionActive _: Bool = false,
-        isStreaming _: Bool = false,
-        isSpeaking _: Bool = false
-    ) -> Bool {
+    func shouldShowPanel() -> Bool {
         let hasCandidates = hasCandidates(activeExplorationState)
         let hasWorkspaceContent = guidePresentation != nil || !currentArtifacts.isEmpty
         let hasResponseContent = !liveResponseText.isEmpty || !finalResponseText.isEmpty
+        let hasEvidenceContent = !citations.isEmpty || sourcePresentation != nil
+        let hasGuideContent = hasCandidates || hasWorkspaceContent || hasEvidenceContent
         let hasClarification = hasClarification
+        let hasAmbientStatus = !ambientStatusText.isEmpty
         let hasPresentationState =
-            hasWorkspaceContent
+            hasGuideContent
+            || hasResponseContent
             || hasStickyWorkspace
             || !phaseLabel.isEmpty
             || !summaryText.isEmpty
-            || hasResponseContent
+            || hasAmbientStatus
             || hasClarification
             || !(activeExplorationState?.targetFile ?? "").isEmpty
             || !(activeExplorationState?.targetDocument ?? "").isEmpty
         let shouldShowLoadingState =
             !hasCandidates
-            && !hasWorkspaceContent
+            && !hasGuideContent
             && !hasResponseContent
             && !hasClarification
             && interactionMode != .generalQuery
@@ -613,9 +613,17 @@ final class JarvisGuideState: ObservableObject {
         let hasVisibleSession =
             pinnedByUser
             || hasStickyWorkspace
+            || hasAmbientStatus
             || hasClarification
             || ((visibleUntil?.timeIntervalSinceNow ?? 0) > 0)
-        guard hasCandidates || hasWorkspaceContent || hasResponseContent || hasClarification || shouldShowLoadingState || (hasPresentationState && hasVisibleSession) else {
+        guard
+            hasGuideContent
+                || hasResponseContent
+                || hasClarification
+                || hasAmbientStatus
+                || shouldShowLoadingState
+                || (hasPresentationState && hasVisibleSession)
+        else {
             return false
         }
         if isLoading || voiceLoopEnabled || wakeWordEnabled || partialTranscriptionActive || isStreaming || isSpeaking {
@@ -639,7 +647,8 @@ final class JarvisGuideState: ObservableObject {
         isSpeaking: Bool,
         voiceLoopEnabled: Bool,
         wakeWordEnabled: Bool,
-        partialTranscriptionActive: Bool
+        partialTranscriptionActive: Bool,
+        ambientStatusText: String
     ) {
         self.isLoading = isLoading
         self.isStreaming = isStreaming
@@ -647,6 +656,7 @@ final class JarvisGuideState: ObservableObject {
         self.voiceLoopEnabled = voiceLoopEnabled
         self.wakeWordEnabled = wakeWordEnabled
         self.partialTranscriptionActive = partialTranscriptionActive
+        self.ambientStatusText = ambientStatusText
         if partialTranscriptionActive {
             loopStage = .listening
         } else if isStreaming || isLoading {
@@ -1478,8 +1488,22 @@ final class JarvisGuideController {
             panel.orderOut(nil)
             return
         }
+        resizePanelToFit()
         positionPanel()
         panel.orderFrontRegardless()
+    }
+
+    private func resizePanelToFit() {
+        host.view.invalidateIntrinsicContentSize()
+        host.view.layoutSubtreeIfNeeded()
+        let fitting = host.view.fittingSize
+        let targetSize = NSSize(
+            width: min(max(fitting.width, 380), 780),
+            height: min(max(fitting.height, 120), 820)
+        )
+        if panel.contentRect(forFrameRect: panel.frame).size != targetSize {
+            panel.setContentSize(targetSize)
+        }
     }
 
     private func positionPanel() {
@@ -1524,6 +1548,31 @@ struct JarvisGuideView: View {
         !displayResponseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var prefersExpandedWorkspaceWidth: Bool {
+        workspacePresentation != nil
+            || guide.hasWorkspaceSessions
+            || !guide.currentArtifacts.isEmpty
+            || !guide.citations.isEmpty
+            || guide.sourcePresentation != nil
+            || guide.hasClarification
+    }
+
+    private var showsFooterHint: Bool {
+        workspacePresentation != nil
+            || guide.hasWorkspaceSessions
+            || guide.hasClarification
+            || !guide.currentArtifacts.isEmpty
+            || !guide.citations.isEmpty
+            || guide.sourcePresentation != nil
+            || guide.isLoading
+            || guide.isStreaming
+            || guide.partialTranscriptionActive
+    }
+
+    private var panelWidth: CGFloat {
+        prefersExpandedWorkspaceWidth ? 760 : 480
+    }
+
     var body: some View {
         Group {
             if guide.hasRenderableContent {
@@ -1535,6 +1584,10 @@ struct JarvisGuideView: View {
                         Text(guide.summaryText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    } else if !guide.ambientStatusText.isEmpty {
+                        Text(guide.ambientStatusText)
+                            .font(.callout)
+                            .foregroundStyle(JarvisTheme.textPrimary)
                     }
                     if guide.hasClarification {
                         clarificationSection
@@ -1549,10 +1602,12 @@ struct JarvisGuideView: View {
                               guide.isLoading || guide.isStreaming || guide.partialTranscriptionActive {
                         workspaceSection(nil)
                     }
-                    footerHint
+                    if showsFooterHint {
+                        footerHint
+                    }
                 }
                 .padding(14)
-                .frame(width: 760)
+                .frame(width: panelWidth)
                 .background(JarvisTheme.panelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -2060,9 +2115,10 @@ struct JarvisGuideView: View {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.preferredFont(forTextStyle: .body)
         ]
+        let measureWidth = max(320, panelWidth - 80)
         let bounds = NSAttributedString(string: trimmed, attributes: attributes)
             .boundingRect(
-                with: NSSize(width: 680, height: CGFloat.greatestFiniteMagnitude),
+                with: NSSize(width: measureWidth, height: CGFloat.greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading]
             )
         let measuredHeight = ceil(bounds.height) + 8

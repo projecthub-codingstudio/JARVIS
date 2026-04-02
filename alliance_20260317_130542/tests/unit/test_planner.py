@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from jarvis.core.planner import LLMIntentJSONBackend, Planner, QueryAnalysis
+from jarvis.identifier_restoration import IdentifierCandidate, IdentifierRewrite
 
 
 def test_planner_classifies_greeting_as_smalltalk() -> None:
@@ -81,6 +82,31 @@ def test_planner_extracts_document_topic_and_negative_terms() -> None:
     assert analysis.retrieval_task == "document_qa"
     assert "기본 구조" in analysis.entities["topic_terms"]
     assert "하이퍼 텍스트 정보" in analysis.entities["negative_terms"]
+
+
+def test_planner_does_not_promote_filename_rewrite_for_plain_document_query(monkeypatch) -> None:
+    def fake_rewrite(query: str, *, knowledge_base_path=None, max_candidates: int = 4) -> IdentifierRewrite:
+        return IdentifierRewrite(
+            original_query=query,
+            rewritten_query=f"{query} tbl_day_chart.sql",
+            candidates=(
+                IdentifierCandidate(
+                    canonical="tbl_day_chart.sql",
+                    kind="filename",
+                    score=0.95,
+                ),
+            ),
+            appended_terms=("tbl_day_chart.sql",),
+        )
+
+    monkeypatch.setattr("jarvis.core.planner.rewrite_query_with_identifiers", fake_rewrite)
+
+    planner = Planner()
+    analysis = planner.analyze("한글 문서 8 형식에서 그리기 개체 자료에서 기본 구조에 대해 설명해줘")
+
+    assert analysis.retrieval_task == "document_qa"
+    assert analysis.target_file == ""
+    assert "tbl_day_chart.sql" not in analysis.search_terms
 
 
 def test_planner_payload_supports_llm_intent_json_shape() -> None:

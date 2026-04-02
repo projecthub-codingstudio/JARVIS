@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jarvis.contracts import QueryDecomposerProtocol, TypedQueryFragment
+from jarvis.identifier_restoration import IdentifierCandidate, IdentifierRewrite
 from jarvis.retrieval.query_decomposer import QueryDecomposer
 
 
@@ -91,3 +92,25 @@ class TestQueryDecomposer:
         assert any("ProjectHub 브로셔에서" in text or "projecthub 브로셔에서" in text for text in texts)
         assert all("project_path" not in text for text in texts)
         assert all("_parse_research_section" not in text for text in texts)
+
+    def test_does_not_append_filename_candidate_without_file_hint(self, monkeypatch) -> None:
+        def fake_rewrite(query: str, *, knowledge_base_path=None, max_candidates: int = 4) -> IdentifierRewrite:
+            return IdentifierRewrite(
+                original_query=query,
+                rewritten_query=f"{query} tbl_day_chart.sql",
+                candidates=(
+                    IdentifierCandidate(
+                        canonical="tbl_day_chart.sql",
+                        kind="filename",
+                        score=0.95,
+                    ),
+                ),
+                appended_terms=("tbl_day_chart.sql",),
+            )
+
+        monkeypatch.setattr("jarvis.retrieval.query_decomposer.rewrite_query_with_identifiers", fake_rewrite)
+
+        fragments = QueryDecomposer().decompose("한글 문서 8 형식에서 그리기 개체 자료에서 기본 구조에 대해 설명해줘")
+        texts = [fragment.text for fragment in fragments]
+
+        assert all("tbl_day_chart.sql" not in text for text in texts)

@@ -53,3 +53,23 @@ def test_transcript_repair_handles_prefixed_il_noise_before_day_slot() -> None:
 
     assert result.repaired_text == "다이어트 식단표 에서 1일차 아침 메뉴 알려줘"
     assert result.display_text == "다이어트 식단표 에서 1일차 아침 메뉴 알려줘"
+
+
+def test_transcript_repair_canonicalizes_wake_phrase_variants() -> None:
+    result = build_transcript_repair("이 자비스")
+
+    assert result.repaired_text == "헤이 자비스"
+    assert result.display_text == "헤이 자비스"
+    assert result.final_query == "헤이 자비스"
+
+
+def test_prepare_transcript_for_query_strips_explicit_wake_phrase_prefix() -> None:
+    result = prepare_transcript_for_query("헤이 자비스 오늘 일정 알려줘")
+
+    assert result == "오늘 일정 알려줘"
+
+
+def test_prepare_transcript_for_query_preserves_plain_jarvis_subject_query() -> None:
+    result = prepare_transcript_for_query("자비스 구조 설명해줘")
+
+    assert result == "자비스 구조 설명해줘"

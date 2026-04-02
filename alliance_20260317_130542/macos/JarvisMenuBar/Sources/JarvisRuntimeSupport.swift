@@ -255,7 +255,7 @@ func waitForProcessExit(
             throw BridgeError.processFailed(timeoutMessage)
         }
 
-        let result = try await group.next()
+        let result: Void? = try await group.next()
         group.cancelAll()
         _ = result
     }

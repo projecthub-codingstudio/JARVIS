@@ -38,6 +38,7 @@ from jarvis.contracts import (
     VectorRetrieverProtocol,
     VerifiedEvidenceSet,
 )
+from jarvis.core.answerability_gate import AnswerabilityAssessment, AnswerabilityGate
 from jarvis.core.error_monitor import ErrorMonitor
 from jarvis.observability.metrics import MetricName, MetricsCollector
 from jarvis.query_normalization import normalize_spoken_code_query
@@ -99,6 +100,7 @@ class Orchestrator:
         self._query_complexity: str = "moderate"
         self._user_knowledge_store = user_knowledge_store
         self._knowledge_base_path = knowledge_base_path
+        self._answerability_gate = AnswerabilityGate()
 
     def handle_turn(self, user_input: str) -> ConversationTurn:
         started_at = time.perf_counter()
@@ -163,6 +165,19 @@ class Orchestrator:
                 )
             return turn
 
+        gate_result = self._answerability_gate.assess(
+            query=user_input,
+            evidence=evidence,
+            analysis=analysis,
+        )
+        if gate_result.decision != "answer":
+            return self._complete_gate_block(
+                turn=turn,
+                gate_result=gate_result,
+                evidence=evidence,
+                started_at=started_at,
+            )
+
         # 6. Safe mode: search-only response, no generation
         if self._error_monitor is not None and (
             self._error_monitor.safe_mode_active() or self._error_monitor.generation_blocked
@@ -196,13 +211,16 @@ class Orchestrator:
         # 7. Generate answer with conversation history (sliding window, 3 turns)
         recent_turns = self._conversation_store.get_recent_turns(limit=3)
         answer = self._generate_answer(user_input, evidence, recent_turns)
+        answer = self._apply_post_generation_guard(answer, evidence=evidence)
+        answer_has_evidence = bool(answer.evidence.items) and answer.model_id not in {"clarify", "abstain"}
 
         # 8. Persist
         turn.assistant_output = answer.content
-        turn.has_evidence = True
+        turn.has_evidence = answer_has_evidence
         self._last_answer = answer
         self._conversation_store.save_turn(turn)
-        self._extract_user_knowledge(turn)
+        if answer_has_evidence:
+            self._extract_user_knowledge(turn)
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
@@ -210,7 +228,7 @@ class Orchestrator:
             self._metrics.record(
                 MetricName.QUERY_LATENCY_MS,
                 (time.perf_counter() - started_at) * 1000,
-                tags={"has_evidence": "true"},
+                tags={"has_evidence": "true" if answer_has_evidence else "false"},
             )
 
         return turn
@@ -260,11 +278,28 @@ class Orchestrator:
         if evidence.is_empty:
             turn.assistant_output = "관련 증거를 찾을 수 없어 답변을 생성할 수 없습니다."
             turn.has_evidence = False
+            self._last_answer = None
             self._conversation_store.save_turn(turn)
             self._task_log_store.log_entry(TaskLogEntry(
                 turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
             ))
             yield turn
+            return
+
+        gate_result = self._answerability_gate.assess(
+            query=user_input,
+            evidence=evidence,
+            analysis=analysis,
+        )
+        if gate_result.decision != "answer":
+            blocked_turn = self._complete_gate_block(
+                turn=turn,
+                gate_result=gate_result,
+                evidence=evidence,
+                started_at=started_at,
+                streaming=True,
+            )
+            yield blocked_turn
             return
 
         # Stream LLM generation
@@ -295,11 +330,15 @@ class Orchestrator:
             # No streaming — fall back to non-streaming
             answer = self._generate_answer(user_input, evidence, recent_turns)
 
+        answer = self._apply_post_generation_guard(answer, evidence=evidence)
+        answer_has_evidence = bool(answer.evidence.items) and answer.model_id not in {"clarify", "abstain"}
+
         turn.assistant_output = answer.content
-        turn.has_evidence = True
+        turn.has_evidence = answer_has_evidence
         self._last_answer = answer
         self._conversation_store.save_turn(turn)
-        self._extract_user_knowledge(turn)
+        if answer_has_evidence:
+            self._extract_user_knowledge(turn)
         self._task_log_store.log_entry(TaskLogEntry(
             turn_id=turn.turn_id, stage="complete", status=TaskStatus.COMPLETED,
         ))
@@ -307,7 +346,7 @@ class Orchestrator:
             self._metrics.record(
                 MetricName.QUERY_LATENCY_MS,
                 (time.perf_counter() - started_at) * 1000,
-                tags={"has_evidence": "true", "streaming": "true"},
+                tags={"has_evidence": "true" if answer_has_evidence else "false", "streaming": "true"},
             )
         yield turn
 
@@ -576,6 +615,76 @@ class Orchestrator:
                 snippet = snippet[:140] + "..."
             lines.append(f"{item.citation.label} {source}: {snippet}")
         return "\n".join(lines)
+
+    def _complete_gate_block(
+        self,
+        *,
+        turn: ConversationTurn,
+        gate_result: AnswerabilityAssessment,
+        evidence: VerifiedEvidenceSet,
+        started_at: float,
+        streaming: bool = False,
+    ) -> ConversationTurn:
+        filtered_evidence = VerifiedEvidenceSet(
+            items=(),
+            query_fragments=evidence.query_fragments,
+        )
+        answer = AnswerDraft(
+            content=gate_result.message,
+            evidence=filtered_evidence,
+            model_id=gate_result.decision,
+        )
+        turn.assistant_output = answer.content
+        turn.has_evidence = False
+        self._last_answer = answer
+        self._conversation_store.save_turn(turn)
+        self._task_log_store.log_entry(TaskLogEntry(
+            turn_id=turn.turn_id,
+            stage="complete",
+            status=TaskStatus.COMPLETED,
+            metadata={
+                "mode": gate_result.decision,
+                "reason_code": gate_result.reason_code,
+                "confidence": gate_result.confidence,
+            },
+        ))
+        if self._metrics is not None:
+            tags = {
+                "has_evidence": "false",
+                "mode": gate_result.decision,
+                "reason_code": gate_result.reason_code,
+            }
+            if streaming:
+                tags["streaming"] = "true"
+            self._metrics.record(
+                MetricName.QUERY_LATENCY_MS,
+                (time.perf_counter() - started_at) * 1000,
+                tags=tags,
+            )
+        return turn
+
+    def _apply_post_generation_guard(
+        self,
+        answer: AnswerDraft,
+        *,
+        evidence: VerifiedEvidenceSet,
+    ) -> AnswerDraft:
+        if answer.model_id in {"clarify", "abstain", "safe_mode", "degraded"}:
+            return answer
+        if len(answer.verification_warnings) < 2:
+            return answer
+        top_score = evidence.items[0].relevance_score if evidence.items else 0.0
+        if top_score >= 0.2:
+            return answer
+        return AnswerDraft(
+            content=(
+                "검색된 근거 일부는 있었지만 답변 초안에 근거로 확인되지 않는 내용이 섞일 가능성이 있어 "
+                "직접 답변하지 않겠습니다. 질문의 대상 문서나 정확한 항목명을 더 알려주시면 다시 확인하겠습니다."
+            ),
+            evidence=VerifiedEvidenceSet(items=(), query_fragments=evidence.query_fragments),
+            model_id="abstain",
+            verification_warnings=answer.verification_warnings,
+        )
 
     def _resolve_runtime_decision(self):
         select_runtime = getattr(self._governor, "select_runtime", None)
