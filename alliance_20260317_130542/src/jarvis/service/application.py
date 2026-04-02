@@ -346,6 +346,26 @@ def _is_absolute_path(path: str) -> bool:
     return normalized.startswith("/") or normalized.startswith("http://") or normalized.startswith("https://")
 
 
+def _resolve_full_path(full_path: str, short_path: str) -> str:
+    """Resolve a full path, converting relative paths to absolute using knowledge_base."""
+    # Already absolute — use as-is
+    if _is_absolute_path(full_path):
+        return full_path
+    # Try to resolve relative path against knowledge_base
+    candidate = full_path or short_path
+    if not candidate:
+        return ""
+    try:
+        from jarvis.app.runtime_context import resolve_knowledge_base_path
+        kb = resolve_knowledge_base_path()
+        resolved = (kb / candidate).resolve()
+        if resolved.exists():
+            return str(resolved)
+    except Exception:
+        pass
+    return ""
+
+
 def _workspace_title(interaction_mode: str, selected_type: str = "") -> str:
     normalized_type = selected_type.strip().lower()
     if normalized_type in {"image", "video"}:
@@ -418,7 +438,7 @@ def _build_presentation_payload(data: dict[str, object]) -> tuple[dict[str, obje
             "title": safe_title,
             "subtitle": safe_subtitle,
             "path": safe_path,
-            "full_path": safe_full_path if _is_absolute_path(safe_full_path) else "",
+            "full_path": _resolve_full_path(safe_full_path, safe_path),
             "preview": str(preview).strip(),
             "source_type": str(source_type).strip(),
             "viewer_kind": _artifact_viewer_kind(type_name),
