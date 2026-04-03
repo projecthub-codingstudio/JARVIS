@@ -17,8 +17,10 @@ export const useJarvis = () => {
     addLog,
   } = useAppStore();
 
+  const { isLoading } = useAppStore();
+
   const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim() || isLoading) return;
 
     // Add user message
     const userMessage: Message = {
@@ -145,7 +147,7 @@ export const useJarvis = () => {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, addMessage, setLoading, setError, setAssets, setCitations, setGuide, setPresentation, setHasEvidence, addLog]);
+  }, [sessionId, isLoading, addMessage, setLoading, setError, setAssets, setCitations, setGuide, setPresentation, setHasEvidence, addLog]);
 
   const handleSuggestedReply = useCallback((reply: string) => {
     sendMessage(reply);
