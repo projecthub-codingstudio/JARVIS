@@ -21,7 +21,8 @@ else
   cd "$JARVIS_ROOT"
 
   # LLM model chain: use EXAONE-3.5-7.8B for actual responses (not stub)
-  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-exaone-7.8b,stub}"
+  # MLX alias: exaone3.5:7.8b → mlx-community/EXAONE-3.5-7.8B-Instruct-4bit
+  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-exaone3.5:7.8b,stub}"
 
   "$BACKEND_VENV" -m jarvis.web_api --port 8000 > "$PID_DIR/backend.log" 2>&1 &
   echo $! > "$PID_DIR/backend.pid"
