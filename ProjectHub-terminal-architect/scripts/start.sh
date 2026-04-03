@@ -20,11 +20,11 @@ else
   echo "▶ Starting JARVIS backend (port 8000)..."
   cd "$JARVIS_ROOT"
 
-  # LLM model chain: use EXAONE-3.5-7.8B for actual responses (not stub)
-  # MLX alias: exaone3.5:7.8b → mlx-community/EXAONE-3.5-7.8B-Instruct-4bit
-  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-exaone3.5:7.8b,stub}"
+  # LLM model chain: stub by default (safe), override with env var for real LLM
+  # To enable LLM: export JARVIS_MENU_BAR_MODEL_CHAIN="exaone3.5:7.8b,stub"
+  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-stub}"
 
-  "$BACKEND_VENV" -m jarvis.web_api --port 8000 > "$PID_DIR/backend.log" 2>&1 &
+  "$BACKEND_VENV" -m jarvis.web_api --port 8000 > "$PID_DIR/backend.log" 2>"$PID_DIR/backend.err" &
   echo $! > "$PID_DIR/backend.pid"
   echo "  PID: $(cat "$PID_DIR/backend.pid")"
 fi
