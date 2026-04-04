@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useAppStore } from '../store/app-store';
 import { apiClient, AskRequest, AskResponse } from '../lib/api-client';
+import { normalizeResponseText } from '../lib/response-text';
 import { Message } from '../types';
 
 export const useJarvis = () => {
@@ -46,6 +47,7 @@ export const useJarvis = () => {
       };
 
       const response: AskResponse = await apiClient.ask(request);
+      const assistantText = normalizeResponseText(response.answer.text || response.response.response || '');
 
       // Add assistant message
       const assistantMessage: Message = {
@@ -57,39 +59,42 @@ export const useJarvis = () => {
           second: '2-digit', 
           hour12: false 
         }),
-        content: response.answer.text,
+        content: assistantText,
         citations: response.response.citations?.map(c => ({
           label: c.label,
           source_path: c.source_path,
           full_source_path: c.full_source_path,
           source_type: c.source_type,
-          quote: c.quote,
+          quote: normalizeResponseText(c.quote),
           relevance_score: c.relevance_score,
         })),
         has_evidence: response.response.has_evidence,
+        answer_kind: response.answer.kind,
+        task_id: response.answer.task_id || undefined,
+        structured_payload: response.answer.structured_payload ?? null,
       };
       addMessage(assistantMessage);
 
       // Update store with JARVIS response data
       setHasEvidence(response.response.has_evidence);
-      
-      if (response.response.citations) {
-        setCitations(response.response.citations.map(c => ({
-          label: c.label,
-          source_path: c.source_path,
-          full_source_path: c.full_source_path,
-          source_type: c.source_type,
-          quote: c.quote,
-          relevance_score: c.relevance_score,
-        })));
-      }
+      const answerKind = response.answer.kind || 'retrieval_result';
+      const nextCitations = (response.response.citations || []).map(c => ({
+        label: c.label,
+        source_path: c.source_path,
+        full_source_path: c.full_source_path,
+        source_type: c.source_type,
+        quote: normalizeResponseText(c.quote),
+        relevance_score: c.relevance_score,
+      }));
 
-      if (response.guide.artifacts) {
-        setAssets(response.guide.artifacts);
-      }
-
-      if (response.guide.presentation) {
-        setPresentation(response.guide.presentation);
+      if (answerKind === 'utility_result' || answerKind === 'action_result') {
+        setCitations([]);
+        setAssets([]);
+        setPresentation(null);
+      } else {
+        setCitations(nextCitations);
+        setAssets(response.guide.artifacts || []);
+        setPresentation(response.guide.presentation || null);
       }
 
       setGuide(response.guide);
@@ -116,7 +121,7 @@ export const useJarvis = () => {
             second: '2-digit',
             hour12: false
           }),
-          content: response.guide.clarification_prompt,
+          content: normalizeResponseText(response.guide.clarification_prompt),
         };
         addMessage(clarificationMessage);
       }

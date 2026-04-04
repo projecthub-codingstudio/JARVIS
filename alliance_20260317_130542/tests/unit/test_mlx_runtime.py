@@ -62,6 +62,76 @@ def test_stub_response_formats_multiple_requested_meals() -> None:
     assert "3일차 메뉴는 아침은 구운계란2+요거트+베리, 저녁은 순두부+방울토마토입니다." in response
 
 
+def test_stub_response_formats_sql_table_columns_for_schema_query() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-sql-columns",
+                document_id="doc-sql",
+                text=(
+                    "[SQL Tables: tbl_day_chart]\n\n"
+                    "[Table: tbl_day_chart (일봉 차트 데이타)]\n"
+                    "  column | type | nullable | description\n"
+                    "  ------------------------------------------------------------\n"
+                    "  code | varchar(7) | NOT NULL | 코드\n"
+                    "  service_date | varchar(8) | NOT NULL | 날짜\n"
+                    "  시가 | int | NULL | 시가\n"
+                    "  종가 | int | NULL | 종가\n"
+                ),
+                citation=CitationRecord(document_id="doc-sql", chunk_id="chunk-sql-columns", label="[1]", state=CitationState.VALID),
+                relevance_score=0.91,
+                source_path="/tmp/tbl_day_chart.sql",
+                heading_path="",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="day_chart 컬럼 정보", language="ko", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "day_chart 테이블의 컬럼 정보 보여줘.",
+        evidence,
+    )
+
+    assert "`tbl_day_chart` 테이블의 컬럼 정보입니다." in response
+    assert "`code`: `varchar(7)`, `NOT NULL`, 설명 `코드`" in response
+    assert "`service_date`: `varchar(8)`, `NOT NULL`, 설명 `날짜`" in response
+    assert "[Table: tbl_day_chart" not in response
+
+
+def test_stub_response_filters_sql_table_column_when_specific_column_requested() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-sql-columns",
+                document_id="doc-sql",
+                text=(
+                    "[SQL Tables: tbl_day_chart]\n\n"
+                    "[Table: tbl_day_chart (일봉 차트 데이타)]\n"
+                    "  column | type | nullable | description\n"
+                    "  ------------------------------------------------------------\n"
+                    "  code | varchar(7) | NOT NULL | 코드\n"
+                    "  service_date | varchar(8) | NOT NULL | 날짜\n"
+                    "  시가 | int | NULL | 시가\n"
+                    "  종가 | int | NULL | 종가\n"
+                ),
+                citation=CitationRecord(document_id="doc-sql", chunk_id="chunk-sql-columns", label="[1]", state=CitationState.VALID),
+                relevance_score=0.91,
+                source_path="/tmp/tbl_day_chart.sql",
+                heading_path="",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="day_chart service_date 컬럼 정보", language="ko", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "day_chart 테이블의 service_date 컬럼 정보 보여줘.",
+        evidence,
+    )
+
+    assert "`service_date`: `varchar(8)`, `NOT NULL`, 설명 `날짜`" in response
+    assert "`code`: `varchar(7)`" not in response
+
+
 def test_stub_document_response_prefers_query_matching_excerpt() -> None:
     evidence = VerifiedEvidenceSet(
         items=(
@@ -303,3 +373,43 @@ def test_stub_document_response_uses_query_fragment_path_match_for_brochure_file
 
     assert "ProjectHub macOS용 올인원 프로젝트 관리 도구" in response
     assert 'ProjectHub Help' not in response
+
+
+def test_stub_document_response_prefers_matching_brochure_feature_section_within_chunk() -> None:
+    evidence = VerifiedEvidenceSet(
+        items=(
+            EvidenceItem(
+                chunk_id="chunk-brochure-features",
+                document_id="doc-brochure",
+                text=(
+                    "[Slide 1]\n"
+                    "DEVELOPER PRODUCTIVITY TOOL\n"
+                    "ProjectHub\n"
+                    "macOS용 올인원 프로젝트 관리 도구\n\n"
+                    "[Slide 5]\n"
+                    "FEATURES\n"
+                    "개발자를 위한 모든 기능\n"
+                    "코드 다이어그램\n"
+                    "플로우 차트, 클래스 다이어그램, ER 다이어그램 자동 생성\n"
+                    "파일 브라우저\n"
+                    "트리 뷰, 와일드카드 검색, 20+ 언어 구문 강조\n"
+                    "Git 통합\n"
+                    "상태 표시, 커밋 히스토리, 브랜치 관리를 UI에서\n"
+                ),
+                citation=CitationRecord(document_id="doc-brochure", chunk_id="chunk-brochure-features", label="[1]", state=CitationState.VALID),
+                relevance_score=0.91,
+                source_path="/tmp/ProjectHub_Brochure.pptx",
+                heading_path="",
+            ),
+        ),
+        query_fragments=(TypedQueryFragment(text="projecthub_brochure 개발자를 위한 기능", language="ko", query_type="keyword"),),
+    )
+
+    response = _build_stub_grounded_response(
+        "projecthub_brochure 에서 개발자를 위한 기능에는 어떤 것이 있나요 ?",
+        evidence,
+    )
+
+    assert "개발자를 위한 모든 기능" in response
+    assert "코드 다이어그램" in response
+    assert "DEVELOPER PRODUCTIVITY TOOL" not in response

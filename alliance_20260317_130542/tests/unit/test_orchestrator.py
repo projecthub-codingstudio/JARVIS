@@ -97,6 +97,16 @@ class FailingLLM:
         raise AssertionError("generation should not run")
 
 
+class EchoLLM:
+    def generate(self, user_input: str, evidence: VerifiedEvidenceSet, recent_turns: Sequence[object] | None = None) -> AnswerDraft:
+        del user_input, recent_turns
+        return AnswerDraft(
+            content="식단표 원본을 찾았습니다.",
+            evidence=evidence,
+            model_id="stub",
+        )
+
+
 @pytest.fixture
 def orchestrator() -> Orchestrator:
     """Orchestrator with explicit positive-path evidence dependencies."""
@@ -321,6 +331,129 @@ class TestOrchestratorTargetedSearch:
 
 
 class TestOrchestratorAnswerabilityGate:
+    def test_allows_table_overview_when_single_table_source_exists(self) -> None:
+        table_summary = EvidenceItem(
+            chunk_id="chunk-table-summary",
+            document_id="doc-table",
+            text="[Diet+Supplements_14days] 14 rows | Columns: Day, Breakfast, Lunch, Dinner, Drinks",
+            citation=CitationRecord(
+                document_id="doc-table",
+                chunk_id="chunk-table-summary",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.015,
+            source_path="/tmp/14day_diet_supplements_final.xlsx",
+            heading_path="table-summary-Diet+Supplements_14days",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((table_summary,)),
+            llm_generator=EchoLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+            planner=Planner(),
+        )
+
+        turn = orch.handle_turn("다이어트 식단표 보여줘")
+
+        assert turn.has_evidence is True
+        assert "핵심 표현과 맞지 않아" not in turn.assistant_output
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id not in {"abstain", "clarify"}
+
+    def test_does_not_allow_table_overview_for_unstructured_table_source(self) -> None:
+        hwp_table = EvidenceItem(
+            chunk_id="chunk-hwp-table",
+            document_id="doc-hwp",
+            text="[표 대각선 종류] 값 | 설명 [표 대각선 종류] 0 | Slash [표 대각선 종류] 1 | BackSlash",
+            citation=CitationRecord(
+                document_id="doc-hwp",
+                chunk_id="chunk-hwp-table",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.016,
+            source_path="/tmp/한글문서파일형식_revision1.1_20110124.hwp",
+            heading_path="table-full-표 대각선 종류",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((hwp_table,)),
+            llm_generator=FailingLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+            planner=Planner(),
+        )
+
+        turn = orch.handle_turn("다이어트 식단표 보여줘")
+
+        assert turn.has_evidence is False
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "abstain"
+
+    def test_does_not_allow_table_overview_when_multiple_table_sources_compete(self) -> None:
+        first_summary = EvidenceItem(
+            chunk_id="chunk-table-summary-1",
+            document_id="doc-table-1",
+            text="[Diet+Supplements_14days] 14 rows | Columns: Day, Breakfast, Lunch, Dinner, Drinks",
+            citation=CitationRecord(
+                document_id="doc-table-1",
+                chunk_id="chunk-table-summary-1",
+                label="[1]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.015,
+            source_path="/tmp/14day_diet_supplements_final.xlsx",
+            heading_path="table-summary-Diet+Supplements_14days",
+        )
+        second_summary = EvidenceItem(
+            chunk_id="chunk-table-summary-2",
+            document_id="doc-table-2",
+            text="[Diet+Supplements_7days] 7 rows | Columns: Day, Breakfast, Lunch, Dinner",
+            citation=CitationRecord(
+                document_id="doc-table-2",
+                chunk_id="chunk-table-summary-2",
+                label="[2]",
+                state=CitationState.VALID,
+            ),
+            relevance_score=0.014,
+            source_path="/tmp/7day_diet_basic.xlsx",
+            heading_path="table-summary-Diet+Supplements_7days",
+        )
+
+        orch = Orchestrator(
+            governor=GovernorStub(),
+            query_decomposer=QueryDecomposer(),
+            fts_retriever=StaticFTSRetriever(),
+            vector_retriever=VectorIndex(),
+            hybrid_fusion=HybridSearch(),
+            evidence_builder=CustomEvidenceBuilder((first_summary, second_summary)),
+            llm_generator=FailingLLM(),
+            tool_registry=ToolRegistry(),
+            conversation_store=ConversationStore(),
+            task_log_store=TaskLogStore(),
+            planner=Planner(),
+        )
+
+        turn = orch.handle_turn("다이어트 식단표 보여줘")
+
+        assert turn.has_evidence is False
+        assert orch.last_answer is not None
+        assert orch.last_answer.model_id == "abstain"
+
     def test_abstains_when_evidence_is_weak_and_query_mismatch(self) -> None:
         weak_item = EvidenceItem(
             chunk_id="chunk-weak",

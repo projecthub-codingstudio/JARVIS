@@ -119,6 +119,42 @@ class TestIndexFile:
         ).fetchone()[0]
         assert count >= 1
 
+    def test_failed_document_with_same_hash_is_retried(
+        self, pipeline: IndexPipeline, db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "doc.md"
+        f.write_text("Recovered content that is long enough to survive minimum chunk size filtering requirements.")
+
+        failed_record = DocumentParser().create_record(f)
+        db.execute(
+            "INSERT INTO documents (document_id, path, content_hash, size_bytes, indexing_status)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                failed_record.document_id,
+                failed_record.path,
+                failed_record.content_hash,
+                failed_record.size_bytes,
+                IndexingStatus.FAILED.value,
+            ),
+        )
+        db.commit()
+
+        recovered = pipeline.index_file(f)
+
+        assert recovered.document_id == failed_record.document_id
+        assert recovered.indexing_status == IndexingStatus.INDEXED
+        row = db.execute(
+            "SELECT indexing_status FROM documents WHERE document_id = ?",
+            (failed_record.document_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "INDEXED"
+        chunk_count = db.execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (failed_record.document_id,),
+        ).fetchone()[0]
+        assert chunk_count >= 1
+
     def test_empty_document_marks_failed(
         self, pipeline: IndexPipeline, db: sqlite3.Connection, tmp_path: Path
     ) -> None:

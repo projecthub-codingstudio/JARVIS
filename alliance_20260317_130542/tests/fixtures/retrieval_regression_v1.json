@@ -326,6 +326,13 @@
       "category": "table_row_lookup"
     },
     {
+      "id": "table-014",
+      "query": "다이어트 식단표 보여줘",
+      "expected_retrieval_task": "table_lookup",
+      "expected_source_suffix": "14day_diet_supplements_final.xlsx",
+      "category": "table_overview"
+    },
+    {
       "id": "task-013",
       "query": "지금 날씨 말고 오늘 일정 알려줘",
       "expected_retrieval_task": "live_data_request",

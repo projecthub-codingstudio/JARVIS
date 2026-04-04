@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import html
 import json
 import math
 import operator
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from jarvis.service.intent_skill_registry import IntentSkillEntry, load_intent_skill_registry
+
 _TIME_QUERY_RE = re.compile(
     r"(몇\s*시|지금\s*시간|현재\s*(?:시간|시각)|오늘\s*날짜|오늘\s*며칠|날짜\s*알려|시간\s*(?:알려|보여|확인|이야)|시각\s*(?:알려|보여|확인)|what\s+time|current\s+time|today'?s\s+date)",
+    re.IGNORECASE,
+)
+_DATE_QUERY_HINT_RE = re.compile(
+    r"(며칠|몇일|날짜|요일|언제|what\s+date|which\s+date|day\s+of\s+week)",
     re.IGNORECASE,
 )
 _WEATHER_QUERY_RE = re.compile(
@@ -31,12 +38,80 @@ _CALC_HINT_RE = re.compile(
     r"(계산|더하기|빼기|곱하기|나누기|퍼센트|percent|calculate|what is|얼마)",
     re.IGNORECASE,
 )
+_HELP_QUERY_RE = re.compile(
+    r"(무엇을\s*할\s*수\s*있어|뭘\s*할\s*수\s*있어|어떤\s*기능|가능한\s*기능|예시\s*질문|도움말|help)",
+    re.IGNORECASE,
+)
+_RUNTIME_STATUS_QUERY_RE = re.compile(
+    r"(백엔드\s*상태|런타임\s*상태|시스템\s*상태|인덱스\s*상태|현재\s*모델|health|runtime\s*state)",
+    re.IGNORECASE,
+)
+_CALENDAR_QUERY_RE = re.compile(
+    r"(일정|캘린더|calendar|schedule|meeting|event|예약|회의)",
+    re.IGNORECASE,
+)
+_CALENDAR_CREATE_QUERY_RE = re.compile(
+    r"((?:일정|캘린더|calendar|schedule|meeting|event|예약|회의)(?:에)?\s*(?:잡아줘|잡아|잡기|잡|생성해줘|생성|만들어줘|만들|추가해줘|추가|등록해줘|등록)|(?:create|add|schedule|book)\s+(?:a\s+)?(?:meeting|event|calendar))",
+    re.IGNORECASE,
+)
+_CALENDAR_UPDATE_QUERY_RE = re.compile(
+    r"((?:일정|캘린더|calendar|schedule|meeting|event|예약|회의)?\s*(?:수정해줘|수정|변경해줘|변경|옮겨줘|옮겨|미뤄줘|미뤄|연기해줘|update|move|reschedule))",
+    re.IGNORECASE,
+)
+_CALENDAR_VIEW_QUERY_RE = re.compile(
+    r"((?:오늘|내일|모레|글피|이번\s*주|다음\s*주|이번\s*달|다음\s*달|이번달|다음달)\s*일정|일정\s*(?:보여|알려|확인|브리핑)|캘린더\s*(?:보여|알려|확인)|agenda|brief)",
+    re.IGNORECASE,
+)
+_CALENDAR_DATE_MENTION_RE = re.compile(
+    r"(\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2}|오늘|내일|모레|글피|어제|엊그제|그제|하루\s*(?:후|뒤|전)|이틀\s*(?:후|뒤|전)|사흘\s*(?:후|뒤|전)|\d+\s*일\s*(?:후|뒤|전))",
+    re.IGNORECASE,
+)
+_DOC_SUMMARY_QUERY_RE = re.compile(
+    r"(요약|정리|개요|핵심\s*(?:만|포인트)?)",
+    re.IGNORECASE,
+)
+_DOC_EXPLAIN_QUERY_RE = re.compile(
+    r"(설명|소개|종합|개괄|기술\s*사양|사양|스펙|spec(?:ification)?|overall|overview)",
+    re.IGNORECASE,
+)
+_DOC_OUTLINE_QUERY_RE = re.compile(
+    r"(목차|아웃라인|outline|슬라이드\s*제목|헤딩|heading|챕터|구성)",
+    re.IGNORECASE,
+)
+_DOC_STRUCTURE_QUERY_RE = re.compile(
+    r"(전체\s*(?:코드\s*)?구조|코드\s*구조|기본\s*구조|아키텍처|architecture|structure|구조)",
+    re.IGNORECASE,
+)
+_DOC_SHEET_LIST_QUERY_RE = re.compile(
+    r"((?:sheet|시트|탭)\s*(?:목록|리스트|list|들)|(?:목록|리스트|list)\s*(?:sheet|시트|탭))",
+    re.IGNORECASE,
+)
+_DOC_SHEET_QUERY_RE = re.compile(
+    r"((?:sheet|시트|탭)\s*(?:\d+|[A-Za-z0-9가-힣._-]+)|(?:\d+|[A-Za-z0-9가-힣._-]+)\s*(?:번째\s*)?(?:sheet|시트|탭))",
+    re.IGNORECASE,
+)
+_DOC_SECTION_QUERY_RE = re.compile(
+    r"((?:슬라이드|slide|페이지|page)\s*\d+|\d+\s*(?:번째\s*)?(?:슬라이드|slide|페이지|page)|(?:다음|next|이전|previous|prev)\s*(?:슬라이드|slide|페이지|page)|(?:슬라이드|slide|페이지|page)\s*(?:다음|next|이전|previous|prev))",
+    re.IGNORECASE,
+)
+_RECENT_CONTEXT_QUERY_RE = re.compile(
+    r"(방금\s*(?:본|봤던)|최근\s*(?:문서|자료|근거)|마지막\s*(?:문서|자료|근거)|다시\s*(?:열어|보여)|previous\s+(?:document|evidence)|last\s+(?:document|evidence)|recent\s+(?:document|evidence))",
+    re.IGNORECASE,
+)
+_DOCUMENT_OPEN_QUERY_RE = re.compile(
+    r"(열어\s*줘|열어줘|열기|열어|보여\s*줘|보여줘|띄워\s*줘|띄워줘|open|show)",
+    re.IGNORECASE,
+)
 _DIRECT_URL_RE = re.compile(
     r"(?P<url>https?://[^\s]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?)",
     re.IGNORECASE,
 )
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+_FILE_LIKE_TOKEN_RE = re.compile(
+    r"^[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx)$",
+    re.IGNORECASE,
+)
 
 _TIMEZONE_ALIASES: tuple[tuple[str, str, str], ...] = (
     ("america/los_angeles", "America/Los_Angeles", "Los Angeles"),
@@ -72,6 +147,16 @@ _REFERENCE_CLOCKS: tuple[tuple[str, str], ...] = (
     ("Asia/Tokyo", "도쿄"),
 )
 _DAY_NAMES = ("월", "화", "수", "목", "금", "토", "일")
+_RELATIVE_DAY_LABELS: tuple[tuple[str, int], ...] = (
+    ("엊저께", -2),
+    ("엊그제", -2),
+    ("그제", -2),
+    ("어제", -1),
+    ("오늘", 0),
+    ("내일", 1),
+    ("모레", 2),
+    ("글피", 3),
+)
 _ALLOWED_BINARY_OPERATORS: dict[type[ast.AST], Any] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -84,29 +169,236 @@ _ALLOWED_UNARY_OPERATORS: dict[type[ast.AST], Any] = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
+_UNIT_CONVERSION_FACTORS: dict[str, tuple[str, float, str]] = {
+    "b": ("storage", 1.0, "B"),
+    "byte": ("storage", 1.0, "B"),
+    "bytes": ("storage", 1.0, "B"),
+    "바이트": ("storage", 1.0, "B"),
+    "kb": ("storage", 1_000.0, "KB"),
+    "kilobyte": ("storage", 1_000.0, "KB"),
+    "킬로바이트": ("storage", 1_000.0, "KB"),
+    "mb": ("storage", 1_000_000.0, "MB"),
+    "megabyte": ("storage", 1_000_000.0, "MB"),
+    "메가바이트": ("storage", 1_000_000.0, "MB"),
+    "gb": ("storage", 1_000_000_000.0, "GB"),
+    "gigabyte": ("storage", 1_000_000_000.0, "GB"),
+    "기가바이트": ("storage", 1_000_000_000.0, "GB"),
+    "tb": ("storage", 1_000_000_000_000.0, "TB"),
+    "terabyte": ("storage", 1_000_000_000_000.0, "TB"),
+    "테라바이트": ("storage", 1_000_000_000_000.0, "TB"),
+    "mm": ("length", 0.001, "mm"),
+    "밀리미터": ("length", 0.001, "mm"),
+    "cm": ("length", 0.01, "cm"),
+    "센티미터": ("length", 0.01, "cm"),
+    "m": ("length", 1.0, "m"),
+    "meter": ("length", 1.0, "m"),
+    "metre": ("length", 1.0, "m"),
+    "미터": ("length", 1.0, "m"),
+    "km": ("length", 1_000.0, "km"),
+    "kilometer": ("length", 1_000.0, "km"),
+    "kilometre": ("length", 1_000.0, "km"),
+    "킬로미터": ("length", 1_000.0, "km"),
+    "mg": ("mass", 0.001, "mg"),
+    "밀리그램": ("mass", 0.001, "mg"),
+    "g": ("mass", 1.0, "g"),
+    "gram": ("mass", 1.0, "g"),
+    "그램": ("mass", 1.0, "g"),
+    "kg": ("mass", 1_000.0, "kg"),
+    "kilogram": ("mass", 1_000.0, "kg"),
+    "킬로그램": ("mass", 1_000.0, "kg"),
+    "초": ("time", 1.0, "초"),
+    "sec": ("time", 1.0, "초"),
+    "second": ("time", 1.0, "초"),
+    "s": ("time", 1.0, "초"),
+    "분": ("time", 60.0, "분"),
+    "minute": ("time", 60.0, "분"),
+    "min": ("time", 60.0, "분"),
+    "시간": ("time", 3_600.0, "시간"),
+    "hour": ("time", 3_600.0, "시간"),
+    "hr": ("time", 3_600.0, "시간"),
+    "h": ("time", 3_600.0, "시간"),
+    "일": ("time", 86_400.0, "일"),
+    "day": ("time", 86_400.0, "일"),
+}
+_HELP_CATEGORY_TITLES: dict[str, str] = {
+    "basic_task": "기본 작업",
+    "system_help": "시스템 안내",
+    "web_task": "웹 작업",
+    "document_task": "문서/코드",
+    "live_task": "실시간 기능",
+    "automation_task": "자동화",
+}
+_IMPLEMENTATION_SUFFIXES: dict[str, str] = {
+    "implemented": "",
+    "implemented_gap": " (연결 대기)",
+    "planned": " (예정)",
+}
 
 
-def resolve_builtin_capability(query: str) -> dict[str, object] | None:
+def resolve_builtin_capability(
+    query: str,
+    *,
+    runtime_status_resolver: Callable[[], dict[str, object]] | None = None,
+    calendar_view_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    calendar_update_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    calendar_create_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    calendar_followup_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_open_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    recent_context_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_summary_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_outline_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_sheet_list_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_sheet_resolver: Callable[[str], dict[str, object] | None] | None = None,
+    document_section_resolver: Callable[[str], dict[str, object] | None] | None = None,
+) -> dict[str, object] | None:
     normalized = " ".join(query.split()).strip()
     if not normalized:
         return None
-
+    has_document_explain_query = _looks_like_document_explain_query(normalized)
+    has_document_structure_query = bool(_DOC_STRUCTURE_QUERY_RE.search(normalized))
+    wants_document_summary = bool(_DOC_SUMMARY_QUERY_RE.search(normalized)) or (
+        has_document_explain_query and not has_document_structure_query
+    )
+    wants_document_outline = bool(_DOC_OUTLINE_QUERY_RE.search(normalized)) or (
+        has_document_explain_query and has_document_structure_query
+    )
+    wants_document_sheet_list = bool(_DOC_SHEET_LIST_QUERY_RE.search(normalized))
+    wants_document_sheet = bool(_DOC_SHEET_QUERY_RE.search(normalized)) and not wants_document_sheet_list
+    wants_document_section = bool(_DOC_SECTION_QUERY_RE.search(normalized))
     direct_url = _extract_direct_url(normalized)
-    if direct_url is not None:
-        return _build_direct_website_response(normalized, direct_url)
+    requested_timezones = _extract_requested_timezones(normalized)
+    has_time_query = bool(_TIME_QUERY_RE.search(normalized))
 
-    if _TIME_QUERY_RE.search(normalized):
+    def _handle_datetime_now() -> dict[str, object] | None:
+        if not has_time_query or requested_timezones:
+            return None
         return _build_time_response(normalized)
 
-    if _WEATHER_QUERY_RE.search(normalized):
-        return _build_weather_response(normalized)
+    def _handle_timezone_now() -> dict[str, object] | None:
+        if not has_time_query or not requested_timezones:
+            return None
+        return _build_time_response(normalized)
 
-    calculation = _build_calculation_response(normalized)
-    if calculation is not None:
-        return calculation
+    def _handle_calendar_create() -> dict[str, object] | None:
+        if not _CALENDAR_CREATE_QUERY_RE.search(normalized) or not callable(calendar_create_resolver):
+            return None
+        return calendar_create_resolver(normalized)
 
-    if _WEB_QUERY_RE.search(normalized):
-        return _build_web_search_response(normalized)
+    def _handle_calendar_view() -> dict[str, object] | None:
+        if not _CALENDAR_VIEW_QUERY_RE.search(normalized) or not callable(calendar_view_resolver):
+            return None
+        return calendar_view_resolver(normalized)
+
+    def _handle_calendar_update() -> dict[str, object] | None:
+        if not (_CALENDAR_QUERY_RE.search(normalized) or _CALENDAR_DATE_MENTION_RE.search(normalized)):
+            return None
+        if not _CALENDAR_UPDATE_QUERY_RE.search(normalized) or not callable(calendar_update_resolver):
+            return None
+        return calendar_update_resolver(normalized)
+
+    def _handle_calendar_followup() -> dict[str, object] | None:
+        if not _CALENDAR_QUERY_RE.search(normalized) or not callable(calendar_followup_resolver):
+            return None
+        return calendar_followup_resolver(normalized)
+
+    def _handle_runtime_status() -> dict[str, object] | None:
+        if not _RUNTIME_STATUS_QUERY_RE.search(normalized) or not callable(runtime_status_resolver):
+            return None
+        return _build_runtime_status_response(normalized, runtime_status_resolver())
+
+    def _handle_recent_context() -> dict[str, object] | None:
+        if (
+            wants_document_summary
+            or wants_document_outline
+            or wants_document_sheet_list
+            or wants_document_sheet
+            or wants_document_section
+            or not _RECENT_CONTEXT_QUERY_RE.search(normalized)
+            or not callable(recent_context_resolver)
+        ):
+            return None
+        return recent_context_resolver(normalized)
+
+    def _handle_doc_summary() -> dict[str, object] | None:
+        if not wants_document_summary or not callable(document_summary_resolver):
+            return None
+        return document_summary_resolver(normalized)
+
+    def _handle_doc_outline() -> dict[str, object] | None:
+        if not wants_document_outline or not callable(document_outline_resolver):
+            return None
+        return document_outline_resolver(normalized)
+
+    def _handle_sheet_list() -> dict[str, object] | None:
+        if not wants_document_sheet_list or not callable(document_sheet_list_resolver):
+            return None
+        return document_sheet_list_resolver(normalized)
+
+    def _handle_doc_sheet() -> dict[str, object] | None:
+        if not wants_document_sheet or not callable(document_sheet_resolver):
+            return None
+        return document_sheet_resolver(normalized)
+
+    def _handle_doc_section() -> dict[str, object] | None:
+        if not wants_document_section or not callable(document_section_resolver):
+            return None
+        return document_section_resolver(normalized)
+
+    def _handle_open_document() -> dict[str, object] | None:
+        if not _looks_like_document_open_query(normalized) or not callable(document_open_resolver):
+            return None
+        return document_open_resolver(normalized)
+
+    handler_map: dict[str, Callable[[], dict[str, object] | None]] = {
+        "datetime_now": _handle_datetime_now,
+        "timezone_now": _handle_timezone_now,
+        "calendar_today": _handle_calendar_view,
+        "calendar_update": _handle_calendar_update,
+        "calendar_create": _handle_calendar_create,
+        "relative_date": lambda: _build_relative_date_response(normalized),
+        "math_eval": lambda: _build_calculation_response(normalized),
+        "unit_convert": lambda: _build_unit_conversion_response(normalized),
+        "capability_help": lambda: _build_help_response(normalized) if _HELP_QUERY_RE.search(normalized) else None,
+        "runtime_status": _handle_runtime_status,
+        "open_website": lambda: _build_direct_website_response(normalized, direct_url) if direct_url is not None else None,
+        "web_search": lambda: _build_web_search_response(normalized) if _WEB_QUERY_RE.search(normalized) else None,
+        "open_document": _handle_open_document,
+        "recent_context": _handle_recent_context,
+        "doc_summary": _handle_doc_summary,
+        "doc_outline": _handle_doc_outline,
+        "sheet_list": _handle_sheet_list,
+        "doc_sheet": _handle_doc_sheet,
+        "doc_section": _handle_doc_section,
+        "calendar_followup": _handle_calendar_followup,
+        "weather_now": lambda: _build_weather_response(normalized) if _WEATHER_QUERY_RE.search(normalized) else None,
+    }
+
+    # Mixed scheduling queries such as "3일 후 회의 잡아줘" should create/clarify an event
+    # before the relative-date utility handler consumes the query.
+    followup_response = _handle_calendar_followup()
+    if followup_response is not None:
+        return followup_response
+    update_response = _handle_calendar_update()
+    if update_response is not None:
+        return update_response
+    create_response = _handle_calendar_create()
+    if create_response is not None:
+        return create_response
+    view_response = _handle_calendar_view()
+    if view_response is not None:
+        return view_response
+
+    for entry in load_intent_skill_registry().dispatchable_entries():
+        handler = handler_map.get(entry.intent_id)
+        if handler is None:
+            continue
+        response = handler()
+        if response is not None:
+            return response
+
+    planned_gap_response = _build_registry_capability_gap_response(normalized)
+    if planned_gap_response is not None:
+        return planned_gap_response
 
     return None
 
@@ -118,35 +410,26 @@ def _build_time_response(query: str) -> dict[str, object]:
     else:
         clocks = list(_REFERENCE_CLOCKS[:4])
 
-    artifacts: list[dict[str, object]] = []
-    selected_id = ""
+    clocks_payload: list[dict[str, str]] = []
     first_clock_text = ""
     for index, (zone_name, label) in enumerate(clocks, start=1):
         current = _now_in_zone(zone_name)
         formatted = _format_datetime(current, include_zone=True)
         if index == 1:
             first_clock_text = f"{label} 기준 현재 시간은 {formatted}입니다."
-            selected_id = f"time_{index}"
-        artifacts.append(
-            _artifact(
-                artifact_id=f"time_{index}",
-                type_name="text",
-                title=label,
-                subtitle=zone_name,
-                path=zone_name,
-                preview="\n".join(
-                    [
-                        formatted,
-                        f"24시간 표기: {current.strftime('%H:%M:%S')}",
-                        f"날짜: {current.year}-{current.month:02d}-{current.day:02d}",
-                    ]
-                ),
-            )
+        clocks_payload.append(
+            {
+                "label": label,
+                "timezone": zone_name,
+                "formatted": formatted,
+                "time_24h": current.strftime("%H:%M:%S"),
+                "date": f"{current.year}-{current.month:02d}-{current.day:02d}",
+            }
         )
 
     response_text = first_clock_text or "현재 시간을 확인했습니다."
-    if len(artifacts) > 1:
-        response_text += f" 함께 볼 수 있는 기준 시각 {len(artifacts)}개를 정리했습니다."
+    if len(clocks_payload) > 1:
+        response_text += f" 함께 볼 수 있는 기준 시각 {len(clocks_payload)}개를 정리했습니다."
 
     return _response_payload(
         query=query,
@@ -155,32 +438,252 @@ def _build_time_response(query: str) -> dict[str, object]:
         intent="time_lookup",
         skill="builtin_time",
         source_profile="time",
-        artifacts=artifacts,
-        presentation=_presentation(
-            layout="master_detail" if len(artifacts) > 1 else "stack",
-            title="Time Workspace",
-            subtitle=f"기준 시각 {len(artifacts)}개",
-            selected_artifact_id=selected_id,
-            blocks=_blocks_for_answer_list_detail(
-                answer_title="현재 시각",
-                list_title="시간대 목록",
-                detail_title="시각 상세",
-                artifact_ids=[artifact["id"] for artifact in artifacts],
-                include_list=len(artifacts) > 1,
-            ),
-        ),
+        answer_kind="utility_result",
+        task_id="timezone_now" if requested else "datetime_now",
+        structured_payload={
+            "clocks": clocks_payload,
+            "requested": bool(requested),
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
+    )
+
+
+def _build_relative_date_response(query: str) -> dict[str, object] | None:
+    anchor = _extract_relative_day_anchor(query)
+    delta_days = _extract_relative_day_delta(query)
+    has_date_hint = bool(_DATE_QUERY_HINT_RE.search(query))
+    if anchor is None and delta_days is None:
+        return None
+    if not has_date_hint and delta_days is None:
+        if anchor is None or not _is_relative_day_only_query(query, anchor[0]):
+            return None
+    if anchor is not None and anchor[0] == "오늘" and delta_days is None and not has_date_hint:
+        return None
+
+    now = _now_in_zone("Asia/Seoul")
+    if anchor is None:
+        anchor_label, anchor_offset = "오늘", 0
+    else:
+        anchor_label, anchor_offset = anchor
+    anchor_date = now + timedelta(days=anchor_offset)
+    target_date = anchor_date + timedelta(days=delta_days or 0)
+    anchor_formatted = _format_date(anchor_date)
+    target_formatted = _format_date(target_date)
+    anchor_iso = anchor_date.strftime("%Y-%m-%d")
+    target_iso = target_date.strftime("%Y-%m-%d")
+
+    if delta_days is None:
+        response_text = f"서울 기준 {anchor_label}는 {target_formatted}입니다."
+    elif delta_days > 0:
+        if anchor_label == "오늘":
+            response_text = f"서울 기준 오늘부터 {delta_days}일 후는 {target_formatted}입니다."
+        else:
+            response_text = f"서울 기준 {anchor_label}({anchor_formatted})부터 {delta_days}일 후는 {target_formatted}입니다."
+    else:
+        if anchor_label == "오늘":
+            response_text = f"서울 기준 오늘부터 {abs(delta_days)}일 전은 {target_formatted}입니다."
+        else:
+            response_text = f"서울 기준 {anchor_label}({anchor_formatted})부터 {abs(delta_days)}일 전은 {target_formatted}입니다."
+
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="date_relative",
+        skill="builtin_date_relative",
+        source_profile="date",
+        answer_kind="utility_result",
+        task_id="relative_date",
+        structured_payload={
+            "anchor_label": anchor_label,
+            "anchor_date": anchor_iso,
+            "anchor_formatted": anchor_formatted,
+            "offset_days": delta_days or 0,
+            "target_date": target_iso,
+            "target_formatted": target_formatted,
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
+    )
+
+
+def _build_runtime_status_response(query: str, health_result: dict[str, object]) -> dict[str, object]:
+    status_level = str(health_result.get("status_level", "")).strip() or "unknown"
+    chunk_count = int(health_result.get("chunk_count", 0) or 0)
+    failed_checks = [
+        str(item).strip()
+        for item in (health_result.get("failed_checks") or [])
+        if str(item).strip()
+    ]
+    details = health_result.get("details") if isinstance(health_result.get("details"), dict) else {}
+    failed_documents = str(details.get("index_failures", "0")).strip() if isinstance(details, dict) else "0"
+    response_text = (
+        f"현재 런타임 상태는 {status_level}입니다. "
+        f"인덱스 청크 {chunk_count}개, 실패 문서 {failed_documents}개가 확인됩니다."
+    )
+    if failed_checks:
+        response_text += f" 점검 필요 항목은 {', '.join(failed_checks)}입니다."
+
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="runtime_status",
+        skill="builtin_runtime_status",
+        source_profile="runtime",
+        answer_kind="utility_result",
+        task_id="runtime_status",
+        structured_payload={
+            "status_level": status_level,
+            "chunk_count": chunk_count,
+            "failed_checks": failed_checks,
+            "details": details,
+            "bridge_mode": str(health_result.get("bridge_mode", "")).strip(),
+            "knowledge_base_path": str(health_result.get("knowledge_base_path", "")).strip(),
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
+    )
+
+
+def _capability_group_title(category: str) -> str:
+    return _HELP_CATEGORY_TITLES.get(category, category.replace("_", " ").strip().title() or "기타")
+
+
+def _example_query_label(entry: IntentSkillEntry) -> str:
+    example = entry.example_queries[0] if entry.example_queries else entry.intent_id
+    suffix = _IMPLEMENTATION_SUFFIXES.get(entry.implementation_status, "")
+    return f"{example}{suffix}"
+
+
+def _capability_groups_from_registry() -> list[dict[str, object]]:
+    grouped: dict[str, list[str]] = {}
+    for entry in load_intent_skill_registry().entries:
+        if not entry.example_queries:
+            continue
+        title = _capability_group_title(entry.category)
+        grouped.setdefault(title, []).append(_example_query_label(entry))
+    return [{"title": title, "items": items[:4]} for title, items in grouped.items() if items]
+
+
+def _build_help_response(query: str) -> dict[str, object]:
+    registry = load_intent_skill_registry()
+    implemented_count = len([entry for entry in registry.entries if entry.implementation_status == "implemented"])
+    backlog_count = len(registry.backlog_entries())
+    capability_groups = _capability_groups_from_registry()
+    response_text = (
+        f"현재 skill map 기준으로 {implemented_count}개 작업이 바로 실행 가능하고, "
+        f"{backlog_count}개는 연결 대기 또는 개발 예정입니다."
+    )
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="capability_help",
+        skill="builtin_help",
+        source_profile="help",
+        answer_kind="utility_result",
+        task_id="capability_help",
+        structured_payload={
+            "registry_version": registry.version,
+            "implemented_count": implemented_count,
+            "backlog_count": backlog_count,
+            "groups": capability_groups,
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
+    )
+
+
+def _select_registry_gap_entry(query: str) -> IntentSkillEntry | None:
+    if not _CALENDAR_QUERY_RE.search(query):
+        return None
+    registry = load_intent_skill_registry()
+    if _CALENDAR_CREATE_QUERY_RE.search(query):
+        return registry.get("calendar_create")
+    if _CALENDAR_VIEW_QUERY_RE.search(query):
+        return registry.get("calendar_today")
+    return None
+
+
+def _build_registry_capability_gap_response(query: str) -> dict[str, object] | None:
+    entry = _select_registry_gap_entry(query)
+    if entry is None:
+        return None
+    response_text = (
+        f"'{entry.intent_id}' skill은 intent map에 등록돼 있지만 아직 {entry.implementation_status} 상태입니다. "
+        "현재 런타임에서는 바로 실행할 수 없어 개발 또는 연결 작업이 필요합니다."
+    )
+    related_examples = list(entry.example_queries[:3])
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent=entry.intent_id,
+        skill=entry.skill_id,
+        source_profile="capability_gap",
+        answer_kind="utility_result",
+        task_id="capability_gap",
+        structured_payload={
+            "requested_intent": entry.intent_id,
+            "skill_id": entry.skill_id,
+            "category": entry.category,
+            "implementation_status": entry.implementation_status,
+            "requires_live_data": entry.requires_live_data,
+            "automation_ready": entry.automation_ready,
+            "example_queries": related_examples,
+            "registry_version": load_intent_skill_registry().version,
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
     )
 
 
 def _build_weather_response(query: str) -> dict[str, object]:
     location = _extract_weather_location(query)
-    weather_data, source_url = _fetch_weather(location)
+    weather_lookup_target = _resolve_weather_lookup_target(location)
+    weather_data, source_url = _fetch_weather(
+        weather_lookup_target or location,
+        fallback_label=location or "현재 위치",
+    )
     current_condition = ((weather_data.get("current_condition") or [{}])[0]) if isinstance(weather_data, dict) else {}
     nearest_area = ((weather_data.get("nearest_area") or [{}])[0]) if isinstance(weather_data, dict) else {}
     area_names = nearest_area.get("areaName") or []
-    area_label = ""
+    provider_area_label = ""
     if area_names and isinstance(area_names[0], dict):
-        area_label = str(area_names[0].get("value", "")).strip()
+        provider_area_label = str(area_names[0].get("value", "")).strip()
+    area_label = location.strip() if location.strip() else provider_area_label
     if not area_label:
         area_label = location or "현재 위치"
 
@@ -241,14 +744,17 @@ def _build_weather_response(query: str) -> dict[str, object]:
             )
         )
 
-    response_parts = [f"{area_label} 현재 날씨는 {description or '확인됨'}"]
-    if temp_c:
-        response_parts.append(f"기온은 {temp_c}도")
-    if feels_like:
-        response_parts.append(f"체감은 {feels_like}도")
-    response_text = ", ".join(response_parts) + "입니다."
-    if len(artifacts) > 1:
-        response_text += " 오늘과 이후 예보도 함께 정리했습니다."
+    if "날씨 데이터를 가져오지 못했습니다" in description:
+        response_text = description
+    else:
+        response_parts = [f"{area_label} 현재 날씨는 {description or '확인됨'}"]
+        if temp_c:
+            response_parts.append(f"기온은 {temp_c}도")
+        if feels_like:
+            response_parts.append(f"체감은 {feels_like}도")
+        response_text = ", ".join(response_parts) + "입니다."
+        if len(artifacts) > 1:
+            response_text += " 오늘과 이후 예보도 함께 정리했습니다."
 
     citations = [
         {
@@ -425,13 +931,6 @@ def _build_calculation_response(query: str) -> dict[str, object] | None:
 
     result_text = _format_number(result)
     response_text = f"{expression}의 결과는 {result_text}입니다."
-    artifact = _artifact(
-        artifact_id="calc_result",
-        type_name="text",
-        title="계산 결과",
-        subtitle="로컬 계산",
-        preview=f"식: {expression}\n결과: {result_text}",
-    )
     return _response_payload(
         query=query,
         response_text=response_text,
@@ -439,29 +938,67 @@ def _build_calculation_response(query: str) -> dict[str, object] | None:
         intent="calculation",
         skill="builtin_calculator",
         source_profile="calculator",
-        artifacts=[artifact],
-        presentation=_presentation(
-            layout="stack",
-            title="Calculation Workspace",
-            subtitle="로컬 계산 결과",
-            selected_artifact_id="calc_result",
-            blocks=[
-                _block(
-                    block_id="answer",
-                    kind="answer",
-                    title="계산 결과",
-                    subtitle="즉시 계산",
-                ),
-                _block(
-                    block_id="detail",
-                    kind="detail",
-                    title="계산 상세",
-                    subtitle="식과 결과",
-                    artifact_ids=["calc_result"],
-                    empty_state="계산 결과가 없습니다.",
-                ),
-            ],
-        ),
+        answer_kind="utility_result",
+        task_id="math_eval",
+        structured_payload={
+            "expression": expression,
+            "result": result_text,
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
+    )
+
+
+def _build_unit_conversion_response(query: str) -> dict[str, object] | None:
+    parsed = _extract_unit_conversion(query)
+    if parsed is None:
+        return None
+
+    value, from_unit, to_unit = parsed
+    from_spec = _UNIT_CONVERSION_FACTORS.get(from_unit)
+    to_spec = _UNIT_CONVERSION_FACTORS.get(to_unit)
+    if from_spec is None or to_spec is None:
+        return None
+
+    from_category, from_factor, from_label = from_spec
+    to_category, to_factor, to_label = to_spec
+    if from_category != to_category:
+        return None
+
+    converted = (value * from_factor) / to_factor
+    source_value = _format_number(value)
+    converted_value = _format_number(converted)
+    response_text = f"{source_value}{from_label}는 {converted_value}{to_label}입니다."
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="unit_conversion",
+        skill="builtin_unit_converter",
+        source_profile="converter",
+        answer_kind="utility_result",
+        task_id="unit_convert",
+        structured_payload={
+            "value": source_value,
+            "from_unit": from_label,
+            "to_unit": to_label,
+            "result": converted_value,
+            "category": from_category,
+        },
+        ui_hints={
+            "show_documents": False,
+            "show_repository": False,
+            "show_inspector": False,
+            "preferred_view": "dashboard",
+        },
+        artifacts=[],
+        presentation=None,
     )
 
 
@@ -474,9 +1011,13 @@ def _response_payload(
     skill: str,
     source_profile: str,
     artifacts: list[dict[str, object]],
-    presentation: dict[str, object],
+    presentation: dict[str, object] | None,
     primary_source_type: str = "none",
     citations: list[dict[str, object]] | None = None,
+    answer_kind: str = "retrieval_result",
+    task_id: str = "",
+    structured_payload: dict[str, object] | None = None,
+    ui_hints: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "query": query,
@@ -518,6 +1059,10 @@ def _response_payload(
             "suggested_replies": [],
             "should_hold": False,
         },
+        "answer_kind": answer_kind,
+        "task_id": task_id,
+        "structured_payload": structured_payload or {},
+        "ui_hints": ui_hints or {},
         "builtin_artifacts": artifacts,
         "builtin_presentation": presentation,
     }
@@ -653,26 +1198,107 @@ def _extract_requested_timezones(query: str) -> list[tuple[str, str]]:
     return zones
 
 
+def _extract_relative_day_anchor(query: str) -> tuple[str, int] | None:
+    normalized = " ".join(query.split()).strip()
+    for label, offset in _RELATIVE_DAY_LABELS:
+        if label in normalized:
+            return label, offset
+    return None
+
+
+def _is_relative_day_only_query(query: str, anchor_label: str) -> bool:
+    normalized = re.sub(r"[\s\?\!\.,]+", "", query.lower())
+    anchor_normalized = anchor_label.lower()
+    if not normalized.startswith(anchor_normalized):
+        return False
+    remainder = normalized[len(anchor_normalized):]
+    return bool(
+        re.fullmatch(
+            r"(?:은|는|이|가|야|이야|였지|였더라|지|인가|인가요|일까|일까요|날짜야|며칠이야|며칠이지|며칠이었지|언제야|언제지)?",
+            remainder,
+        )
+    )
+
+
+def _extract_relative_day_delta(query: str) -> int | None:
+    normalized = " ".join(query.split()).strip()
+    match = re.search(
+        r"(?P<days>\d+)\s*일\s*(?P<direction>후|뒤|전)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if match is None:
+        match = re.search(
+            r"(?P<direction>after|before)\s*(?P<days>\d+)\s*days?",
+            normalized,
+            re.IGNORECASE,
+        )
+    if match is None:
+        return None
+    try:
+        value = int(match.group("days"))
+    except (TypeError, ValueError):
+        return None
+    direction = str(match.group("direction") or "").strip().lower()
+    if direction in {"전", "before"}:
+        return -value
+    return value
+
+
+def _clean_weather_location_candidate(candidate: str) -> str:
+    cleaned = re.sub(
+        r"\b(오늘|내일|현재|날씨|기온|forecast|weather|알려줘|보여줘|검색해줘|좀|좀요)\b",
+        " ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"[?!]+", " ", cleaned)
+    cleaned = re.sub(r"^(?:의|은|는|이|가|을|를|에|에서|로|으로|와|과|도|만)\s*", "", cleaned)
+    cleaned = re.sub(r"\s*(?:의|은|는|이|가|을|를|에|에서|로|으로|와|과|도|만)$", "", cleaned)
+    return _WHITESPACE_RE.sub(" ", cleaned).strip(" ,.?")
+
+
 def _extract_weather_location(query: str) -> str:
     normalized = " ".join(query.split()).strip()
     for pattern in (
         re.compile(r"(?P<location>.+?)\s*(?:의\s*)?(?:오늘\s*)?(?:내일\s*)?(?:현재\s*)?(?:날씨|기온|forecast|weather)", re.IGNORECASE),
-        re.compile(r"(?:날씨|weather)\s*(?:를|를 좀|좀|좀요)?\s*(?:알려줘|보여줘|search|for|in)?\s*(?P<location>.+)$", re.IGNORECASE),
+        re.compile(r"(?:날씨|weather)\s*(?:은|는|이|가)?\s*(?:를|를 좀|좀|좀요)?\s*(?:알려줘|보여줘|search|for|in)?\s*(?P<location>.+)$", re.IGNORECASE),
     ):
         match = pattern.search(normalized)
         if not match:
             continue
-        candidate = match.group("location")
-        cleaned = re.sub(
-            r"\b(오늘|내일|현재|날씨|기온|forecast|weather|알려줘|보여줘|검색해줘|좀|좀요)\b",
-            " ",
-            candidate,
-            flags=re.IGNORECASE,
-        )
-        cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip(" ,")
+        cleaned = _clean_weather_location_candidate(match.group("location"))
         if cleaned:
             return cleaned
     return ""
+
+
+def _resolve_weather_lookup_target(location: str) -> str:
+    normalized = " ".join(location.split()).strip()
+    if not normalized:
+        return ""
+    if re.fullmatch(r"-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?", normalized):
+        return normalized.replace(" ", "")
+
+    geocode_url = (
+        "https://nominatim.openstreetmap.org/search"
+        f"?q={quote_plus(normalized)}&format=jsonv2&limit=1&accept-language=ko"
+    )
+    try:
+        data = _fetch_json(geocode_url)
+    except Exception:
+        return normalized
+    if not isinstance(data, list):
+        return normalized
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        lat = str(item.get("lat", "")).strip()
+        lon = str(item.get("lon", "")).strip()
+        if lat and lon:
+            return f"{lat},{lon}"
+    return normalized
 
 
 def _extract_search_term(query: str) -> str:
@@ -702,7 +1328,124 @@ def _extract_direct_url(query: str) -> str | None:
         return candidate
     if "." not in candidate:
         return None
+    if _FILE_LIKE_TOKEN_RE.fullmatch(candidate):
+        return None
     return f"https://{candidate}"
+
+
+def _looks_like_document_open_query(query: str) -> bool:
+    if not _DOCUMENT_OPEN_QUERY_RE.search(query):
+        return False
+    lowered = query.lower()
+    file_hint = bool(
+        re.search(r"\.(?:md|txt|pdf|docx?|pptx?|xlsx|csv|hwp|hwpx|sql|py|ts|tsx|js|jsx|json|ya?ml)\b", lowered)
+    )
+    keyword_hint = any(
+        token in lowered
+        for token in (
+            "readme",
+            "브로셔",
+            "brochure",
+            "문서",
+            "파일",
+            "슬라이드",
+            "ppt",
+            "pdf",
+            "sheet",
+            "스프레드시트",
+            "보고서",
+            "가이드",
+            "manual",
+        )
+    )
+    detail_hint = any(
+        token in lowered
+        for token in (
+            "컬럼",
+            "요약",
+            "목차",
+            "메뉴",
+            "페이지",
+            "슬라이드 제목",
+            "어떤",
+            "무엇",
+            "알려",
+            "설명",
+            "내용",
+            "기능",
+        )
+    )
+    return (file_hint or keyword_hint) and not detail_hint
+
+
+def _looks_like_document_explain_query(query: str) -> bool:
+    if not (_DOC_EXPLAIN_QUERY_RE.search(query) or _DOC_STRUCTURE_QUERY_RE.search(query)):
+        return False
+    lowered = query.lower()
+    if any(
+        token in lowered
+        for token in (
+            "이 문서",
+            "이 파일",
+            "그 문서",
+            "그 파일",
+            "저 문서",
+            "저 파일",
+            "readme",
+            "projecthub",
+            "브로셔",
+            "brochure",
+            "코드",
+            "문서",
+            "파일",
+            "가이드",
+            "manual",
+        )
+    ):
+        return True
+    if _FILE_LIKE_TOKEN_RE.search(query):
+        return True
+    return bool(re.search(r"(에서|에\s*대해|관련(?:해서)?|기준으로)", query, re.IGNORECASE))
+
+
+def _extract_unit_conversion(query: str) -> tuple[float, str, str] | None:
+    normalized = " ".join(query.split()).strip().rstrip("?.!")
+    patterns = (
+        re.compile(
+            r"(?P<value>-?\d+(?:\.\d+)?)\s*(?P<from>[A-Za-z가-힣]+)\s*(?:는|은|을|를)?\s*몇\s*(?P<to>[A-Za-z가-힣]+)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"convert\s+(?P<value>-?\d+(?:\.\d+)?)\s*(?P<from>[A-Za-z]+)\s+to\s+(?P<to>[A-Za-z]+)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?P<value>-?\d+(?:\.\d+)?)\s*(?P<from>[A-Za-z가-힣]+)\s*(?:to|->|→)\s*(?P<to>[A-Za-z가-힣]+)",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in patterns:
+        match = pattern.search(normalized)
+        if match is None:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            return None
+        from_unit = _normalize_unit_token(match.group("from"))
+        to_unit = _normalize_unit_token(match.group("to"))
+        if from_unit == to_unit:
+            return None
+        if from_unit in _UNIT_CONVERSION_FACTORS and to_unit in _UNIT_CONVERSION_FACTORS:
+            return value, from_unit, to_unit
+    return None
+
+
+def _normalize_unit_token(token: str) -> str:
+    normalized = token.strip().lower()
+    normalized = re.sub(r"(이야|야|인가요|인가|입니까|입니다)$", "", normalized)
+    normalized = re.sub(r"(은|는|을|를|이|가)$", "", normalized)
+    return normalized
 
 
 def _extract_math_expression(query: str) -> str:
@@ -786,14 +1529,15 @@ def _format_number(value: float) -> str:
     return f"{value:,.6f}".rstrip("0").rstrip(".")
 
 
-def _fetch_weather(location: str) -> tuple[dict[str, object], str]:
-    location_path = quote(location) if location else ""
+def _fetch_weather(location: str, *, fallback_label: str | None = None) -> tuple[dict[str, object], str]:
+    display_label = fallback_label or location or "현재 위치"
+    location_path = quote(location, safe=",") if location else ""
     source_url = f"https://wttr.in/{location_path}?format=j1&lang=ko"
     try:
         data = _fetch_json(source_url)
     except Exception as exc:
         fallback_text = (
-            f"{location or '현재 위치'} 날씨 데이터를 가져오지 못했습니다. "
+            f"{display_label} 날씨 데이터를 가져오지 못했습니다. "
             f"네트워크 상태를 확인한 뒤 다시 시도해 주세요."
         )
         return (
@@ -803,7 +1547,7 @@ def _fetch_weather(location: str) -> tuple[dict[str, object], str]:
                         "weatherDesc": [{"value": fallback_text}],
                     }
                 ],
-                "nearest_area": [{"areaName": [{"value": location or "현재 위치"}]}],
+                "nearest_area": [{"areaName": [{"value": display_label}]}],
                 "weather": [],
             },
             source_url,
@@ -977,6 +1721,11 @@ def _now_in_zone(zone_name: str) -> datetime:
     except ZoneInfoNotFoundError:
         zone = timezone.utc
     return datetime.now(timezone.utc).astimezone(zone)
+
+
+def _format_date(value: datetime) -> str:
+    day_name = _DAY_NAMES[value.weekday()]
+    return f"{value.year}년 {value.month}월 {value.day}일 {day_name}요일"
 
 
 def _format_datetime(value: datetime, *, include_zone: bool) -> str:

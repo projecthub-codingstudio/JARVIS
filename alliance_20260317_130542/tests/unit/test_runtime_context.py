@@ -171,3 +171,14 @@ class TestResolveKnowledgeBasePath:
         monkeypatch.delenv("JARVIS_KNOWLEDGE_BASE", raising=False)
         monkeypatch.chdir(tmp_path)
         assert resolve_knowledge_base_path() == (tmp_path / "knowledge_base").resolve()
+
+    def test_walks_up_parent_directories_for_knowledge_base(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("JARVIS_KNOWLEDGE_BASE", raising=False)
+        root = tmp_path / "workspace"
+        nested = root / "alliance" / "src"
+        knowledge_base = root / "knowledge_base"
+        knowledge_base.mkdir(parents=True)
+        nested.mkdir(parents=True)
+        monkeypatch.chdir(nested)
+
+        assert resolve_knowledge_base_path() == knowledge_base.resolve()

@@ -25,6 +25,7 @@ def test_retrieval_regression_fixture_has_minimum_coverage() -> None:
     assert "transcript_tail_noise" in categories
     assert "mixed_task_disambiguation" in categories
     assert "live_data_request" in categories
+    assert "table_overview" in categories
 
 
 def test_retrieval_regression_fixture_has_required_fields() -> None:

@@ -1,3 +1,10 @@
+export type AnswerKind =
+  | 'utility_result'
+  | 'action_result'
+  | 'live_data_result'
+  | 'retrieval_result'
+  | 'capability_gap';
+
 // ── Chat ──────────────────────────────────────
 export interface Message {
   id: string;
@@ -6,6 +13,9 @@ export interface Message {
   content: string;
   citations?: Citation[];
   has_evidence?: boolean;
+  answer_kind?: AnswerKind;
+  task_id?: string;
+  structured_payload?: Record<string, unknown> | null;
 }
 
 // ── Citation / Evidence ───────────────────────
@@ -62,6 +72,12 @@ export interface GuideDirective {
   exploration_mode?: string;
   target_file?: string;
   target_document?: string;
+  ui_hints?: {
+    show_documents: boolean;
+    show_repository: boolean;
+    show_inspector: boolean;
+    preferred_view?: string;
+  };
   presentation: Presentation | null;
   artifacts: Artifact[];
 }
@@ -144,5 +160,151 @@ export interface SystemLog {
   message: string;
 }
 
+// ── Skills / Action Maps ─────────────────────
+export interface SkillIntentLink {
+  intent_id: string;
+  category: string;
+  response_kind: string;
+  implementation_status: string;
+  requires_live_data: boolean;
+  requires_retrieval: boolean;
+  automation_ready: boolean;
+  example_queries: string[];
+}
+
+export interface SkillCard {
+  skill_id: string;
+  title: string;
+  parent_skill_id: string;
+  summary: string;
+  categories: string[];
+  implementation_statuses: string[];
+  requires_live_data: boolean;
+  requires_retrieval: boolean;
+  automation_ready: boolean;
+  response_kinds: string[];
+  example_queries: string[];
+  linked_intents: SkillIntentLink[];
+  linked_intent_ids: string[];
+  local_app_name: string;
+  local_app_installed: boolean | null;
+  detected_local_app_installed: boolean;
+  effective_local_app_installed: boolean;
+  launch_target: string;
+  open_supported: boolean;
+  local_notes: string;
+  api_provider: string;
+  api_configured: boolean;
+  api_scopes: string[];
+  api_notes: string;
+  notes: string;
+  tags: string[];
+  custom_fields: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+  source_kind: string;
+}
+
+export interface SkillCategorySummary {
+  category: string;
+  count: number;
+}
+
+export interface SkillBacklogEntry {
+  query_key: string;
+  query_text: string;
+  query_samples: string[];
+  occurrence_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_session_id: string;
+  session_ids: string[];
+  weekday_histogram: Record<string, number>;
+  hour_histogram: Record<string, number>;
+  date_histogram: Record<string, number>;
+  last_status_mode: string;
+  last_response_text: string;
+  inferred_intent: string;
+  review_state: string;
+  suggested_skill_id: string;
+}
+
+export interface SkillCatalog {
+  registry_version: string;
+  generated_at: string;
+  implemented_intent_count: number;
+  planned_intent_count: number;
+  skill_count: number;
+  categories: SkillCategorySummary[];
+  skills: SkillCard[];
+  backlog: SkillBacklogEntry[];
+}
+
+export interface SkillProfileInput {
+  title?: string | null;
+  parent_skill_id?: string | null;
+  summary?: string | null;
+  local_app_name?: string | null;
+  local_app_installed?: boolean | null;
+  launch_target?: string | null;
+  open_supported?: boolean | null;
+  local_notes?: string | null;
+  api_provider?: string | null;
+  api_configured?: boolean | null;
+  api_scopes?: string[];
+  api_notes?: string | null;
+  notes?: string | null;
+  tags?: string[];
+  linked_intents?: string[];
+  custom_fields?: Record<string, string>;
+}
+
+export interface SkillProfileCreateInput extends SkillProfileInput {
+  skill_id: string;
+}
+
+export interface ActionMapNode {
+  node_id: string;
+  skill_id: string;
+  title: string;
+  x: number;
+  y: number;
+  config: Record<string, string>;
+}
+
+export interface ActionMapEdge {
+  edge_id: string;
+  source: string;
+  target: string;
+  label: string;
+}
+
+export interface ActionMap {
+  map_id: string;
+  title: string;
+  description: string;
+  trigger_query: string;
+  notes: string;
+  tags: string[];
+  nodes: ActionMapNode[];
+  edges: ActionMapEdge[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActionMapInput {
+  title?: string | null;
+  description?: string | null;
+  trigger_query?: string | null;
+  notes?: string | null;
+  tags?: string[];
+  nodes?: ActionMapNode[];
+  edges?: ActionMapEdge[];
+}
+
+export interface ActionMapCreateInput extends ActionMapInput {
+  map_id: string;
+}
+
 // ── View ──────────────────────────────────────
-export type ViewState = 'dashboard' | 'detail_viewer' | 'repository' | 'admin';
+export type ViewState = 'home' | 'terminal' | 'detail_viewer' | 'repository' | 'skills' | 'admin';

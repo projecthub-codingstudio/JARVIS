@@ -49,6 +49,17 @@ _NOISE_TOKEN_RE = re.compile(r"^(?:오프셋|자료형|의미|설명|길이|바�
 _EXPLANATORY_PHRASE_RE = re.compile(r"(?:이다|있다|된다|한다|의미|설명|구조로 저장|때문에|가능하다|존재한다)")
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 _PATH_LIKE_SEGMENT_RE = re.compile(r"(?:/[^/\s]+){2,}|\\[^\\\s]+(?:\\[^\\\s]+){1,}|]\(|workspace/|#L\d+", re.IGNORECASE)
+_SQL_SCHEMA_QUERY_RE = re.compile(
+    r"(?:컬럼|column|columns|필드|fields?|schema|스키마)",
+    re.IGNORECASE,
+)
+_SQL_TABLE_SECTION_RE = re.compile(
+    r"\[Table:\s*(?P<label>[^\]]+)\]\s*"
+    r"(?:\n|\r\n?)\s*column\s*\|\s*type\s*\|\s*nullable\s*\|\s*description\s*"
+    r"(?:\n|\r\n?)\s*-+\s*(?:\n|\r\n?)"
+    r"(?P<body>(?:\s*[^\n|]+\|[^\n|]+\|[^\n|]+\|[^\n]*(?:\n|\r\n?)?)+)",
+    re.IGNORECASE,
+)
 
 _KOREAN_NUMBER_WORDS = {
     0: "영",
@@ -84,7 +95,7 @@ _KOREAN_UNIT_LABELS = {
 }
 _QUERY_STOPWORDS = {
     "알려줘", "알려주세요", "설명", "설명해", "설명해줘", "설명해주세요", "대해", "대해서",
-    "그리고", "에서", "중에", "해주세요",
+    "그리고", "보여줘", "보여주세요", "에서", "중에", "해주세요",
     "요약", "정리", "좀", "관련", "반갑습니다", "안녕하세요", "만나서",
 }
 _KOREAN_POSTPOSITION_SUFFIXES = (
@@ -132,12 +143,16 @@ def _extract_requested_identifier(prompt: str, evidence: VerifiedEvidenceSet) ->
 def build_stub_spoken_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
     if table_response := _build_table_stub_response(prompt, evidence, spoken=True):
         return table_response
+    if schema_response := _build_sql_schema_stub_response(prompt, evidence):
+        return schema_response
     return ""
 
 
 def _build_stub_grounded_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
     if table_response := _build_table_stub_response(prompt, evidence, spoken=False):
         return _append_primary_citation_if_missing(table_response, evidence)
+    if schema_response := _build_sql_schema_stub_response(prompt, evidence):
+        return _append_primary_citation_if_missing(schema_response, evidence)
     head = _extract_best_stub_snippet(prompt, evidence)
     identifier = _extract_requested_identifier(prompt, evidence)
 
@@ -210,6 +225,160 @@ def _build_table_stub_response(
     if requested_fields:
         return " / ".join(rendered_rows[:3])
     return " ".join(rendered_rows[:3])
+
+
+def _build_sql_schema_stub_response(prompt: str, evidence: VerifiedEvidenceSet) -> str:
+    if not _SQL_SCHEMA_QUERY_RE.search(prompt):
+        return ""
+
+    sections = _collect_sql_table_sections(evidence)
+    if not sections:
+        return ""
+
+    selected = _select_sql_table_section(prompt, sections)
+    if selected is None:
+        return ""
+
+    filtered_rows = _filter_sql_schema_rows(prompt, selected)
+    rows = filtered_rows or selected["rows"]
+    if not rows:
+        return ""
+
+    display_name = str(selected["table_name"])
+    limited_rows = rows[:20]
+    lines = [f"`{display_name}` 테이블의 컬럼 정보입니다."]
+    for row in limited_rows:
+        nullable = row["nullable"] or "NULL 허용 여부 미표시"
+        description = row["description"] or "-"
+        lines.append(
+            f"- `{row['column']}`: `{row['type']}`, `{nullable}`, 설명 `{description}`"
+        )
+    if len(rows) > len(limited_rows):
+        lines.append(f"- 외 {len(rows) - len(limited_rows)}개 컬럼")
+    return "\n".join(lines)
+
+
+def _collect_sql_table_sections(evidence: VerifiedEvidenceSet) -> list[dict[str, object]]:
+    sections: list[dict[str, object]] = []
+    grouped_text: dict[str, list[str]] = {}
+    group_order: list[str] = []
+
+    for item in evidence.items[:5]:
+        if not _looks_like_sql_schema_item(item):
+            continue
+        group_key = item.source_path or item.document_id or item.chunk_id
+        if group_key not in grouped_text:
+            grouped_text[group_key] = []
+            group_order.append(group_key)
+        grouped_text[group_key].append(item.text)
+
+    for group_key in group_order:
+        combined = "\n".join(text for text in grouped_text[group_key] if text)
+        source_name = Path(group_key).name if group_key else ""
+        for match in _SQL_TABLE_SECTION_RE.finditer(combined):
+            label = match.group("label").strip()
+            rows = _parse_sql_schema_rows(match.group("body"))
+            if not rows:
+                continue
+            table_name = label.split(" (", 1)[0].strip()
+            sections.append({
+                "label": label,
+                "table_name": table_name,
+                "source_name": source_name,
+                "rows": rows,
+            })
+
+    return sections
+
+
+def _looks_like_sql_schema_item(item) -> bool:
+    source_path = str(getattr(item, "source_path", "") or "")
+    if source_path.lower().endswith(".sql"):
+        return True
+    text = str(getattr(item, "text", "") or "")
+    return "[Table:" in text and "column | type | nullable | description" in text
+
+
+def _parse_sql_schema_rows(body: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line or set(line) == {"-"} or "|" not in line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 4:
+            continue
+        column, col_type, nullable, description = parts[:4]
+        if not column or column.lower() == "column":
+            continue
+        rows.append({
+            "column": column,
+            "type": col_type,
+            "nullable": nullable,
+            "description": description,
+        })
+    return rows
+
+
+def _select_sql_table_section(prompt: str, sections: list[dict[str, object]]) -> dict[str, object] | None:
+    query_terms = _extract_query_terms(prompt)
+    meaningful_terms = [
+        term for term in query_terms
+        if term not in {"테이블", "table", "컬럼", "column", "columns", "필드", "field", "fields", "정보", "schema", "스키마"}
+    ]
+
+    best_section: dict[str, object] | None = None
+    best_score = -1.0
+    for index, section in enumerate(sections):
+        label = str(section["label"]).lower()
+        source_name = str(section["source_name"]).lower()
+        table_name = str(section["table_name"]).lower()
+        score = max(0.0, 12.0 - index)
+        for term in meaningful_terms:
+            if term in table_name:
+                score += 20.0
+            elif term in source_name:
+                score += 18.0
+            elif term in label:
+                score += 12.0
+        if not meaningful_terms:
+            score += 4.0
+        if score > best_score:
+            best_score = score
+            best_section = section
+    return best_section
+
+
+def _filter_sql_schema_rows(prompt: str, section: dict[str, object]) -> list[dict[str, str]]:
+    query_terms = _extract_query_terms(prompt)
+    section_haystack = " ".join(
+        (
+            str(section["table_name"]).lower(),
+            str(section["label"]).lower(),
+            str(section["source_name"]).lower(),
+        )
+    )
+    residual_terms = [
+        term for term in query_terms
+        if term not in {"테이블", "table", "컬럼", "column", "columns", "필드", "field", "fields", "정보", "schema", "스키마"}
+        and term not in section_haystack
+    ]
+    if not residual_terms:
+        return []
+
+    matched_rows: list[dict[str, str]] = []
+    for row in section["rows"]:
+        row_haystack = " ".join(
+            (
+                row["column"].lower(),
+                row["type"].lower(),
+                row["nullable"].lower(),
+                row["description"].lower(),
+            )
+        )
+        if any(term in row_haystack for term in residual_terms):
+            matched_rows.append(row)
+    return matched_rows
 
 
 def _requested_table_fields(prompt: str) -> list[str] | None:
@@ -548,10 +717,14 @@ def _split_document_segments(text: str) -> list[str]:
         if len(collapsed) < 12:
             if len(collapsed) < 8:
                 continue
-            if not (_EXPLANATORY_PHRASE_RE.search(collapsed) or collapsed.endswith((".", "!", "?"))):
+            if not (
+                _EXPLANATORY_PHRASE_RE.search(collapsed)
+                or collapsed.endswith((".", "!", "?"))
+                or len(re.findall(r"[A-Za-z0-9가-힣]+", collapsed)) >= 2
+            ):
                 continue
         cleaned_segments.append(_truncate_stub_segment(collapsed))
-    return cleaned_segments[:20]
+    return cleaned_segments[:60]
 
 
 def _truncate_stub_segment(segment: str, *, max_chars: int = 320) -> str:
@@ -579,6 +752,8 @@ def _truncate_stub_segment(segment: str, *, max_chars: int = 320) -> str:
 def _expand_stub_excerpt(segment: str, segments: list[str], segment_index: int) -> str:
     if not segment or not segments or segment_index < 0:
         return segment
+    if _is_heading_like_segment(segment):
+        return _expand_heading_like_excerpt(segment, segments, segment_index)
     combined = segment
     if segment_index + 1 < len(segments):
         next_segment = segments[segment_index + 1]
@@ -587,6 +762,30 @@ def _expand_stub_excerpt(segment: str, segments: list[str], segment_index: int) 
             if len(candidate) <= 320:
                 combined = candidate
     return combined
+
+
+def _expand_heading_like_excerpt(
+    segment: str,
+    segments: list[str],
+    segment_index: int,
+    *,
+    max_chars: int = 320,
+    max_followups: int = 6,
+) -> str:
+    collected = [segment]
+    followups = 0
+    for index in range(segment_index + 1, len(segments)):
+        next_segment = segments[index].strip()
+        if not next_segment or _NOISE_TOKEN_RE.match(next_segment.lower()) or _is_path_like_segment(next_segment):
+            continue
+        candidate = " ".join([*collected, next_segment]).strip()
+        if len(candidate) > max_chars:
+            break
+        collected.append(next_segment)
+        followups += 1
+        if followups >= max_followups:
+            break
+    return " ".join(collected).strip()
 
 
 def _is_useful_followup_segment(segment: str) -> bool:
@@ -615,13 +814,16 @@ def _is_heading_like_segment(segment: str) -> bool:
 
 
 def _score_document_segment(segment: str, query_terms: list[str]) -> float:
-    if _is_heading_like_segment(segment):
-        return 0.0
-
     lowered = segment.lower()
     overlap_terms = [term for term in query_terms if term in lowered]
     if not overlap_terms:
         return 0.0
+
+    if _is_heading_like_segment(segment):
+        if len(overlap_terms) < 2:
+            return 0.0
+        return float(len(overlap_terms) * 14 + 2)
+
     if _is_path_like_segment(segment) and len(overlap_terms) <= 1:
         return 0.0
 

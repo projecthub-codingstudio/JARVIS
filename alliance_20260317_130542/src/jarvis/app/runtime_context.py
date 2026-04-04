@@ -54,7 +54,14 @@ def resolve_knowledge_base_path(candidate: Path | None = None) -> Path:
     if env_value:
         return Path(env_value).expanduser().resolve()
 
-    return (Path.cwd() / _DEFAULT_KB_DIRNAME).resolve()
+    cwd = Path.cwd().resolve()
+    search_roots = [cwd, *list(cwd.parents)[:4]]
+    for root in search_roots:
+        kb_path = (root / _DEFAULT_KB_DIRNAME).resolve()
+        if kb_path.exists():
+            return kb_path
+
+    return (cwd / _DEFAULT_KB_DIRNAME).resolve()
 
 
 @dataclass

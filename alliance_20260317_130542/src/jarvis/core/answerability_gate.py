@@ -100,6 +100,12 @@ class AnswerabilityGate:
                 reason_code="table_lookup_supported",
                 confidence=0.88,
             )
+        if _supports_table_overview_lookup(list(evidence.items[:5]), analysis):
+            return AnswerabilityAssessment(
+                decision="answer",
+                reason_code="table_overview_supported",
+                confidence=0.81,
+            )
 
         top_overlap = _best_overlap(top_item, query_terms)
         top_overlap_ratio = _overlap_ratio(top_overlap, query_terms)
@@ -285,6 +291,28 @@ def _supports_structured_table_lookup(items: list[EvidenceItem], analysis: objec
     return True
 
 
+def _supports_table_overview_lookup(items: list[EvidenceItem], analysis: object | None) -> bool:
+    if str(getattr(analysis, "retrieval_task", "") or "") != "table_lookup":
+        return False
+
+    entities = getattr(analysis, "entities", {}) or {}
+    if not isinstance(entities, dict):
+        return False
+    if entities.get("row_ids") or entities.get("fields"):
+        return False
+
+    candidate_items = [item for item in items if _looks_like_structured_table_item(item)]
+    if not candidate_items:
+        return False
+
+    source_keys = {
+        _table_source_key(item)
+        for item in candidate_items
+        if _table_source_key(item)
+    }
+    return len(source_keys) == 1
+
+
 def _looks_like_table_item(item: EvidenceItem) -> bool:
     suffix = Path(item.source_path).suffix.lower() if item.source_path else ""
     if suffix in _TABLE_FILE_SUFFIXES:
@@ -294,6 +322,20 @@ def _looks_like_table_item(item: EvidenceItem) -> bool:
         return True
     haystack = _item_text(item)
     return "day=" in haystack or "breakfast=" in haystack or "lunch=" in haystack or "dinner=" in haystack
+
+
+def _looks_like_structured_table_item(item: EvidenceItem) -> bool:
+    suffix = Path(item.source_path).suffix.lower() if item.source_path else ""
+    if suffix in _TABLE_FILE_SUFFIXES:
+        return True
+    haystack = _item_text(item)
+    return (
+        "day=" in haystack
+        or "breakfast=" in haystack
+        or "lunch=" in haystack
+        or "dinner=" in haystack
+        or ("columns:" in haystack and any(alias in haystack for alias in ("breakfast", "lunch", "dinner")))
+    )
 
 
 def _table_row_matched(haystack: str, row_id: str) -> bool:
@@ -310,6 +352,12 @@ def _table_field_matched(haystack: str, field: str) -> bool:
     aliases.add(normalized.replace("_", " "))
     aliases.add(normalized.replace("_", ""))
     return any(alias and alias in haystack for alias in aliases)
+
+
+def _table_source_key(item: EvidenceItem) -> str:
+    if item.source_path:
+        return _normalize_match_text(Path(item.source_path).name).lower()
+    return _normalize_match_text(str(item.document_id or "")).lower().strip()
 
 
 def _normalize_match_text(text: str) -> str:

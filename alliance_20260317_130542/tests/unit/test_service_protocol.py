@@ -9,6 +9,7 @@ import pytest
 
 from jarvis.service.application import (
     JarvisApplicationService,
+    _menu_bar_model_chain,
     _menu_bridge_timeout_seconds,
     _reset_runtime_context_cache_for_tests,
 )
@@ -555,6 +556,11 @@ def test_application_service_ask_text_reuses_cached_runtime_context(monkeypatch)
     service = JarvisApplicationService()
     observed_contexts: list[object] = []
     build_calls: list[str] = []
+    monkeypatch.delenv("JARVIS_MENU_BAR_MODEL_CHAIN", raising=False)
+    monkeypatch.setattr(
+        "jarvis.service.application._installed_ollama_models",
+        lambda: ("qwen3:14b",),
+    )
 
     @dataclass(frozen=True)
     class FakeResponse:
@@ -611,9 +617,19 @@ def test_application_service_ask_text_reuses_cached_runtime_context(monkeypatch)
     response = service.handle(request)
     assert response.ok is True
 
-    assert build_calls == ["stub"]
+    assert build_calls == ["qwen3:14b"]
     assert len(observed_contexts) == 2
     assert observed_contexts[0] is observed_contexts[1]
+
+
+def test_default_menu_bar_model_chain_prefers_model_backed_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("JARVIS_MENU_BAR_MODEL_CHAIN", raising=False)
+    monkeypatch.setattr(
+        "jarvis.service.application._installed_ollama_models",
+        lambda: ("qwen3:14b", "llama3.2:latest"),
+    )
+
+    assert _menu_bar_model_chain() == ("qwen3:14b", "stub")
 
 
 def test_menu_bridge_timeout_prefers_longer_budget_for_model_backed_ask(monkeypatch) -> None:
