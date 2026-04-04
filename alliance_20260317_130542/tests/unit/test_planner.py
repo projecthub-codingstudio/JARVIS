@@ -65,6 +65,16 @@ def test_planner_classifies_table_lookup_with_row_and_field_entities() -> None:
     assert analysis.entities["fields"] == ["Dinner"]
 
 
+def test_planner_expands_table_overview_terms_for_retrieval() -> None:
+    planner = Planner()
+
+    analysis = planner.analyze("다이어트 식단표 보여줘")
+
+    assert analysis.retrieval_task == "table_lookup"
+    assert "diet" in analysis.search_terms
+    assert "menu" in analysis.search_terms
+
+
 def test_planner_classifies_code_lookup_from_filename() -> None:
     planner = Planner(lightweight_backend=None)
 

@@ -14,6 +14,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from jarvis.service.application import JarvisApplicationService
+from jarvis.service.intent_skill_store import (
+    build_skill_catalog,
+    create_action_map,
+    create_skill_profile,
+    list_action_maps,
+    upsert_action_map,
+    upsert_skill_profile,
+)
 from jarvis.service.protocol import RpcRequest, RpcResponse
 
 
@@ -61,6 +69,43 @@ class NormalizeRequest(BaseModel):
 
 class NormalizeResponse(BaseModel):
     normalized_query: str
+
+
+class SkillProfilePayload(BaseModel):
+    title: str | None = None
+    parent_skill_id: str | None = None
+    summary: str | None = None
+    local_app_name: str | None = None
+    local_app_installed: bool | None = None
+    launch_target: str | None = None
+    open_supported: bool | None = None
+    local_notes: str | None = None
+    api_provider: str | None = None
+    api_configured: bool | None = None
+    api_scopes: list[str] = []
+    api_notes: str | None = None
+    notes: str | None = None
+    tags: list[str] = []
+    linked_intents: list[str] = []
+    custom_fields: dict[str, str] = {}
+
+
+class SkillProfileCreateRequest(SkillProfilePayload):
+    skill_id: str
+
+
+class ActionMapPayload(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    trigger_query: str | None = None
+    notes: str | None = None
+    tags: list[str] = []
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+
+class ActionMapCreateRequest(ActionMapPayload):
+    map_id: str
 
 
 # HTTP Endpoints
@@ -135,6 +180,52 @@ async def runtime_state():
         )
     
     return rpc_response.payload
+
+
+@app.get("/api/skills")
+async def skills_catalog() -> dict[str, Any]:
+    return {"catalog": build_skill_catalog()}
+
+
+@app.post("/api/skills")
+async def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
+    try:
+        profile = create_skill_profile(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"profile": profile, "catalog": build_skill_catalog()}
+
+
+@app.put("/api/skills/{skill_id}")
+async def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
+    try:
+        profile = upsert_skill_profile(skill_id, request.model_dump(exclude_none=False))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"profile": profile, "catalog": build_skill_catalog()}
+
+
+@app.get("/api/action-maps")
+async def action_maps() -> dict[str, Any]:
+    return {"maps": list_action_maps()}
+
+
+@app.post("/api/action-maps")
+async def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
+    try:
+        action_map = create_action_map(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"action_map": action_map, "maps": list_action_maps()}
+
+
+@app.put("/api/action-maps/{map_id}")
+async def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
+    try:
+        action_map = upsert_action_map(map_id, request.model_dump(exclude_none=False))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"action_map": action_map, "maps": list_action_maps()}
 
 
 @app.get("/api/file")

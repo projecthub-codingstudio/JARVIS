@@ -80,7 +80,9 @@ _FILENAME_REWRITE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "다이어트": ("diet",),
     "아키텍처": ("architecture",),
+    "아침": ("breakfast",),
     "구조": ("architecture", "structure"),
     "브로셔": ("brochure",),
     "검색": ("search", "retrieval"),
@@ -94,8 +96,13 @@ _BILINGUAL_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "음성": ("voice", "audio"),
     "인식": ("recognition",),
     "모델": ("model",),
+    "메뉴": ("menu", "meal"),
     "파이프라인": ("pipeline",),
     "오케스트레이터": ("orchestrator",),
+    "식단": ("diet", "meal", "menu", "plan"),
+    "식단표": ("diet", "meal", "menu", "plan"),
+    "점심": ("lunch",),
+    "저녁": ("dinner",),
     "거버너": ("governor",),
     "planner": ("query", "intent", "planning"),
     "retrieval": ("search", "fts", "vector"),
@@ -467,6 +474,8 @@ class Planner:
     def _should_use_lightweight(raw_text: str, baseline: QueryAnalysis) -> bool:
         if not raw_text.strip():
             return False
+        if baseline.retrieval_task == "table_lookup":
+            return True
         if baseline.confidence < 0.7:
             return True
         if _detect_language(raw_text) == "mixed":

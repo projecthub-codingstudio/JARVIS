@@ -121,6 +121,7 @@ const LoadingSpinner = () => (
 
 export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, content }) => {
   const Renderer = selectRenderer(artifact);
+  const rendererMeta = Renderer as unknown as { displayName?: string; name?: string };
 
   if (import.meta.env.DEV) {
     console.log('[ViewerRouter]', {
@@ -129,7 +130,7 @@ export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, c
       source_type: artifact.source_type,
       path: artifact.path,
       full_path: artifact.full_path,
-      renderer: Renderer.displayName || Renderer.name || 'lazy',
+      renderer: rendererMeta.displayName || rendererMeta.name || 'lazy',
     });
   }
 

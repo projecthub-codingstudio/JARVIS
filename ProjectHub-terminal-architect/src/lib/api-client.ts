@@ -1,11 +1,18 @@
 import type {
+  AnswerKind,
   Citation,
   Artifact,
+  ActionMap,
+  ActionMapCreateInput,
+  ActionMapInput,
   Presentation,
   GuideDirective,
   Exploration,
   SourcePresentation,
   RenderHints,
+  SkillCatalog,
+  SkillProfileCreateInput,
+  SkillProfileInput,
   Status,
 } from '../types';
 
@@ -44,6 +51,9 @@ export interface Answer {
   spoken_text: string;
   has_evidence: boolean;
   citation_count: number;
+  kind: AnswerKind;
+  task_id?: string | null;
+  structured_payload?: Record<string, unknown> | null;
   full_response_path?: string;
 }
 
@@ -60,6 +70,18 @@ export interface HealthResponse {
     memory_usage: number;
     index_status: string;
   };
+}
+
+export interface SkillCatalogResponse {
+  catalog: SkillCatalog;
+}
+
+export interface SkillMutationResponse {
+  catalog: SkillCatalog;
+}
+
+export interface ActionMapsResponse {
+  maps: ActionMap[];
 }
 
 // ── API Client ────────────────────────────────
@@ -98,6 +120,74 @@ export const apiClient = {
       throw new Error(`Normalization failed: ${response.statusText}`);
     }
 
+    return response.json();
+  },
+
+  async fetchSkillCatalog(): Promise<SkillCatalogResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/skills`);
+    if (!response.ok) {
+      throw new Error(`Skill catalog failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async createSkillProfile(request: SkillProfileCreateInput): Promise<SkillMutationResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/skills`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Create skill failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async updateSkillProfile(skillId: string, request: SkillProfileInput): Promise<SkillMutationResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/skills/${encodeURIComponent(skillId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Update skill failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async fetchActionMaps(): Promise<ActionMapsResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/action-maps`);
+    if (!response.ok) {
+      throw new Error(`Action maps failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async createActionMap(request: ActionMapCreateInput): Promise<ActionMapsResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/action-maps`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Create action map failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async updateActionMap(mapId: string, request: ActionMapInput): Promise<ActionMapsResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/action-maps/${encodeURIComponent(mapId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Update action map failed: ${response.statusText}`);
+    }
     return response.json();
   },
 

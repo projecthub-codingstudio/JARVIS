@@ -24,7 +24,7 @@ interface AppState {
   clearMessages: () => void;
   setCitations: (citations: Citation[]) => void;
   setGuide: (guide: GuideDirective) => void;
-  setPresentation: (presentation: Presentation) => void;
+  setPresentation: (presentation: Presentation | null) => void;
   setHasEvidence: (hasEvidence: boolean) => void;
   setSessionId: (sessionId: string) => void;
   addLog: (log: SystemLog) => void;

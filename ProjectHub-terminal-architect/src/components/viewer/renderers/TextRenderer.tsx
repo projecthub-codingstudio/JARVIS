@@ -45,22 +45,23 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-surface-lowest">
         <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="h-full overflow-auto custom-scrollbar bg-surface-low p-6 font-mono text-sm">
+    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-6 font-mono text-sm">
+      <div className="mx-auto max-w-5xl rounded-xl border border-white/8 bg-surface px-4 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
       <table className="w-full border-collapse">
         <tbody>
           {visibleLines.map((line, i) => (
-            <tr key={i} className="hover:bg-surface-highest/30">
+            <tr key={i} className="hover:bg-surface-container-high/45">
               <td className="pr-4 text-right text-outline select-none w-12 align-top text-xs">
                 {i + 1}
               </td>
-              <td className="text-on-surface-variant whitespace-pre-wrap break-all">
+              <td className="text-on-surface whitespace-pre-wrap break-all">
                 {line || '\u00A0'}
               </td>
             </tr>
@@ -76,6 +77,7 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
           더 보기 ({remaining}줄 남음)
         </button>
       )}
+      </div>
     </div>
   );
 };

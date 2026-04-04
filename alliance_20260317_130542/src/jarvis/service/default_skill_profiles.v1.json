@@ -1,0 +1,223 @@
+{
+  "version": "2026-04-04",
+  "profiles": {
+    "builtin_time": {
+      "title": "Time Lookup",
+      "summary": "현재 날짜, 시각, 시간대별 기준 시각을 deterministic하게 계산합니다.",
+      "parent_skill_id": "system_time",
+      "local_notes": "Asia/Seoul 기준 시간을 우선으로 사용하고, 요청된 timezone alias를 해석합니다.",
+      "notes": "문서 RAG를 타지 않는 기본 유틸리티 스킬입니다.",
+      "tags": ["time", "timezone", "builtin"],
+      "linked_intents": ["datetime_now", "timezone_now"]
+    },
+    "builtin_date_relative": {
+      "title": "Relative Date Resolver",
+      "summary": "오늘, 모레, 글피, N일 후/전 같은 상대 날짜 표현을 절대 날짜로 계산합니다.",
+      "parent_skill_id": "system_time",
+      "local_notes": "세션에 마지막 상대 날짜를 저장해서 follow-up automation에 재사용합니다.",
+      "notes": "calendar follow-up과 일정 생성의 날짜 앵커로 사용됩니다.",
+      "tags": ["date", "relative-date", "builtin"],
+      "linked_intents": ["relative_date"]
+    },
+    "builtin_calculator": {
+      "title": "Calculator",
+      "summary": "사칙연산과 퍼센트 계산을 안전한 AST evaluator로 처리합니다.",
+      "parent_skill_id": "system_utility",
+      "local_notes": "LLM 없이 deterministic하게 계산합니다.",
+      "notes": "복잡한 수식보다 즉답형 계산에 맞춘 스킬입니다.",
+      "tags": ["math", "calculator", "builtin"],
+      "linked_intents": ["math_eval"]
+    },
+    "builtin_unit_converter": {
+      "title": "Unit Converter",
+      "summary": "길이, 저장소, 무게, 시간 단위를 변환합니다.",
+      "parent_skill_id": "system_utility",
+      "local_notes": "사전 정의된 conversion factor로만 변환합니다.",
+      "notes": "모호한 단위나 복합 단위는 후속 확장 대상입니다.",
+      "tags": ["conversion", "units", "builtin"],
+      "linked_intents": ["unit_convert"]
+    },
+    "builtin_help": {
+      "title": "Capability Help",
+      "summary": "현재 intent registry 기준으로 가능한 기능과 예시 질의를 안내합니다.",
+      "parent_skill_id": "system_help",
+      "local_notes": "intent registry를 읽어 UI용 capability 그룹을 생성합니다.",
+      "notes": "하드코딩된 도움말이 아니라 registry 기반 help 스킬입니다.",
+      "tags": ["help", "registry", "builtin"],
+      "linked_intents": ["capability_help"]
+    },
+    "builtin_runtime_status": {
+      "title": "Runtime Status",
+      "summary": "현재 모델 체인, 인덱스 상태, health 정보를 요약합니다.",
+      "parent_skill_id": "system_help",
+      "local_notes": "health endpoint와 runtime details를 utility card로 반환합니다.",
+      "notes": "운영 상태 점검용 스킬입니다.",
+      "tags": ["runtime", "health", "builtin"],
+      "linked_intents": ["runtime_status"]
+    },
+    "builtin_web_link": {
+      "title": "Direct Web Link",
+      "summary": "명시된 URL이나 도메인을 바로 여는 웹 연결 스킬입니다.",
+      "parent_skill_id": "web_navigation",
+      "local_app_name": "Safari",
+      "launch_target": "Safari",
+      "open_supported": true,
+      "local_notes": "직접 URL이 보이면 검색 없이 바로 웹 artifact로 연결합니다.",
+      "notes": "기본 브라우저로 열도록 확장할 수 있습니다.",
+      "tags": ["web", "open", "browser"],
+      "linked_intents": ["open_website"]
+    },
+    "builtin_web_search": {
+      "title": "Web Search",
+      "summary": "웹 검색이 필요한 질의를 live query로 연결합니다.",
+      "parent_skill_id": "web_navigation",
+      "api_provider": "Search Provider",
+      "api_notes": "현재 런타임의 검색 경로와 연결된 live task입니다.",
+      "notes": "추천형/최신형 질의에서 사용됩니다.",
+      "tags": ["web", "search", "live"],
+      "linked_intents": ["web_search"]
+    },
+    "builtin_recent_context": {
+      "title": "Recent Context",
+      "summary": "세션에서 방금 본 문서나 최근 근거를 다시 엽니다.",
+      "parent_skill_id": "document_navigation",
+      "local_notes": "세션 상태의 active_target과 recent_targets를 사용합니다.",
+      "notes": "문서 탐색 continuity를 유지하는 스킬입니다.",
+      "tags": ["document", "session", "context"],
+      "linked_intents": ["recent_context"]
+    },
+    "builtin_document_summary": {
+      "title": "Document Summary",
+      "summary": "선택한 문서나 지정한 문서의 핵심 내용을 요약합니다.",
+      "parent_skill_id": "document_analysis",
+      "local_notes": "문서 타입별 parser 결과를 deterministic하게 요약합니다.",
+      "notes": "필요 시 topic summary의 AI synthesis와 함께 사용됩니다.",
+      "tags": ["document", "summary", "analysis"],
+      "linked_intents": ["doc_summary"]
+    },
+    "builtin_document_outline": {
+      "title": "Document Outline",
+      "summary": "문서의 목차, 헤딩, 코드 구조를 outline 형태로 정리합니다.",
+      "parent_skill_id": "document_analysis",
+      "local_notes": "슬라이드, 페이지, 코드 심볼을 구조적으로 추출합니다.",
+      "notes": "README, 코드 파일, 슬라이드 deck 구조 파악에 사용됩니다.",
+      "tags": ["document", "outline", "structure"],
+      "linked_intents": ["doc_outline"]
+    },
+    "builtin_document_sheet_list": {
+      "title": "Sheet List",
+      "summary": "스프레드시트 문서의 시트 목록을 반환합니다.",
+      "parent_skill_id": "document_spreadsheet",
+      "local_notes": "xlsx/csv 문서 파서 결과에서 시트 이름을 추출합니다.",
+      "notes": "표 기반 문서 탐색 진입점입니다.",
+      "tags": ["spreadsheet", "sheet", "document"],
+      "linked_intents": ["sheet_list"]
+    },
+    "builtin_document_sheet": {
+      "title": "Sheet Detail",
+      "summary": "지정한 시트 또는 n번째 시트 내용을 엽니다.",
+      "parent_skill_id": "document_spreadsheet",
+      "local_notes": "세션의 마지막 시트 선택 문맥을 저장합니다.",
+      "notes": "table lookup과 연결되는 문서 스킬입니다.",
+      "tags": ["spreadsheet", "sheet", "document"],
+      "linked_intents": ["doc_sheet"]
+    },
+    "builtin_document_section": {
+      "title": "Document Section",
+      "summary": "슬라이드, 페이지, 다음/이전 섹션을 문맥 기반으로 엽니다.",
+      "parent_skill_id": "document_navigation",
+      "local_notes": "last_section_kind/last_section_index를 세션에 저장합니다.",
+      "notes": "PPT/PDF 등 섹션형 문서 탐색에 사용됩니다.",
+      "tags": ["document", "slide", "page"],
+      "linked_intents": ["doc_section"]
+    },
+    "builtin_document_open": {
+      "title": "Open Document",
+      "summary": "파일명이나 문서명으로 지정한 문서를 엽니다.",
+      "parent_skill_id": "document_navigation",
+      "local_notes": "knowledge base 파일과 세션 문맥을 함께 탐색합니다.",
+      "notes": "Documents/Repository 진입점 역할을 합니다.",
+      "tags": ["document", "open", "navigation"],
+      "linked_intents": ["open_document"]
+    },
+    "builtin_calendar_followup": {
+      "title": "Calendar Follow-up",
+      "summary": "이전 턴의 상대 날짜 문맥을 이어받아 일정 생성이나 clarification으로 연결합니다.",
+      "parent_skill_id": "calendar",
+      "local_app_name": "Calendar",
+      "launch_target": "Calendar",
+      "open_supported": true,
+      "local_notes": "last_relative_date 세션 상태를 읽어 calendar_create로 handoff 합니다.",
+      "notes": "직접 일정을 만드는 스킬이 아니라 날짜 문맥을 이어주는 브리지 스킬입니다.",
+      "tags": ["calendar", "followup", "context"],
+      "linked_intents": ["calendar_followup"]
+    },
+    "google_calendar_daily_brief": {
+      "title": "Google Calendar Daily Brief",
+      "summary": "연결된 Google Calendar를 기준으로 오늘/내일 일정을 요약합니다.",
+      "parent_skill_id": "calendar",
+      "api_provider": "Google Calendar",
+      "api_configured": false,
+      "api_scopes": ["calendar.readonly"],
+      "api_notes": "Google Calendar connector가 연결되면 daily brief, agenda, availability를 처리합니다.",
+      "notes": "현재 registry에는 있으나 live connector 연결 전까지는 planned 상태입니다.",
+      "tags": ["calendar", "google", "daily-brief"],
+      "linked_intents": ["calendar_today"]
+    },
+    "macos_calendar_agenda_view": {
+      "title": "macOS Calendar Agenda View",
+      "summary": "macOS Calendar의 오늘, 주간, 월간 일정을 읽어 요약합니다.",
+      "parent_skill_id": "calendar",
+      "local_app_name": "Calendar",
+      "launch_target": "Calendar",
+      "open_supported": true,
+      "local_notes": "AppleScript를 사용해 지정 기간의 Calendar.app 이벤트를 읽습니다.",
+      "notes": "오늘, 내일, 이번 주, 다음 주, 이번 달, 다음 달 일정을 요약하는 로컬 조회 스킬입니다.",
+      "tags": ["calendar", "macos", "agenda", "live-data"],
+      "linked_intents": ["calendar_today"]
+    },
+    "macos_calendar_create_event": {
+      "title": "macOS Calendar Create Event",
+      "summary": "macOS Calendar 앱에 로컬 일정을 생성합니다.",
+      "parent_skill_id": "calendar",
+      "local_app_name": "Calendar",
+      "launch_target": "Calendar",
+      "open_supported": true,
+      "local_notes": "AppleScript를 사용해 Calendar.app 첫 캘린더에 이벤트를 생성합니다.",
+      "notes": "상대 날짜, 간단한 시간, 제목/장소 파싱 후 action_result로 반환합니다.",
+      "tags": ["calendar", "macos", "automation"],
+      "linked_intents": ["calendar_create"]
+    },
+    "macos_calendar_update_event": {
+      "title": "macOS Calendar Update Event",
+      "summary": "macOS Calendar의 기존 일정을 찾아 날짜와 시간을 수정합니다.",
+      "parent_skill_id": "calendar",
+      "local_app_name": "Calendar",
+      "launch_target": "Calendar",
+      "open_supported": true,
+      "local_notes": "원본 날짜와 일정 제목을 기준으로 기존 이벤트를 찾아 새 날짜/시간으로 이동시킵니다.",
+      "notes": "Calendar.app 로컬 이벤트 수정 스킬입니다.",
+      "tags": ["calendar", "macos", "update", "automation"],
+      "linked_intents": ["calendar_update"]
+    },
+    "builtin_weather": {
+      "title": "Weather Lookup",
+      "summary": "위치 기반 날씨와 간단한 예보를 조회합니다.",
+      "parent_skill_id": "live_info",
+      "api_provider": "Weather Service",
+      "api_notes": "live weather fetch 경로와 연결되는 built-in skill입니다.",
+      "notes": "최신 날씨는 connector/외부 서비스 상태에 영향을 받습니다.",
+      "tags": ["weather", "forecast", "live"],
+      "linked_intents": ["weather_now"]
+    },
+    "action_resolver": {
+      "title": "Open App / URL",
+      "summary": "앱 실행과 URL 열기 같은 기본 로컬 액션을 수행합니다.",
+      "parent_skill_id": "automation",
+      "local_notes": "현재는 open_app, open_url 중심이며 OS 레벨 실행기로 동작합니다.",
+      "notes": "Skills action map의 즉시 실행 단계에서 재사용됩니다.",
+      "tags": ["automation", "open", "local-action"],
+      "linked_intents": ["action_open_app"]
+    }
+  }
+}

@@ -3,34 +3,107 @@ import DOMPurify from 'dompurify';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { RendererProps } from './TextRenderer';
 
+const DEFAULT_VIEWPORT = { width: 960, height: 540 };
+
 const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const [slides, setSlides] = useState<string[]>([]);
+  const [pptxBuffer, setPptxBuffer] = useState<ArrayBuffer | null>(null);
   const [slideIndex, setSlideIndex] = useState(0);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
+
+  useEffect(() => {
+    if (!stageRef.current) return;
+
+    const element = stageRef.current;
+    const updateViewport = () => {
+      const rect = element.getBoundingClientRect();
+      const width = Math.max(320, Math.floor(rect.width) - 32);
+      const height = Math.max(240, Math.floor(rect.height) - 32);
+
+      setViewport(prev => (
+        prev.width === width && prev.height === height
+          ? prev
+          : { width, height }
+      ));
+    };
+
+    updateViewport();
+
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!fileUrl) return;
 
+    let cancelled = false;
+    const controller = new AbortController();
+    setError(false);
     setLoading(true);
+    setSlides([]);
+    setPptxBuffer(null);
+    setSlideIndex(0);
+
+    fetch(fileUrl, { signal: controller.signal })
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
+        return res.arrayBuffer();
+      })
+      .then(buffer => {
+        if (!cancelled) setPptxBuffer(buffer);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('[PptxRenderer] Failed to load file', err);
+          setError(true);
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [fileUrl]);
+
+  useEffect(() => {
+    if (!pptxBuffer) return;
+
+    let cancelled = false;
+
     (async () => {
       try {
-        const { default: pptxToHtml } = await import('@jvmr/pptx-to-html');
-        const res = await fetch(fileUrl);
-        if (!res.ok) throw new Error('Failed to fetch');
-        const buffer = await res.arrayBuffer();
-        const result = await pptxToHtml(new Uint8Array(buffer));
+        const { pptxToHtml } = await import('@jvmr/pptx-to-html');
+        const result = await pptxToHtml(pptxBuffer, {
+          width: viewport.width,
+          height: viewport.height,
+          scaleToFit: true,
+          letterbox: true,
+        });
+        if (cancelled) return;
         const slideArray = Array.isArray(result) ? result : [result];
-        const sanitizedSlides = slideArray.map(s => DOMPurify.sanitize(String(s)));
+        const sanitizedSlides = slideArray.map(slide => DOMPurify.sanitize(String(slide)));
         setSlides(sanitizedSlides);
+        setError(false);
         setLoading(false);
-      } catch {
-        setError(true);
-        setLoading(false);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[PptxRenderer] Failed to render slides', err);
+          setError(true);
+          setLoading(false);
+        }
       }
     })();
-  }, [fileUrl]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pptxBuffer, viewport.height, viewport.width]);
 
   if (error || !fileUrl) {
     return (
@@ -44,13 +117,15 @@ const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 overflow-auto flex items-center justify-center bg-surface-low custom-scrollbar p-4">
+      <div
+        ref={stageRef}
+        className="flex-1 overflow-auto flex items-center justify-center bg-surface-low custom-scrollbar p-4"
+      >
         {loading ? (
           <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         ) : (
           <div
-            ref={containerRef}
-            className="bg-white shadow-lg max-w-4xl w-full p-8"
+            className="bg-white shadow-lg"
             dangerouslySetInnerHTML={{ __html: slides[slideIndex] || '' }}
           />
         )}

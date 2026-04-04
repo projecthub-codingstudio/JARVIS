@@ -209,9 +209,14 @@ class IndexPipeline:
         started_at = time.time()
         record = self._parser.create_record(path)
 
-        # Check if already indexed with same hash
+        # Skip only when the document is already successfully indexed.
+        # FAILED/PENDING/TOMBSTONED records with the same hash must be retried.
         existing = self._find_document_by_path(path)
-        if existing and existing.content_hash == record.content_hash:
+        if (
+            existing
+            and existing.content_hash == record.content_hash
+            and existing.indexing_status == IndexingStatus.INDEXED
+        ):
             return existing
 
         # Reuse document_id if path already exists
