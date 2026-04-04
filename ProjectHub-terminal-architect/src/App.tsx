@@ -9,7 +9,6 @@ import {
   Activity,
   BarChart3,
   Bell,
-  FileText,
   FolderOpen,
   HelpCircle,
   House,
@@ -23,8 +22,7 @@ import { cn } from './lib/utils';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
 import { apiClient } from './lib/api-client';
-import { RepositoryExplorer } from './components/repository/RepositoryExplorer';
-import { ViewerShell } from './components/viewer/ViewerShell';
+import { RepositoryWorkspace } from './components/repository/RepositoryWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
 import { SkillsWorkspace } from './components/workspaces/SkillsWorkspace';
@@ -43,7 +41,6 @@ const SHELL_NAV = [
   { key: 'home' as ViewState, label: 'Home', icon: House },
   { key: 'terminal' as ViewState, label: 'Terminal', icon: TerminalSquare },
   { key: 'repository' as ViewState, label: 'Repository', icon: FolderOpen },
-  { key: 'detail_viewer' as ViewState, label: 'Documents', icon: FileText },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
 ];
@@ -70,7 +67,7 @@ const GENERIC_DOCUMENT_TARGETS = new Set([
 ]);
 
 function getActiveShellKey(view: ViewState): ViewState {
-  return view === 'detail_viewer' ? 'detail_viewer' : view;
+  return view;
 }
 
 function shouldScopeArtifactPrompt(prompt: string) {
@@ -101,6 +98,7 @@ export default function App() {
   const [actionMaps, setActionMaps] = useState<ActionMap[]>([]);
   const [actionMapsLoading, setActionMapsLoading] = useState(false);
   const [actionMapsError, setActionMapsError] = useState<string | null>(null);
+  const [repositoryInitialPath, setRepositoryInitialPath] = useState<string | null>(null);
 
   const {
     messages,
@@ -172,7 +170,7 @@ export default function App() {
 
     if (preferredView === 'detail_viewer') {
       if (assets.length > 0) {
-        setView('detail_viewer');
+        setView('repository');
       }
     }
   }, [assets.length, citations.length, guide?.ui_hints?.preferred_view]);
@@ -211,6 +209,11 @@ export default function App() {
     });
   }, []);
 
+  const navigateToFile = useCallback((path: string) => {
+    setRepositoryInitialPath(path);
+    setView('repository');
+  }, []);
+
   const openArtifact = useCallback((artifact: Artifact) => {
     setSelectedArtifact((current) => {
       if (!current) return artifact;
@@ -218,8 +221,11 @@ export default function App() {
       const nextPath = artifact.full_path || artifact.path;
       return currentPath === nextPath ? current : artifact;
     });
-    setView('detail_viewer');
-  }, []);
+    const filePath = artifact.full_path || artifact.path;
+    if (filePath) {
+      navigateToFile(filePath);
+    }
+  }, [navigateToFile]);
 
   const loadSkillCatalog = useCallback(async () => {
     setSkillCatalogLoading(true);
@@ -315,16 +321,6 @@ export default function App() {
   }, [sendMessage]);
 
   const handleNavigate = (target: ViewState) => {
-    if (target === 'detail_viewer') {
-      if (selectedArtifact) {
-        setView('detail_viewer');
-        return;
-      }
-      if (assets[0]) {
-        openArtifact(assets[0]);
-      }
-      return;
-    }
     if (target === 'terminal') {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
@@ -437,6 +433,7 @@ export default function App() {
                 messages={messages}
                 mode="home"
                 onInputChange={setInputValue}
+                onNavigateToFile={navigateToFile}
                 onOpenArtifact={openArtifact}
                 sessionId={sessionId}
                 onSubmit={handleSendMessage}
@@ -465,6 +462,7 @@ export default function App() {
                 messages={messages}
                 mode="terminal"
                 onInputChange={setInputValue}
+                onNavigateToFile={navigateToFile}
                 onOpenArtifact={openArtifact}
                 sessionId={sessionId}
                 onSubmit={handleSendMessage}
@@ -481,39 +479,10 @@ export default function App() {
               exit={{ opacity: 0, x: -12 }}
               className="h-full"
             >
-              <RepositoryExplorer
-                assets={assets}
-                citations={citations}
-                onOpenArtifact={openArtifact}
-                onSelectArtifact={selectArtifact}
-                selectedArtifact={selectedArtifact}
+              <RepositoryWorkspace
+                initialPath={repositoryInitialPath}
+                onClearInitialPath={() => setRepositoryInitialPath(null)}
               />
-            </motion.div>
-          ) : null}
-
-          {view === 'detail_viewer' ? (
-            <motion.div
-              key="documents"
-              initial={{ opacity: 0, x: 12 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              className="h-full"
-            >
-              {selectedArtifact ? (
-                <ViewerShell
-                  artifact={selectedArtifact}
-                  artifacts={assets}
-                  citations={citations}
-                  isMobile={isMobile}
-                  isLoading={isLoading}
-                  onAskArtifact={handleAskArtifact}
-                  onSelectArtifact={selectArtifact}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center bg-surface-container-low text-on-surface-variant">
-                  Select a document from the repository or terminal results.
-                </div>
-              )}
             </motion.div>
           ) : null}
 
