@@ -11,6 +11,7 @@ interface ViewerShellProps {
   citations: Citation[];
   isMobile: boolean;
   isLoading?: boolean;
+  hideLibrary?: boolean;
   onAskArtifact?: (artifact: Artifact, prompt: string) => Promise<void> | void;
   onSelectArtifact?: (artifact: Artifact) => void;
 }
@@ -39,6 +40,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
   isLoading = false,
   onAskArtifact,
   onSelectArtifact,
+  hideLibrary = false,
 }) => {
   const [documentPrompt, setDocumentPrompt] = useState('');
   const filePath = artifact.full_path || artifact.path || '';
@@ -61,7 +63,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
 
   return (
     <div className="flex h-full overflow-hidden bg-surface">
-      <section className="hidden w-72 shrink-0 bg-surface-container-low lg:flex lg:flex-col">
+      {!hideLibrary && <section className="hidden w-72 shrink-0 bg-surface-container-low lg:flex lg:flex-col">
         <div className="border-b border-white/5 bg-surface px-4 py-4">
           <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
             <Search size={12} />
@@ -102,7 +104,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
             })}
           </div>
         </div>
-      </section>
+      </section>}
 
       <section className="relative flex min-w-0 flex-1 flex-col bg-surface-container">
         <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/5 bg-surface px-4">
