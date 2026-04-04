@@ -14,6 +14,7 @@ import type {
   SkillProfileCreateInput,
   SkillProfileInput,
   Status,
+  BrowseResponse,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000';
@@ -193,5 +194,13 @@ export const apiClient = {
 
   getFileUrl(fullPath: string): string {
     return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath)}`;
+  },
+
+  async browse(path: string = ''): Promise<BrowseResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      throw new Error(`Browse failed: ${res.status} ${res.statusText}`);
+    }
+    return res.json();
   },
 };
