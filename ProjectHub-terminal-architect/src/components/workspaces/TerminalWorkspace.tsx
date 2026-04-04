@@ -29,6 +29,7 @@ interface TerminalWorkspaceProps {
   messages: Message[];
   mode: 'home' | 'terminal';
   onInputChange: (value: string) => void;
+  onNavigateToFile?: (path: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
@@ -738,6 +739,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   messages,
   mode,
   onInputChange,
+  onNavigateToFile,
   onOpenArtifact,
   sessionId,
   onSubmit,
@@ -1176,7 +1178,11 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                           </div>
                           <div className="grid gap-2 md:grid-cols-2">
                             {message.citations.slice(0, 2).map((citation) => (
-                              <div key={`${message.id}-${citation.label}`} className="rounded-xl border border-white/8 bg-surface px-3 py-3">
+                              <button
+                                key={`${message.id}-${citation.label}`}
+                                className="rounded-xl border border-white/8 bg-surface px-3 py-3 text-left transition-colors hover:border-secondary/30 hover:bg-secondary/5 cursor-pointer"
+                                onClick={() => onNavigateToFile?.(citation.source_path || citation.full_source_path)}
+                              >
                                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-secondary">
                                   {citation.label}
                                 </div>
@@ -1186,7 +1192,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                                 <div className="mt-2 text-sm leading-6 text-on-surface-variant">
                                   {citation.quote}
                                 </div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
@@ -1281,7 +1287,11 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
             </div>
             <div className="space-y-2">
               {currentCitations.length > 0 ? currentCitations.map((citation) => (
-                <div key={citation.label} className="rounded-xl border border-white/8 bg-surface-container p-3">
+                <button
+                  key={citation.label}
+                  className="w-full rounded-xl border border-white/8 bg-surface-container p-3 text-left transition-colors hover:border-secondary/30 hover:bg-secondary/5 cursor-pointer"
+                  onClick={() => onNavigateToFile?.(citation.source_path || citation.full_source_path)}
+                >
                   <div className="truncate text-[11px] font-medium text-secondary">{citation.source_path}</div>
                   <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-outline">
                     {citation.label}
@@ -1289,7 +1299,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <div className="mt-2 line-clamp-3 text-sm leading-6 text-on-surface-variant">
                     {citation.quote}
                   </div>
-                </div>
+                </button>
               )) : (
                 <div className="rounded-xl border border-white/8 bg-surface-container p-3 text-sm text-on-surface-variant">
                   아직 연결된 근거가 없습니다.
