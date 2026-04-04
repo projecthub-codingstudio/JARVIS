@@ -307,4 +307,19 @@ export interface ActionMapCreateInput extends ActionMapInput {
 }
 
 // ── View ──────────────────────────────────────
-export type ViewState = 'home' | 'terminal' | 'detail_viewer' | 'repository' | 'skills' | 'admin';
+export type ViewState = 'home' | 'terminal' | 'repository' | 'skills' | 'admin';
+
+/* ── Repository file tree ── */
+
+export interface FileNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  extension?: string | null;
+  size?: number | null;
+}
+
+export interface BrowseResponse {
+  path: string;
+  entries: FileNode[];
+}
