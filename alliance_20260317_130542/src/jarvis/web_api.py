@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 import uuid
 import argparse
 from pathlib import Path
@@ -228,6 +229,71 @@ async def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
     return {"action_map": action_map, "maps": list_action_maps()}
 
 
+def _resolve_kb_root() -> Path | None:
+    """Resolve knowledge base root path."""
+    kb_env = os.environ.get("JARVIS_KNOWLEDGE_BASE")
+    if kb_env:
+        p = Path(kb_env)
+        if p.is_dir():
+            return p
+    from jarvis.app.runtime_context import resolve_knowledge_base_path
+    return resolve_knowledge_base_path()
+
+
+class BrowseEntry(BaseModel):
+    name: str
+    path: str
+    type: str  # "file" or "directory"
+    extension: str | None = None
+    size: int | None = None
+
+
+class BrowseResponse(BaseModel):
+    path: str
+    entries: list[BrowseEntry]
+
+
+@app.get("/api/browse", response_model=BrowseResponse)
+async def browse_directory(path: str = ""):
+    """List directory contents within the knowledge base."""
+    kb_root = _resolve_kb_root()
+    if kb_root is None:
+        raise HTTPException(status_code=500, detail="Knowledge base path not configured")
+
+    target = (kb_root / path).resolve()
+
+    # Security: ensure path is within knowledge base
+    try:
+        target.relative_to(kb_root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied: path outside knowledge base")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Path not found: {path}")
+
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {path}")
+
+    entries: list[BrowseEntry] = []
+    for item in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if item.name.startswith("."):
+            continue
+        rel_path = str(item.relative_to(kb_root.resolve()))
+        if item.is_dir():
+            entries.append(BrowseEntry(name=item.name, path=rel_path, type="directory"))
+        else:
+            stat = item.stat()
+            entries.append(BrowseEntry(
+                name=item.name,
+                path=rel_path,
+                type="file",
+                extension=item.suffix.lower() if item.suffix else None,
+                size=stat.st_size,
+            ))
+
+    return BrowseResponse(path=path, entries=entries)
+
+
 @app.get("/api/file")
 async def serve_file(path: str):
     """Serve a file from allowed directories.
@@ -235,21 +301,10 @@ async def serve_file(path: str):
     Validates that the requested path is within the knowledge_base
     directory before serving.
     """
-    import os
-    from jarvis.app.runtime_context import resolve_knowledge_base_path
-
     raw_path = Path(path).expanduser()
 
     # Resolve knowledge_base root
-    kb_root: Path | None = None
-    env_kb = os.getenv("JARVIS_KNOWLEDGE_BASE", "").strip()
-    if env_kb:
-        kb_root = Path(env_kb).expanduser().resolve()
-    if kb_root is None:
-        try:
-            kb_root = resolve_knowledge_base_path()
-        except Exception:
-            pass
+    kb_root = _resolve_kb_root()
 
     # If path is relative (e.g. "file.xlsx"), resolve against knowledge_base
     if not raw_path.is_absolute() and kb_root:
