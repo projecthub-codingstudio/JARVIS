@@ -105,6 +105,7 @@ export function RepositoryWorkspace({ initialPath, onClearInitialPath }: Reposit
             citations={[]}
             isMobile={false}
             isLoading={false}
+            hideLibrary
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-white/30">

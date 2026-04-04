@@ -210,7 +210,12 @@ export default function App() {
   }, []);
 
   const navigateToFile = useCallback((path: string) => {
-    setRepositoryInitialPath(path);
+    // Convert absolute path to knowledge_base-relative path
+    // e.g. "/Users/.../knowledge_base/coding/pipeline.py" → "coding/pipeline.py"
+    const kbMarker = 'knowledge_base/';
+    const kbIndex = path.indexOf(kbMarker);
+    const relativePath = kbIndex >= 0 ? path.slice(kbIndex + kbMarker.length) : path;
+    setRepositoryInitialPath(relativePath);
     setView('repository');
   }, []);
 
