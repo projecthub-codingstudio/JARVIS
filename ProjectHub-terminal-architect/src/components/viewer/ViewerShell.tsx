@@ -12,7 +12,7 @@ interface ViewerShellProps {
   isMobile: boolean;
   isLoading?: boolean;
   onAskArtifact?: (artifact: Artifact, prompt: string) => Promise<void> | void;
-  onSelectArtifact: (artifact: Artifact) => void;
+  onSelectArtifact?: (artifact: Artifact) => void;
 }
 
 function getMatchScore(index: number) {
