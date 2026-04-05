@@ -323,3 +323,23 @@ export interface BrowseResponse {
   path: string;
   entries: FileNode[];
 }
+
+/* ── Learned Patterns ── */
+
+export interface LearnedPatternSummary {
+  pattern_id: string;
+  canonical_query: string;
+  failed_variants: string[];
+  retrieval_task: string;
+  entity_hints: Record<string, unknown>;
+  reformulation_type: string;
+  success_count: number;
+  citation_paths: string[];
+  created_at: number;
+  last_used_at: number;
+}
+
+export interface LearnedPatternsResponse {
+  patterns: LearnedPatternSummary[];
+  total: number;
+}

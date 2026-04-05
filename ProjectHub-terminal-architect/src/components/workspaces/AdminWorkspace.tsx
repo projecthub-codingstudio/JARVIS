@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { Artifact, Citation, Message, SystemLog } from '../../types';
+import { LearnedPatternsPanel } from '../admin/LearnedPatternsPanel';
 
 interface AdminWorkspaceProps {
   assets: Artifact[];
@@ -67,7 +68,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto bg-surface p-4 custom-scrollbar xl:grid-cols-[280px_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto bg-surface p-4 custom-scrollbar xl:grid-cols-[280px_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)_320px]">
         <section className="space-y-2">
           <div className="border border-white/5 bg-surface-container-low p-4">
             <div className="mb-4 flex items-center justify-between">
@@ -223,6 +224,11 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
               </div>
             </div>
           </div>
+        </section>
+
+        {/* Learned Patterns — spans full width on xl */}
+        <section className="xl:col-span-2 border border-white/5 bg-surface-container-lowest min-h-[280px]">
+          <LearnedPatternsPanel />
         </section>
       </div>
     </div>
