@@ -46,6 +46,9 @@ _MODEL_ALIASES: dict[str, str] = {
     # Qwen3.5 — default from 2026-03-23 (100% accuracy on structured data)
     "qwen3.5:9b": "mlx-community/Qwen3.5-9B-MLX-4bit",
     "qwen3.5:35b-a3b": "mlx-community/Qwen3.5-35B-A3B-4bit",
+    # Gemma 4 (multimodal, 128K context) — routed to GemmaVlmBackend
+    "gemma4:e2b": "mlx-community/gemma-4-E2B-it-4bit",
+    "gemma4:e4b": "mlx-community/gemma-4-E4B-it-4bit",
 }
 
 

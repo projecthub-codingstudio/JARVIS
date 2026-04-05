@@ -498,15 +498,26 @@ def create_llm_backend(
         else:
             for attempt in range(2):
                 try:
-                    from jarvis.runtime.mlx_backend import MLXBackend
+                    from jarvis.runtime.gemma_vlm_backend import is_gemma_vlm_model
+                    if is_gemma_vlm_model(decision.model_id):
+                        from jarvis.runtime.gemma_vlm_backend import GemmaVlmBackend
 
-                    backend = MLXBackend(
-                        model_router=model_router,
-                        estimated_memory_gb=estimated_memory_gb,
-                    )
+                        backend = GemmaVlmBackend(
+                            model_router=model_router,
+                            estimated_memory_gb=estimated_memory_gb,
+                        )
+                        backend_label = "Gemma-VLM"
+                    else:
+                        from jarvis.runtime.mlx_backend import MLXBackend
+
+                        backend = MLXBackend(
+                            model_router=model_router,
+                            estimated_memory_gb=estimated_memory_gb,
+                        )
+                        backend_label = "MLX"
                     backend.load(decision)
                     if reporter is not None:
-                        reporter(f"   Backend: MLX ({backend.model_id})")
+                        reporter(f"   Backend: {backend_label} ({backend.model_id})")
                     return MLXRuntime(
                         backend=backend,
                         model_id=decision.model_id,
