@@ -19,9 +19,17 @@ function detectLanguage(path: string): string {
 
 const LINES_PER_PAGE = 40;
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [encoding, setEncoding] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<number | null>(null);
 
   // Fetch full file content when fileUrl is available
   useEffect(() => {
@@ -33,6 +41,11 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
     fetch(fileUrl, { signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch');
+        if (!cancelled) {
+          setEncoding(res.headers.get('X-Detected-Encoding'));
+          const sizeHdr = res.headers.get('X-File-Size');
+          setFileSize(sizeHdr ? parseInt(sizeHdr, 10) : null);
+        }
         return res.text();
       })
       .then(text => { if (!cancelled) { setFileContent(text); setLoading(false); } })
@@ -64,6 +77,14 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
 
   return (
     <div className="h-full overflow-auto custom-scrollbar">
+      {(encoding || fileSize !== null) && (
+        <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-outline/10 bg-surface/90 px-6 py-2 text-[10px] font-mono uppercase tracking-wider text-outline backdrop-blur">
+          <span>LANG: <span className="text-secondary">{language}</span></span>
+          {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
+          {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
+          <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
+        </div>
+      )}
       <SyntaxHighlighter
         language={language}
         style={atomOneDark}

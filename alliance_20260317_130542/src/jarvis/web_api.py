@@ -445,9 +445,11 @@ async def serve_file(path: str):
         raw = file_path.read_bytes()
         # Try multiple encodings (same as ReadFileTool)
         decoded = None
+        detected_encoding = "unknown"
         for encoding in ("utf-8", "utf-8-sig", "cp949", "euc-kr", "utf-16", "latin-1"):
             try:
                 decoded = raw.decode(encoding)
+                detected_encoding = encoding
                 break
             except (UnicodeDecodeError, UnicodeError):
                 continue
@@ -456,7 +458,12 @@ async def serve_file(path: str):
             return Response(
                 content=decoded,
                 media_type=f"{content_type}; charset=utf-8",
-                headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+                headers={
+                    "Content-Disposition": f'inline; filename="{file_path.name}"',
+                    "X-Detected-Encoding": detected_encoding,
+                    "X-File-Size": str(len(raw)),
+                    "Access-Control-Expose-Headers": "X-Detected-Encoding, X-File-Size",
+                },
             )
 
     return FileResponse(

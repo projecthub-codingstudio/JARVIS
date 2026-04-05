@@ -10,9 +10,17 @@ export interface RendererProps {
 
 const LINES_PER_PAGE = 30;
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [encoding, setEncoding] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<number | null>(null);
 
   // Fetch full file content when fileUrl is available
   useEffect(() => {
@@ -24,6 +32,11 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
     fetch(fileUrl, { signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch');
+        if (!cancelled) {
+          setEncoding(res.headers.get('X-Detected-Encoding'));
+          const sizeHdr = res.headers.get('X-File-Size');
+          setFileSize(sizeHdr ? parseInt(sizeHdr, 10) : null);
+        }
         return res.text();
       })
       .then(text => { if (!cancelled) { setFileContent(text); setLoading(false); } })
@@ -54,6 +67,13 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   return (
     <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-6 font-mono text-sm">
       <div className="mx-auto max-w-5xl rounded-xl border border-white/8 bg-surface px-4 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+      {(encoding || fileSize !== null) && (
+        <div className="mb-3 flex items-center gap-3 border-b border-outline/10 pb-2 text-[10px] font-mono uppercase tracking-wider text-outline">
+          {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
+          {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
+          <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
+        </div>
+      )}
       <table className="w-full border-collapse">
         <tbody>
           {visibleLines.map((line, i) => (
