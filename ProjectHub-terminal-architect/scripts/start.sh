@@ -20,9 +20,11 @@ else
   echo "▶ Starting JARVIS backend (port 8000)..."
   cd "$JARVIS_ROOT"
 
-  # LLM model chain: stub by default (safe), override with env var for real LLM
-  # To enable LLM: export JARVIS_MENU_BAR_MODEL_CHAIN="exaone3.5:7.8b,stub"
-  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-stub}"
+  # LLM model chain: EXAONE-3.5-7.8B primary, stub fallback
+  # Override examples:
+  #   JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,exaone3.5:7.8b,stub"  # Try Gemma first
+  #   JARVIS_MENU_BAR_MODEL_CHAIN="stub"                            # Disable LLM
+  export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-exaone3.5:7.8b,stub}"
 
   "$BACKEND_VENV" -m jarvis.web_api --port 8000 > "$PID_DIR/backend.log" 2>"$PID_DIR/backend.err" &
   echo $! > "$PID_DIR/backend.pid"
