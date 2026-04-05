@@ -3,9 +3,17 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RendererProps } from './TextRenderer';
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [encoding, setEncoding] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<number | null>(null);
 
   useEffect(() => {
     if (!fileUrl) return;
@@ -16,6 +24,11 @@ const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content 
     fetch(fileUrl, { signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch');
+        if (!cancelled) {
+          setEncoding(res.headers.get('X-Detected-Encoding'));
+          const sizeHdr = res.headers.get('X-File-Size');
+          setFileSize(sizeHdr ? parseInt(sizeHdr, 10) : null);
+        }
         return res.text();
       })
       .then(text => { if (!cancelled) { setFileContent(text); setLoading(false); } })
@@ -37,6 +50,13 @@ const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content 
   return (
     <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-6">
       <div className="mx-auto max-w-4xl rounded-xl border border-white/8 bg-surface px-8 py-8 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+        {(encoding || fileSize !== null) && (
+          <div className="mb-4 flex items-center gap-3 border-b border-outline/10 pb-3 text-[10px] font-mono uppercase tracking-wider text-outline">
+            <span>MD</span>
+            {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
+            {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
+          </div>
+        )}
         <article className="prose prose-invert prose-sm max-w-none
           prose-headings:text-on-surface prose-headings:font-semibold
           prose-h1:text-2xl prose-h1:border-b prose-h1:border-outline/20 prose-h1:pb-2 prose-h1:mb-4
