@@ -27,6 +27,7 @@ export interface ViewerRouterProps {
 
 const TextRenderer = React.lazy(() => import('./renderers/TextRenderer'));
 const CodeRenderer = React.lazy(() => import('./renderers/CodeRenderer'));
+const MarkdownRenderer = React.lazy(() => import('./renderers/MarkdownRenderer'));
 const ImageRenderer = React.lazy(() => import('./renderers/ImageRenderer'));
 const VideoRenderer = React.lazy(() => import('./renderers/VideoRenderer'));
 const HtmlRenderer = React.lazy(() => import('./renderers/HtmlRenderer'));
@@ -49,11 +50,18 @@ function selectRendererByExtension(ext: string) {
   if (ext === 'pptx') return PptxRenderer;
   if (ext === 'xlsx' || ext === 'xls') return XlsxRenderer;
   if (ext === 'hwp' || ext === 'hwpx') return HwpRenderer;
+  if (ext === 'md' || ext === 'markdown') return MarkdownRenderer;
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'bmp'].includes(ext)) return ImageRenderer;
   if (['mp4', 'mov', 'webm', 'm4v'].includes(ext)) return VideoRenderer;
   if (['html', 'htm'].includes(ext)) return HtmlRenderer;
-  if (['py', 'js', 'ts', 'tsx', 'jsx', 'rs', 'go', 'java', 'swift', 'kt', 'rb',
-       'sh', 'bash', 'yml', 'yaml', 'json', 'css', 'sql', 'toml', 'xml'].includes(ext)) return CodeRenderer;
+  if (['py', 'js', 'ts', 'tsx', 'jsx', 'mjs', 'cjs', 'rs', 'go', 'java', 'swift', 'kt', 'rb',
+       'c', 'cc', 'cpp', 'h', 'hpp', 'cs', 'php', 'lua', 'r', 'scala', 'dart', 'ex', 'exs',
+       'sh', 'bash', 'zsh', 'fish', 'ps1',
+       'yml', 'yaml', 'json', 'jsonc', 'toml', 'ini', 'cfg', 'conf', 'env',
+       'css', 'scss', 'sass', 'less',
+       'sql', 'graphql', 'proto',
+       'xml', 'svg', 'dockerfile', 'makefile'].includes(ext)) return CodeRenderer;
+  if (['txt', 'text', 'log', 'csv', 'tsv', 'nfo', 'readme'].includes(ext)) return TextRenderer;
   return null;
 }
 
@@ -80,9 +88,11 @@ function selectRenderer(artifact: Artifact) {
     case 'document': {
       const byExt = selectRendererByExtension(ext);
       if (byExt) return byExt;
-      // document인데 확장자를 모르면 텍스트 + 다운로드
-      return HwpRenderer;
+      // document이지만 확장자를 모르면 텍스트로 표시 (다운로드만 X)
+      return TextRenderer;
     }
+    case 'markdown': return MarkdownRenderer;
+    case 'text': return TextRenderer;
   }
 
   // 2차: viewer_kind가 없거나 'text'인 경우, 파일 확장자로 렌더러 추론
@@ -94,8 +104,8 @@ function selectRenderer(artifact: Artifact) {
   // 3차: source_type 필드로 추론
   const sourceType = (artifact.source_type || '').toLowerCase();
   if (sourceType === 'document') {
-    // document인데 확장자를 모르면 텍스트 + 다운로드
-    return HwpRenderer;
+    // document인데 확장자를 모르면 텍스트로
+    return TextRenderer;
   }
   if (sourceType === 'code') return CodeRenderer;
   if (sourceType === 'web') return WebRenderer;
