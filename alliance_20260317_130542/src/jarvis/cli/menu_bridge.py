@@ -1075,11 +1075,11 @@ def _run_query(*, query: str, model_id: str) -> MenuBarResponse:
         shutdown_runtime_context(context)
 
 
-def _run_query_in_context(*, query: str, model_id: str, context: object) -> MenuBarResponse:
+def _run_query_in_context(*, query: str, model_id: str, context: object, session_id: str = "") -> MenuBarResponse:
     normalized_query = _normalize_bridge_query(query)
     if override := _intent_override_response(normalized_query, model_id=model_id):
         return override
-    turn = context.orchestrator.handle_turn(normalized_query)
+    turn = context.orchestrator.handle_turn(normalized_query, session_id=session_id)
     turn.user_input = query
     return _response_from_context(context=context, turn=turn)
 

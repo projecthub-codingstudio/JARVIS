@@ -373,12 +373,13 @@ def _clear_runtime_context_cache() -> None:
     _shutdown_runtime_contexts(contexts)
 
 
-def _run_menu_bridge_query_in_process(*, query: str, model_id: str) -> dict[str, object]:
+def _run_menu_bridge_query_in_process(*, query: str, model_id: str, session_id: str = "") -> dict[str, object]:
     context = _get_runtime_context(model_id=model_id)
     response = _run_query_in_context(
         query=query,
         model_id=model_id,
         context=context,
+        session_id=session_id,
     )
     global _last_runtime_context_key
     with _runtime_context_lock:
@@ -412,7 +413,7 @@ def _response_requires_model_fallback(response_payload: object) -> bool:
     return False
 
 
-def _run_menu_bridge_ask_with_fallback(*, query: str) -> dict[str, object]:
+def _run_menu_bridge_ask_with_fallback(*, query: str, session_id: str = "") -> dict[str, object]:
     last_error: Exception | None = None
     model_chain = _menu_bar_model_chain()
     for index, model_id in enumerate(model_chain):
@@ -421,6 +422,7 @@ def _run_menu_bridge_ask_with_fallback(*, query: str) -> dict[str, object]:
                 envelope = _run_menu_bridge_query_in_process(
                     query=query,
                     model_id=model_id,
+                    session_id=session_id,
                 )
             response_payload = envelope.get("query_result")
             has_more_models = index < len(model_chain) - 1
@@ -4634,7 +4636,7 @@ class JarvisApplicationService:
                 if response_payload is None:
                     response_payload = _build_action_map_execution_response(text)
                 if response_payload is None:
-                    envelope = _run_menu_bridge_ask_with_fallback(query=text)
+                    envelope = _run_menu_bridge_ask_with_fallback(query=text, session_id=request.session_id)
                     response_payload = envelope.get("query_result")
                     if not isinstance(response_payload, dict):
                         return error_response(
