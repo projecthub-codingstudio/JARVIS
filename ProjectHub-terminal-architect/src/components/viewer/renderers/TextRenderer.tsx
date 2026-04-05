@@ -65,8 +65,8 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   }
 
   return (
-    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-6 font-mono text-sm">
-      <div className="mx-auto max-w-5xl rounded-xl border border-white/8 bg-surface px-4 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-4 font-mono text-sm">
+      <div className="mx-auto max-w-[1400px] rounded-xl border border-white/8 bg-surface px-6 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
       {(encoding || fileSize !== null) && (
         <div className="mb-3 flex items-center gap-3 border-b border-outline/10 pb-2 text-[10px] font-mono uppercase tracking-wider text-outline">
           {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
