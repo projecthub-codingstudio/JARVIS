@@ -131,23 +131,23 @@ const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         )}
       </div>
       {slides.length > 1 && (
-        <div className="flex items-center justify-center gap-4 p-3 bg-surface-highest/50 border-t border-outline/10">
+        <div className="flex h-10 shrink-0 items-center justify-center gap-4 border-t border-white/5 bg-surface px-4">
           <button
             onClick={() => setSlideIndex(Math.max(0, slideIndex - 1))}
             disabled={slideIndex <= 0}
-            className="p-1 hover:bg-surface-highest disabled:opacity-30 transition-colors"
+            className="rounded p-1 text-on-surface transition-colors hover:bg-surface-container-highest disabled:opacity-30"
           >
-            <ChevronLeft size={18} />
+            <ChevronLeft size={14} />
           </button>
-          <span className="font-mono text-xs text-on-surface-variant">
+          <span className="font-mono text-[12px] text-outline">
             슬라이드 {slideIndex + 1} / {slides.length}
           </span>
           <button
             onClick={() => setSlideIndex(Math.min(slides.length - 1, slideIndex + 1))}
             disabled={slideIndex >= slides.length - 1}
-            className="p-1 hover:bg-surface-highest disabled:opacity-30 transition-colors"
+            className="rounded p-1 text-on-surface transition-colors hover:bg-surface-container-highest disabled:opacity-30"
           >
-            <ChevronRight size={18} />
+            <ChevronRight size={14} />
           </button>
         </div>
       )}

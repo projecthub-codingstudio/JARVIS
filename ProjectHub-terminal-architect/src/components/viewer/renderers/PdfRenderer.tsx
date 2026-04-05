@@ -47,23 +47,23 @@ const PdfRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         </Document>
       </div>
       {numPages > 0 && (
-        <div className="flex items-center justify-center gap-4 p-3 bg-surface-highest/50 border-t border-outline/10">
+        <div className="flex h-10 shrink-0 items-center justify-center gap-4 border-t border-white/5 bg-surface px-4">
           <button
             onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
             disabled={pageNumber <= 1}
-            className="p-1 hover:bg-surface-highest disabled:opacity-30 transition-colors"
+            className="rounded p-1 text-on-surface transition-colors hover:bg-surface-container-highest disabled:opacity-30"
           >
-            <ChevronLeft size={18} />
+            <ChevronLeft size={14} />
           </button>
-          <span className="font-mono text-xs text-on-surface-variant">
+          <span className="font-mono text-[12px] text-outline">
             {pageNumber} / {numPages}
           </span>
           <button
             onClick={() => setPageNumber(Math.min(numPages, pageNumber + 1))}
             disabled={pageNumber >= numPages}
-            className="p-1 hover:bg-surface-highest disabled:opacity-30 transition-colors"
+            className="rounded p-1 text-on-surface transition-colors hover:bg-surface-container-highest disabled:opacity-30"
           >
-            <ChevronRight size={18} />
+            <ChevronRight size={14} />
           </button>
         </div>
       )}
