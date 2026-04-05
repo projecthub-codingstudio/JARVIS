@@ -4,6 +4,13 @@
 
 A privacy-first, local AI assistant for Apple Silicon — inspired by Iron Man's JARVIS.
 
+[![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
+[![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
+[![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Orchestrated with Colligi²](https://img.shields.io/badge/Orchestrated_with-Colligi²-7C3AED)](https://colligi.ai)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1/M2/M3-000000?logo=apple&logoColor=white)](https://www.apple.com/mac/)
+
 ## Overview
 
 JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It provides document-grounded Q&A with citations, hybrid query planning, multi-modal vision, session-based learning, and a rich web interface — all without cloud dependencies.
@@ -404,6 +411,13 @@ Gemma 4's April 2026 release moved from custom Gemma Terms of Use to **Apache 2.
 **Just A Rather Very Intelligent System**
 
 아이언맨의 자비스(JARVIS)에서 영감을 받은, Apple Silicon 전용 개인정보 보호 우선 로컬 AI 비서.
+
+[![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
+[![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
+[![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Orchestrated with Colligi²](https://img.shields.io/badge/Orchestrated_with-Colligi²-7C3AED)](https://colligi.ai)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1/M2/M3-000000?logo=apple&logoColor=white)](https://www.apple.com/mac/)
 
 ## 개요
 
