@@ -294,6 +294,103 @@ async def browse_directory(path: str = ""):
     return BrowseResponse(path=path, entries=entries)
 
 
+# ---- Learned Patterns Management ----
+
+class LearnedPatternSummary(BaseModel):
+    pattern_id: str
+    canonical_query: str
+    failed_variants: list[str]
+    retrieval_task: str
+    entity_hints: dict
+    reformulation_type: str
+    success_count: int
+    citation_paths: list[str]
+    created_at: int
+    last_used_at: int
+
+
+class LearnedPatternsResponse(BaseModel):
+    patterns: list[LearnedPatternSummary]
+    total: int
+
+
+def _learning_db_connection():
+    """Open a fresh SQLite connection to the jarvis.db file."""
+    import sqlite3
+    kb_root = _resolve_kb_root()
+    if kb_root is None:
+        return None
+    # jarvis.db is at ~/.jarvis-menubar/jarvis.db (parent of knowledge_base)
+    db_path = kb_root.parent / ".jarvis-menubar" / "jarvis.db"
+    if not db_path.exists():
+        return None
+    return sqlite3.connect(str(db_path))
+
+
+@app.get("/api/learned-patterns", response_model=LearnedPatternsResponse)
+async def list_learned_patterns(retrieval_task: str | None = None):
+    """List all learned patterns, optionally filtered by retrieval_task."""
+    import json
+    conn = _learning_db_connection()
+    if conn is None:
+        return LearnedPatternsResponse(patterns=[], total=0)
+    try:
+        query = (
+            "SELECT pattern_id, canonical_query, failed_variants, retrieval_task, "
+            "entity_hints_json, reformulation_type, success_count, citation_paths, "
+            "created_at, last_used_at FROM learned_patterns"
+        )
+        params: tuple = ()
+        if retrieval_task:
+            query += " WHERE retrieval_task = ?"
+            params = (retrieval_task,)
+        query += " ORDER BY success_count DESC, last_used_at DESC"
+        rows = conn.execute(query, params).fetchall()
+        summaries = [
+            LearnedPatternSummary(
+                pattern_id=r[0],
+                canonical_query=r[1],
+                failed_variants=json.loads(r[2] or "[]"),
+                retrieval_task=r[3],
+                entity_hints=json.loads(r[4] or "{}"),
+                reformulation_type=r[5],
+                success_count=r[6],
+                citation_paths=json.loads(r[7] or "[]"),
+                created_at=r[8],
+                last_used_at=r[9],
+            )
+            for r in rows
+        ]
+        return LearnedPatternsResponse(patterns=summaries, total=len(summaries))
+    finally:
+        conn.close()
+
+
+class ForgetPatternRequest(BaseModel):
+    pattern_id: str | None = None  # if None, delete all patterns
+
+
+@app.post("/api/learned-patterns/forget")
+async def forget_learned_patterns(request: ForgetPatternRequest):
+    """Delete a specific learned pattern, or all patterns if pattern_id is None."""
+    conn = _learning_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Knowledge base path not configured")
+    try:
+        if request.pattern_id:
+            result = conn.execute(
+                "DELETE FROM learned_patterns WHERE pattern_id = ?",
+                (request.pattern_id,),
+            )
+        else:
+            result = conn.execute("DELETE FROM learned_patterns")
+        conn.commit()
+        deleted = result.rowcount
+        return {"deleted": deleted}
+    finally:
+        conn.close()
+
+
 @app.get("/api/file")
 async def serve_file(path: str):
     """Serve a file from allowed directories.
