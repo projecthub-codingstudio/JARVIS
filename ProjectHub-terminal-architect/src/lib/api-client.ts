@@ -15,6 +15,7 @@ import type {
   SkillProfileInput,
   Status,
   BrowseResponse,
+  LearnedPatternsResponse,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000';
@@ -200,6 +201,27 @@ export const apiClient = {
     const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path)}`);
     if (!res.ok) {
       throw new Error(`Browse failed: ${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async listLearnedPatterns(retrievalTask?: string): Promise<LearnedPatternsResponse> {
+    const params = retrievalTask ? `?retrieval_task=${encodeURIComponent(retrievalTask)}` : '';
+    const res = await fetch(`${API_BASE_URL}/api/learned-patterns${params}`);
+    if (!res.ok) {
+      throw new Error(`List learned patterns failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async forgetLearnedPattern(patternId?: string): Promise<{ deleted: number }> {
+    const res = await fetch(`${API_BASE_URL}/api/learned-patterns/forget`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern_id: patternId ?? null }),
+    });
+    if (!res.ok) {
+      throw new Error(`Forget pattern failed: ${res.status}`);
     }
     return res.json();
   },
