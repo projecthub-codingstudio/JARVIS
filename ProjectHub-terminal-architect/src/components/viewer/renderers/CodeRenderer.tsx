@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, WrapText } from 'lucide-react';
 import type { RendererProps } from './TextRenderer';
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -60,6 +60,7 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
 
   const allLines = useMemo(() => fullCode.split('\n'), [fullCode]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_LINE_LIMIT);
+  const [wrapLines, setWrapLines] = useState(true);
 
   // Reset visible count when content changes (e.g., file loaded)
   useEffect(() => { setVisibleCount(INITIAL_LINE_LIMIT); }, [fullCode]);
@@ -78,19 +79,27 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
 
   return (
     <div className="h-full overflow-auto custom-scrollbar">
-      {(encoding || fileSize !== null) && (
-        <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-outline/10 bg-surface/90 px-6 py-2 text-[10px] font-mono uppercase tracking-wider text-outline backdrop-blur">
-          <span>LANG: <span className="text-secondary">{language}</span></span>
-          {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
-          {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
-          <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
-        </div>
-      )}
+      <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-outline/10 bg-surface/90 px-6 py-2 text-[10px] font-mono uppercase tracking-wider text-outline backdrop-blur">
+        <span>LANG: <span className="text-secondary">{language}</span></span>
+        {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
+        {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
+        <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
+        <button
+          onClick={() => setWrapLines(w => !w)}
+          className={`ml-auto flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
+            wrapLines ? 'bg-primary/15 text-primary' : 'text-outline hover:text-on-surface'
+          }`}
+          title={wrapLines ? "줄바꿈 끄기 (가로 스크롤)" : "줄바꿈 켜기"}
+        >
+          <WrapText size={10} />
+          {wrapLines ? 'WRAP' : 'NOWRAP'}
+        </button>
+      </div>
       <SyntaxHighlighter
         language={language}
         style={atomOneDark}
         showLineNumbers
-        wrapLongLines
+        wrapLongLines={wrapLines}
         customStyle={{
           margin: 0,
           padding: '1.5rem',
