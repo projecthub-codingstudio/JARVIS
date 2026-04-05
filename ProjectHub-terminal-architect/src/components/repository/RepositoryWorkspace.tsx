@@ -36,7 +36,7 @@ function fileNodeToArtifact(node: FileNode): Artifact {
   else if (TEXT_EXTENSIONS.has(ext)) viewerKind = 'text';
   else if (IMAGE_EXTENSIONS.has(ext)) viewerKind = 'image';
   else if (VIDEO_EXTENSIONS.has(ext)) viewerKind = 'video';
-  else if (WEB_EXTENSIONS.has(ext)) viewerKind = 'web';
+  else if (WEB_EXTENSIONS.has(ext)) viewerKind = 'html';
 
   return {
     id: node.path,
