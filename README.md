@@ -6,89 +6,212 @@ A privacy-first, local AI assistant for Apple Silicon — inspired by Iron Man's
 
 ## Overview
 
-JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It provides document-grounded Q&A with citations, hybrid query planning, and real-time knowledge base indexing — all without cloud dependencies.
+JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It provides document-grounded Q&A with citations, hybrid query planning, multi-modal vision, session-based learning, and a rich web interface — all without cloud dependencies.
 
 ### Core Features
 
-- **Personal RAG** — Document-grounded Q&A over PDF, DOCX, XLSX, HWP, Markdown, and code files
-- **Citation-backed Answers** — Factual answers require retrieved source evidence
-- **Hybrid Query Planner** — Heuristic-first query planning with lightweight Korean-English keyword enrichment
+- **Personal RAG** — Document-grounded Q&A over PDF, DOCX, XLSX, HWP, PPTX, Markdown, and code files with evidence-backed citations
+- **Web Interface** — React/TypeScript SPA with Terminal (chat), Repository (file browser + viewer), Skills, and Admin workspaces
+- **Repository Viewer** — 12 specialized renderers (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video) with syntax highlighting, GFM markdown, encoding detection, WRAP/NOWRAP toggle
+- **Vision Q&A** — Upload images to the Terminal for Gemma 4 E4B multimodal analysis (128K context)
+- **Session Query Learning** — 3-layer system that captures failure→success query reformulations, learns entity hints, injects them into future similar queries — independent of the generation LLM
+- **Hybrid Retrieval** — SQLite FTS5 (morpheme-expanded Korean) + LanceDB vector search + RRF fusion + cross-encoder reranking
+- **Citation-backed Answers** — Factual answers require retrieved source evidence with relevance scores
+- **Answerability Gate** — Pre-generation decision layer protects against hallucination on weak/ambiguous evidence
 - **Real-time Indexing** — File watcher auto-indexes new/modified documents in the knowledge base
 - **Resource Governor** — System monitoring (memory, swap, thermal, battery) with automatic model tier selection
 - **Voice Interaction** — Local STT/TTS with file mode, push-to-talk, and menu bar live loop
 
 ### Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| LLM | qwen3.5:9b (default) / MLX or Ollama fallback |
-| Query Planner | Heuristic baseline + lightweight bilingual keyword enrichment |
-| Retrieval | SQLite FTS5 + Kiwi morphological analyzer |
-| Parsers | PyMuPDF, python-docx, openpyxl, python-hwpx, pyhwp |
-| TTS | Qwen3-TTS (validated) |
-| STT | whisper.cpp |
-| Language | Python 3.12 |
+| Layer | Technology |
+|-------|-----------|
+| **Generation LLM (Fast/Balanced)** | EXAONE-3.5-7.8B-Instruct-4bit (MLX) — 1.5s, primary |
+| **Generation LLM (Deep)** | EXAONE-4.0-32B-4bit (128K context) |
+| **Vision LLM** | Gemma 4 E4B (multimodal, 128K context, via mlx-vlm) |
+| **Alternative LLMs** | Qwen3.5:9B, EXAONE-Deep (reasoning), Gemma 4 E2B (routing) |
+| **Embeddings** | BGE-M3 (multilingual, CPU) |
+| **Vector DB** | LanceDB (serverless, file-based) |
+| **Reranker** | cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 |
+| **FTS** | SQLite FTS5 + Kiwi morphological analyzer |
+| **Parsers** | PyMuPDF, python-docx, openpyxl, python-pptx, python-hwpx, pyhwp |
+| **STT / TTS** | whisper.cpp / Qwen3-TTS |
+| **Backend** | Python 3.12 + FastAPI + uvicorn |
+| **Frontend** | React 19 + TypeScript + Vite + Zustand + Tailwind CSS v4 |
 
 ### Target Environment
 
 - MacBook Pro 16" / Apple M1 Max / 64GB Unified Memory
-- macOS Tahoe 26.3
+- macOS 15+ (Sequoia/Tahoe)
+- Privacy-first, fully offline-capable
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Web Interface (React SPA, localhost:3000)                  │
+│  Terminal · Repository · Skills · Admin · Viewers           │
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP + WebSocket
+┌────────────────────────────▼────────────────────────────────┐
+│  FastAPI Backend (localhost:8000, alliance/src/jarvis/)     │
+│  /api/ask · /api/ask/vision · /api/browse · /api/file       │
+│  /api/learned-patterns · /api/skills · /ws/{session_id}     │
+├─────────────────────────────────────────────────────────────┤
+│  Orchestrator                                                │
+│    → Planner (HintInjector)  ← Session Query Learning       │
+│    → Retrieval (FTS + Vector + RRF + Reranker)              │
+│    → Answerability Gate                                      │
+│    → LLM Generation (MLX / GemmaVlm / LlamaCpp)             │
+│    → Post-generation Guard                                   │
+├─────────────────────────────────────────────────────────────┤
+│  Learning Layer (decoupled from LLM)                         │
+│    SessionEventCapture → ReformulationDetector →            │
+│    PatternExtractor → PatternStore → PatternMatcher →       │
+│    HintInjector                                              │
+├─────────────────────────────────────────────────────────────┤
+│  Indexing Pipeline                                           │
+│    Parsers → Chunking → BGE-M3 Embedding → FTS5 + LanceDB   │
+└─────────────────────────────────────────────────────────────┘
+                             │
+                  ~/.jarvis-menubar/jarvis.db
+                  ~/.jarvis-menubar/vectors.lance
+                  knowledge_base/
+```
 
 ## Project Structure
 
 ```
 JARVIS/
-├── alliance_20260317_130542/   # Main source code (see below)
-├── colligi2_20260316_021200/   # Colligi2 analysis round 1
-├── colligi2_20260316_133406/   # Colligi2 analysis round 2
-├── knowledge_base/             # User documents (local only, git-ignored)
+├── alliance_20260317_130542/        # Python backend (see below)
+├── ProjectHub-terminal-architect/   # React frontend (see below)
+├── colligi2_20260316_021200/        # Colligi2 analysis round 1
+├── colligi2_20260316_133406/        # Colligi2 analysis round 2
+├── knowledge_base/                  # User documents (local only, git-ignored)
 └── .gitignore
 ```
 
-### alliance_20260317_130542/ — Main Source Directory
-
-The JARVIS implementation generated by the Alliance build system. All executable code resides in this directory.
+### Backend: `alliance_20260317_130542/`
 
 ```
 alliance_20260317_130542/
-├── pyproject.toml              # Package config & dependencies
-├── macos/JarvisMenuBar/        # SwiftUI menu bar app
-├── sql/schema.sql              # SQLite schema (FTS5, lexical_morphs)
+├── pyproject.toml
+├── macos/JarvisMenuBar/             # SwiftUI menu bar app
+├── sql/schema.sql                   # SQLite schema
 ├── src/jarvis/
-│   ├── __main__.py             # Entry point (python -m jarvis)
-│   ├── app/                    # Bootstrap, configuration
-│   │   └── runtime_context.py  # Shared runtime factory for CLI/menu bar
-│   ├── cli/menu_bridge.py      # JSON bridge for the SwiftUI menu bar app
-│   ├── cli/repl.py             # CLI REPL interface (with citation display)
-│   ├── contracts/              # Protocol interfaces, data models
+│   ├── __main__.py                  # CLI entry point
+│   ├── web_api.py                   # FastAPI + WebSocket bridge
+│   ├── app/                         # Bootstrap, configuration
+│   │   └── runtime_context.py       # Runtime factory
+│   ├── service/
+│   │   ├── application.py           # JarvisApplicationService (RPC facade)
+│   │   ├── protocol.py              # RpcRequest/RpcResponse
+│   │   ├── intent_skill_registry.py # Skill profile registry
+│   │   └── intent_skill_store.py    # Skill storage
 │   ├── core/
-│   │   ├── orchestrator.py     # Pipeline orchestrator
-│   │   ├── governor.py         # System resource monitoring (psutil)
-│   │   └── planner.py          # Heuristic baseline + lightweight query enrichment
-│   ├── indexing/               # Document parsing (PDF/DOCX/XLSX/HWP), chunking, indexing
-│   ├── retrieval/              # FTS5 search, Kiwi morphological analysis, hybrid search
-│   ├── runtime/                # LLM backends (MLX primary, Ollama fallback)
-│   └── memory/                 # Conversation history (SQLite), task logs
-├── tests/                      # 329 tests (unit, integration, e2e)
-└── docs/                       # Design spec documents
+│   │   ├── orchestrator.py          # End-to-end turn pipeline
+│   │   ├── planner.py               # Query analysis + HintInjector hook
+│   │   ├── answerability_gate.py    # Pre-generation decision layer
+│   │   └── governor.py              # Resource monitoring
+│   ├── runtime/
+│   │   ├── mlx_backend.py           # MLX (EXAONE/Qwen) backend
+│   │   ├── gemma_vlm_backend.py     # Gemma 4 multimodal (NEW)
+│   │   ├── llamacpp_backend.py      # GGUF fallback
+│   │   └── mlx_runtime.py           # LLMGeneratorProtocol wrapper
+│   ├── retrieval/
+│   │   ├── strategy.py              # Per-task hybrid strategies
+│   │   ├── evidence_builder.py      # Verified evidence with boosts
+│   │   ├── fts_index.py             # SQLite FTS5
+│   │   ├── vector_index.py          # LanceDB
+│   │   └── reranker.py              # Cross-encoder
+│   ├── indexing/
+│   │   ├── index_pipeline.py        # Parse → chunk → embed → store
+│   │   └── parsers.py               # Format-specific parsers
+│   ├── learning/                    # Session Query Learning (NEW)
+│   │   ├── coordinator.py           # Facade
+│   │   ├── session_event.py         # SessionEvent + ReformulationPair
+│   │   ├── learned_pattern.py       # LearnedPattern + 4 types
+│   │   ├── pattern_store.py         # SQLite CRUD
+│   │   ├── event_capture.py         # Orchestrator hook
+│   │   ├── reformulation_detector.py # Pair detection
+│   │   ├── pattern_extractor.py     # 4-class classification
+│   │   ├── pattern_matcher.py       # Vector similarity
+│   │   ├── hint_injector.py         # Planner integration
+│   │   ├── embedding_adapter.py     # BGE-M3 bridge
+│   │   └── batch_scheduler.py       # 10-min analysis loop
+│   └── memory/
+│       └── conversation_store.py    # Turn history
+└── tests/                           # 420+ tests
 ```
 
-### colligi2 Directories — Collective Intelligence Analysis
+### Frontend: `ProjectHub-terminal-architect/`
 
-Architecture and design reports generated by the Colligi2 collective intelligence analysis system.
+```
+ProjectHub-terminal-architect/
+├── package.json
+├── scripts/
+│   ├── start.sh                     # Start backend + frontend
+│   └── stop.sh
+├── src/
+│   ├── App.tsx                      # Main shell (5 tabs)
+│   ├── types.ts                     # All TypeScript types
+│   ├── store/
+│   │   └── app-store.ts             # Zustand state
+│   ├── hooks/
+│   │   └── useJarvis.ts             # sendMessage, sendMessageWithImage
+│   ├── lib/
+│   │   └── api-client.ts            # API methods
+│   ├── components/
+│   │   ├── workspaces/
+│   │   │   ├── TerminalWorkspace.tsx    # Chat + image attach
+│   │   │   ├── SkillsWorkspace.tsx      # Skill registry + action maps
+│   │   │   └── AdminWorkspace.tsx       # Admin panel
+│   │   ├── repository/
+│   │   │   ├── RepositoryWorkspace.tsx  # File tree + viewer layout
+│   │   │   └── FileTreePanel.tsx        # Lazy-loaded directory tree
+│   │   ├── viewer/
+│   │   │   ├── ViewerShell.tsx          # Multi-pane viewer layout
+│   │   │   ├── ViewerRouter.tsx         # Extension → renderer routing
+│   │   │   └── renderers/
+│   │   │       ├── TextRenderer.tsx     # .txt, .log, .csv (WRAP toggle)
+│   │   │       ├── CodeRenderer.tsx     # Syntax highlighting (WRAP toggle)
+│   │   │       ├── MarkdownRenderer.tsx # React-markdown + GFM
+│   │   │       ├── HtmlRenderer.tsx     # Rendered/Source toggle
+│   │   │       ├── ImageRenderer.tsx    # Zoom controls
+│   │   │       ├── VideoRenderer.tsx
+│   │   │       ├── WebRenderer.tsx
+│   │   │       ├── PdfRenderer.tsx      # react-pdf
+│   │   │       ├── DocxRenderer.tsx
+│   │   │       ├── PptxRenderer.tsx
+│   │   │       ├── XlsxRenderer.tsx
+│   │   │       └── HwpRenderer.tsx      # Indexed chunks
+│   │   └── admin/
+│   │       └── LearnedPatternsPanel.tsx # Learning system UI
+│   └── index.css                    # Tailwind + typography
+└── docs/superpowers/
+    ├── specs/                       # Design documents
+    └── plans/                       # Implementation plans
+```
 
-- **colligi2_20260316_021200/** — Round 1: Architecture design, tech stack decisions, memory budget analysis
-- **colligi2_20260316_133406/** — Round 2: Implementation spec, conflict resolution, Phase 0/1 detailed spec
+### Knowledge Base (`knowledge_base/`)
 
-Each directory contains `.md` (markdown report), `.docx` (Word document), and `.json` (structured analysis data). These analysis results served as technical documents for the implementation.
+By default, JARVIS looks for `./knowledge_base/` under the current working directory. Override with `JARVIS_KNOWLEDGE_BASE=/path/to/kb`.
 
-### Knowledge Base (knowledge_base/)
-
-By default, JARVIS looks for `./knowledge_base/` under the current working directory. You can override this with `JARVIS_KNOWLEDGE_BASE=/path/to/kb`. File additions, modifications, and deletions are reflected in real-time during operation.
-
-Supported formats: `.pdf`, `.docx`, `.xlsx`, `.hwpx`, `.hwp`, `.md`, `.txt`, `.py`, `.json`, `.yaml`
+Supported formats: `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.hwpx`, `.hwp`, `.md`, `.txt`, `.py`, `.ts`, `.tsx`, `.js`, `.swift`, `.json`, `.yaml`, `.sql`, `.sh`, `.html`, `.css`, and more.
 
 ## Quick Start
+
+### Full Stack (Web Interface)
+
+```bash
+cd ProjectHub-terminal-architect
+./scripts/start.sh
+# Opens backend at :8000 and frontend at :3000
+```
+
+Visit http://localhost:3000 — the Terminal tab is ready for chat.
+
+### Backend Only (CLI)
 
 ```bash
 cd alliance_20260317_130542
@@ -97,38 +220,144 @@ cd alliance_20260317_130542
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+pip install mlx-vlm  # For Gemma 4 vision support
 
-# Run (requires Ollama)
-python -m jarvis
+# Run
+python -m jarvis                              # Default model chain
+python -m jarvis --model=gemma4:e4b           # Gemma 4 with vision
+python -m jarvis --model=exaone3.5:7.8b       # EXAONE fast tier
+python -m jarvis --model=exaone4.0:32b        # EXAONE deep tier
 
-# Run with a different model
-python -m jarvis --model=exaone4.0:32b
-
-# Tests (329 passing in project venv)
-python -m pytest tests/ -v
+# Tests
+python -m pytest tests/ -v                    # 420+ tests
 ```
+
+### Model Chain Configuration
+
+```bash
+# Primary: EXAONE with stub fallback (default in start.sh)
+JARVIS_MENU_BAR_MODEL_CHAIN="exaone3.5:7.8b,stub" ./scripts/start.sh
+
+# Use Gemma 4 for text + vision
+JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,stub" ./scripts/start.sh
+
+# Hybrid: Gemma first, EXAONE fallback
+JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,exaone3.5:7.8b,stub" ./scripts/start.sh
+```
+
+## API Reference
+
+### HTTP Endpoints (FastAPI, `localhost:8000`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/ask` | Query with RAG, returns answer + citations + guide |
+| POST | `/api/ask/vision` | Multimodal Q&A (multipart: text + image) → Gemma 4 |
+| POST | `/api/normalize` | Normalize Korean query text |
+| GET | `/api/health` | Service health + runtime state |
+| GET | `/api/runtime-state` | Current LLM runtime info |
+| GET | `/api/browse?path=` | List directory contents (FileNode[]) |
+| GET | `/api/file?path=` | Fetch file content (auto encoding detection) |
+| GET | `/api/file/extracted?path=&limit=` | Extract indexed text chunks from binary files |
+| GET | `/api/skills` | List skill profiles |
+| POST / PUT | `/api/skills[/{id}]` | Create / update skill profile |
+| GET | `/api/action-maps` | List action maps |
+| POST / PUT | `/api/action-maps[/{id}]` | Create / update action maps |
+| GET | `/api/learned-patterns` | List learned patterns |
+| POST | `/api/learned-patterns/forget` | Delete pattern(s) |
+
+### Custom Response Headers (on `/api/file`)
+
+- `X-Detected-Encoding` — utf-8, utf-8-sig, cp949, euc-kr, utf-16, latin-1
+- `X-File-Size` — bytes
+- `Access-Control-Expose-Headers` — makes above readable from browser
+
+### WebSocket
+
+- `/ws/{session_id}` — Bidirectional streaming for long-running queries
+
+## Web Interface Tabs
+
+1. **Home** — Dashboard with quick-access Terminal + recent activity
+2. **Terminal** — Chat interface with AI; image attachment (Gemma 4 vision); citation clicks navigate to Repository
+3. **Repository** — File tree browser (`knowledge_base/`) + multi-renderer viewer with 12 format-specific renderers
+4. **Skills** — Skill registry management + workflow action maps
+5. **Admin** — System health, active workers, event logs, Learned Patterns panel (view/delete)
+
+## Session Query Learning System
+
+Research-backed system that learns from in-session query refinements. References: Intent-Aware Neural Query Reformulation (arXiv 2507.22213, 2025), RQ-RAG (arXiv 2404.00610), Springer Discover Computing 2010.
+
+**Core Insight**: When a user refines a failed query within 5 minutes and the new query succeeds with strong evidence, store that pair as a learnable pattern. Inject entity hints into future similar queries.
+
+### 4-Class Reformulation Taxonomy
+
+| Type | Detection | Learned? |
+|------|-----------|----------|
+| **Specialization** | success has more entities than failure | ✓ |
+| **Error Correction** | similarity ≥0.85, entities identical | ✓ |
+| **Parallel Move** | same task, different entity values | ✓ |
+| **Generalization** | success has fewer entities | ✗ (info loss) |
+
+### Thresholds (Research-Grounded)
+
+- Temporal window: **5 minutes**
+- Pair similarity: **cosine ≥ 0.5**
+- Match injection: **cosine ≥ 0.75**
+- Pattern decay: 30 days unused
+
+### Model-Independence
+
+The learning layer uses BGE-M3 embeddings (not the generation LLM), so EXAONE → Gemma 4 → future model swaps don't invalidate learned patterns.
 
 ## Implementation Status
 
+### Backend
 - [x] Colligi2 collective intelligence analysis
 - [x] Alliance-based code generation
-- [x] LLM backend integration (MLX primary + Ollama fallback)
-- [x] Document parsers (PDF, DOCX, XLSX, HWPX, HWP)
+- [x] LLM backend integration (MLX primary, llamacpp fallback)
+- [x] **Gemma 4 vision backend** (GemmaVlmBackend via mlx-vlm)
+- [x] Document parsers (PDF, DOCX, XLSX, PPTX, HWP, HWPX, code files)
 - [x] FTS5 search + Kiwi morphological analysis
-- [x] Hybrid planner (heuristic baseline + lightweight keyword enrichment)
-- [x] Governor (system resource monitoring, 8 threshold rules)
-- [x] Citation display — filename, type, quoted text
-- [x] Real-time file watcher
-- [x] Token-based chunking (500 tokens / 80 overlap, heading-aware)
-- [x] Async batch morphological analysis
-- [x] Vector search (LanceDB embeddings)
-- [x] Voice interface (STT/TTS file mode + PTT once + menu bar live loop implemented; background polish and hardening remain)
-- [x] macOS menu bar app (SwiftUI shell + long-running Python bridge + approval panel + live voice loop + health status implemented; production hardening remains)
+- [x] LanceDB vector search + BGE-M3 embeddings (22,692+ chunks indexed)
+- [x] Cross-encoder reranker (multilingual)
+- [x] Hybrid planner + per-task retrieval strategies
+- [x] Answerability gate (pre-generation safety)
+- [x] Governor (8 threshold rules: memory, swap, thermal, battery)
+- [x] Token-based semantic chunking (table-row / code-function / paragraph)
+- [x] Claim-level citation verification
+- [x] **Session Query Learning System** (3-layer, 4-class classification)
+- [x] FastAPI web API + WebSocket
+- [x] 420+ tests passing
+
+### Frontend
+- [x] React 19 + TypeScript + Vite SPA
+- [x] 5-tab workspace layout (Home, Terminal, Repository, Skills, Admin)
+- [x] **Repository file tree browser** with lazy loading
+- [x] **12 specialized viewers** (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video, web)
+- [x] **Image attach in Terminal** for Gemma 4 vision Q&A
+- [x] Syntax highlighting (react-syntax-highlighter)
+- [x] GitHub Flavored Markdown (remark-gfm)
+- [x] WRAP/NOWRAP toggle + encoding detection headers
+- [x] Terminal citation → Repository navigation
+- [x] **Learned Patterns admin UI** (view, delete)
+- [x] Streaming response support
+
+### Voice & Menu Bar
+- [x] Voice interface (STT/TTS file mode, PTT, menu bar live loop)
+- [x] macOS menu bar app (SwiftUI + Python bridge + approval panel + health status)
+- [x] Wake word "Hey JARVIS" prototype
+
+## Documentation
+
+- [`docs/JARVIS_Authoritative_Decision.md`](alliance_20260317_130542/docs/JARVIS_Authoritative_Decision.md) — Single source of truth
+- [`docs/superpowers/specs/`](ProjectHub-terminal-architect/docs/superpowers/specs/) — Design specifications
+- [`docs/superpowers/plans/`](ProjectHub-terminal-architect/docs/superpowers/plans/) — Implementation plans
 
 ## Built With
 
 - **[ProjectHub](https://projecthub.co.kr)** — AI-powered project management and build orchestration platform
-- **[Colligi](https://colligi.ai)** — Collective intelligence analysis system for architecture design and technical decision-making
+- **[Colligi](https://colligi.ai)** — Collective intelligence analysis for architecture and technical decisions
 
 ## License
 
@@ -148,133 +377,138 @@ python -m pytest tests/ -v
 
 **Just A Rather Very Intelligent System**
 
-아이언맨의 자비스(JARVIS)에서 영감을 받은, 애플 실리콘 전용의 개인정보 보호를 최우선으로 하는 로컬 AI 비서.
+아이언맨의 자비스(JARVIS)에서 영감을 받은, Apple Silicon 전용 개인정보 보호 우선 로컬 AI 비서.
 
 ## 개요
 
-JARVIS는 MacBook Pro M1 Max (64GB) 위에서 완전히 로컬로 동작하는 AI 비서입니다. 클라우드 의존 없이 문서 기반 Q&A(출처 표시 포함), 하이브리드 쿼리 플래닝, 실시간 지식 베이스 인덱싱을 제공합니다.
+JARVIS는 MacBook Pro M1 Max (64GB)에서 완전히 로컬로 동작하는 AI 비서입니다. 클라우드 의존 없이 **출처 기반 문서 Q&A**, **하이브리드 쿼리 플래닝**, **멀티모달 비전**, **세션 기반 학습**, **리치 웹 인터페이스**를 제공합니다.
 
 ### 핵심 기능
 
-- **개인 RAG** — PDF, DOCX, XLSX, HWP, 마크다운, 코드 파일 기반 문서 Q&A
-- **출처 기반 답변** — 사실 답변은 검색된 소스 증거가 있을 때만 생성
-- **하이브리드 쿼리 플래너** — 휴리스틱 기반 분석 + 경량 한영 키워드 보강
-- **실시간 인덱싱** — 파일 감시기가 지식 베이스의 신규/수정 문서를 자동 인덱싱
-- **리소스 거버너** — 시스템 모니터링(메모리, 스왑, 발열, 배터리)으로 자동 모델 티어 선택
-- **음성 인터랙션** — 파일 모드, Push-to-talk, 메뉴바 live loop를 포함한 로컬 STT/TTS
+- **개인 RAG** — PDF, DOCX, XLSX, HWP, PPTX, 마크다운, 코드 파일 기반 출처 증거 포함 문서 Q&A
+- **웹 인터페이스** — React/TypeScript SPA: Terminal(채팅), Repository(파일 브라우저+뷰어), Skills, Admin 워크스페이스
+- **Repository 뷰어** — 12종 전용 렌더러 (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video) + syntax highlighting, GFM markdown, 인코딩 감지, WRAP/NOWRAP 토글
+- **Vision Q&A** — Terminal에서 이미지 업로드 → Gemma 4 E4B 멀티모달 분석 (128K 컨텍스트)
+- **Session Query Learning** — 실패→성공 쿼리 리포뮬레이션 캡처, entity hints 학습, 이후 유사 쿼리에 자동 주입 (생성 LLM과 독립)
+- **하이브리드 검색** — SQLite FTS5 (한국어 형태소 확장) + LanceDB 벡터 검색 + RRF fusion + cross-encoder reranking
+- **출처 기반 답변** — 사실 답변은 검색된 증거가 있을 때만 생성, relevance score 표시
+- **Answerability Gate** — 증거가 약하거나 모호할 때 할루시네이션 방지
+- **실시간 인덱싱** — 지식 베이스 파일 변경을 자동 인덱싱
+- **리소스 Governor** — 메모리/스왑/발열/배터리 모니터링으로 자동 모델 티어 선택
+- **음성 인터랙션** — 파일 모드, Push-to-talk, 메뉴바 live loop 포함 로컬 STT/TTS
 
 ### 기술 스택
 
-| 구성 요소 | 기술 |
-|-----------|------|
-| LLM | qwen3.5:9b 기본 / MLX 또는 Ollama fallback |
-| 쿼리 플래너 | 휴리스틱 baseline + 경량 이중언어 키워드 보강 |
-| 검색 | SQLite FTS5 + Kiwi 형태소 분석기 |
-| 파서 | PyMuPDF, python-docx, openpyxl, python-hwpx, pyhwp |
-| TTS | Qwen3-TTS (검증 완료) |
-| STT | whisper.cpp |
-| 언어 | Python 3.12 |
+| 계층 | 기술 |
+|------|------|
+| **생성 LLM (Fast/Balanced)** | EXAONE-3.5-7.8B-Instruct-4bit (MLX) — 1.5초, 기본값 |
+| **생성 LLM (Deep)** | EXAONE-4.0-32B-4bit (128K 컨텍스트) |
+| **Vision LLM** | Gemma 4 E4B (멀티모달, 128K 컨텍스트, mlx-vlm) |
+| **대체 LLM** | Qwen3.5:9B, EXAONE-Deep (추론), Gemma 4 E2B (라우팅) |
+| **임베딩** | BGE-M3 (다국어, CPU) |
+| **Vector DB** | LanceDB (serverless, 파일 기반) |
+| **Reranker** | cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 |
+| **FTS** | SQLite FTS5 + Kiwi 형태소 분석기 |
+| **파서** | PyMuPDF, python-docx, openpyxl, python-pptx, python-hwpx, pyhwp |
+| **STT / TTS** | whisper.cpp / Qwen3-TTS |
+| **Backend** | Python 3.12 + FastAPI + uvicorn |
+| **Frontend** | React 19 + TypeScript + Vite + Zustand + Tailwind CSS v4 |
 
 ### 대상 환경
 
 - MacBook Pro 16" / Apple M1 Max / 통합 메모리 64GB
-- macOS Tahoe 26.3
-
-## 프로젝트 구조
-
-```
-JARVIS/
-├── alliance_20260317_130542/   # 메인 소스 코드 (아래 참조)
-├── colligi2_20260316_021200/   # Colligi2 분석 1차
-├── colligi2_20260316_133406/   # Colligi2 분석 2차
-├── knowledge_base/             # 사용자 문서 (로컬 전용, git-ignored)
-└── .gitignore
-```
-
-### alliance_20260317_130542/ — 메인 소스 디렉토리
-
-Alliance 빌드 시스템으로 생성된 JARVIS 구현체입니다. 모든 실행 가능한 코드가 이 디렉토리에 있습니다.
-
-```
-alliance_20260317_130542/
-├── macos/JarvisMenuBar/        # SwiftUI 메뉴바 앱
-├── pyproject.toml              # 패키지 설정 및 의존성
-├── sql/schema.sql              # SQLite 스키마 (FTS5, lexical_morphs 포함)
-├── src/jarvis/
-│   ├── __main__.py             # 엔트리 포인트 (python -m jarvis)
-│   ├── app/                    # 부트스트랩, 설정
-│   │   └── runtime_context.py  # CLI/메뉴바 공용 런타임 팩토리
-│   ├── cli/menu_bridge.py      # SwiftUI 메뉴바용 JSON 브리지
-│   ├── cli/repl.py             # CLI REPL 인터페이스 (출처 표시 포함)
-│   ├── contracts/              # Protocol 인터페이스, 데이터 모델
-│   ├── core/
-│   │   ├── orchestrator.py     # 파이프라인 오케스트레이터
-│   │   ├── governor.py         # 시스템 리소스 모니터링 (psutil)
-│   │   └── planner.py          # 휴리스틱 baseline + 경량 쿼리 보강
-│   ├── indexing/               # 문서 파싱(PDF/DOCX/XLSX/HWP), 청킹, 인덱싱
-│   ├── retrieval/              # FTS5 검색, Kiwi 형태소 분석, 하이브리드 검색
-│   ├── runtime/                # LLM 백엔드 (MLX primary, Ollama fallback)
-│   └── memory/                 # 대화 기록 (SQLite), 태스크 로그
-├── tests/                      # 329개 테스트 (unit, integration, e2e)
-└── docs/                       # 설계 스펙 문서
-```
-
-### colligi2 디렉토리 — 집단지성 분석 결과
-
-Colligi2 집단지성 분석 시스템으로 생성된 JARVIS 프로젝트 분석 보고서입니다.
-
-- **colligi2_20260316_021200/** — 1차 분석: 아키텍처 설계, 기술 스택 결정, 메모리 예산 분석
-- **colligi2_20260316_133406/** — 2차 분석: 실행 설계, 충돌 해결, Phase 0/1 구현 명세
-
-각 디렉토리에는 `.md` (마크다운 보고서), `.docx` (Word 문서), `.json` (구조화된 분석 데이터)이 포함됩니다. 이 분석 결과가 구현의 기술 문서로 사용되었습니다.
-
-### 지식 베이스 (knowledge_base/)
-
-기본값으로 현재 작업 디렉토리의 `knowledge_base/` 를 찾습니다. 다른 경로를 쓰려면 `JARVIS_KNOWLEDGE_BASE=/path/to/kb` 를 설정하면 됩니다. 파일 추가/수정/삭제는 실행 중에도 실시간으로 반영됩니다.
-
-지원 형식: `.pdf`, `.docx`, `.xlsx`, `.hwpx`, `.hwp`, `.md`, `.txt`, `.py`, `.json`, `.yaml`
+- macOS 15+ (Sequoia/Tahoe)
+- Privacy-first, 완전 오프라인 동작 가능
 
 ## 빠른 시작
+
+### 풀스택 (웹 인터페이스)
+
+```bash
+cd ProjectHub-terminal-architect
+./scripts/start.sh
+# 백엔드 :8000, 프론트엔드 :3000 동시 실행
+```
+
+http://localhost:3000 접속 → Terminal 탭에서 채팅 시작.
+
+### 백엔드만 (CLI)
 
 ```bash
 cd alliance_20260317_130542
 
-# 설정
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+pip install mlx-vlm                           # Gemma 4 vision 지원
 
-# 실행 (Ollama 필요)
-python -m jarvis
+python -m jarvis                              # 기본 모델 체인
+python -m jarvis --model=gemma4:e4b           # Gemma 4 (비전 포함)
+python -m jarvis --model=exaone3.5:7.8b       # EXAONE fast tier
+python -m jarvis --model=exaone4.0:32b        # EXAONE deep tier
 
-# 다른 모델로 실행
-python -m jarvis --model=exaone3.5:7.8b
-
-# 테스트 (프로젝트 venv 기준 329개 통과)
-python -m pytest tests/ -v
+python -m pytest tests/ -v                    # 420+ 테스트
 ```
+
+### 모델 체인 구성
+
+```bash
+# 기본: EXAONE + stub fallback (start.sh 기본값)
+JARVIS_MENU_BAR_MODEL_CHAIN="exaone3.5:7.8b,stub" ./scripts/start.sh
+
+# Gemma 4로 텍스트 + 비전
+JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,stub" ./scripts/start.sh
+
+# 하이브리드: Gemma 우선, EXAONE fallback
+JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,exaone3.5:7.8b,stub" ./scripts/start.sh
+```
+
+## Session Query Learning System
+
+사용자의 세션 내 쿼리 리포뮬레이션을 학습하는 시스템. 연구 근거: Intent-Aware Neural Query Reformulation (arXiv 2507.22213, 2025), RQ-RAG (arXiv 2404.00610), Springer 2010.
+
+**핵심 아이디어**: 사용자가 실패한 쿼리를 5분 이내에 재표현하여 강한 증거와 함께 성공시키면, 그 쌍을 학습 가능한 패턴으로 저장하고 이후 유사 쿼리에 entity hints를 주입합니다.
+
+### 4-클래스 리포뮬레이션 분류
+
+| 타입 | 감지 조건 | 학습? |
+|------|----------|-------|
+| **Specialization** | 성공 쿼리의 entity가 실패보다 많음 | ✓ |
+| **Error Correction** | 유사도 ≥0.85, entity 동일 | ✓ |
+| **Parallel Move** | 같은 task, 다른 entity 값 | ✓ |
+| **Generalization** | 성공 쿼리의 entity가 실패보다 적음 | ✗ (정보 손실) |
+
+### 모델 독립성
+
+학습 계층은 BGE-M3 임베딩만 사용 (생성 LLM과 분리)하므로, EXAONE → Gemma 4 → 미래 모델 교체 시에도 학습된 패턴이 유효합니다.
 
 ## 구현 현황
 
-- [x] Colligi2 집단지성 분석 완료
-- [x] Alliance 기반 코드 생성
-- [x] LLM 백엔드 연결 (MLX primary + Ollama fallback)
-- [x] 문서 파서 구현 (PDF, DOCX, XLSX, HWPX, HWP)
-- [x] FTS5 검색 + Kiwi 형태소 분석
-- [x] 하이브리드 플래너 (휴리스틱 baseline + 경량 키워드 보강)
-- [x] Governor (시스템 리소스 모니터링, 8개 임계값 규칙)
-- [x] 출처 표시 (Citation) — 파일명, 유형, 인용문
-- [x] 실시간 파일 감시 (File Watcher)
-- [x] 토큰 기반 청킹 (500 토큰 / 80 오버랩, heading-aware)
-- [x] 형태소 분석 비동기 배치 처리
-- [x] 벡터 검색 (LanceDB 임베딩)
-- [x] 음성 인터페이스 (STT/TTS 파일 모드 + PTT 1회 + 메뉴바 live loop 구현; 백그라운드 polish와 안정화 작업 일부 남음)
-- [x] macOS 메뉴바 앱 (SwiftUI 셸 + 장기 실행 Python 브리지 + 승인 패널 + live voice loop + health status 구현; 운영 안정화 작업 일부 남음)
+### 백엔드
+- [x] MLX/GemmaVlm/llamacpp LLM 백엔드
+- [x] **Gemma 4 vision backend** (mlx-vlm)
+- [x] 문서 파서 (PDF, DOCX, XLSX, PPTX, HWP, HWPX, 코드)
+- [x] FTS5 + Kiwi 형태소, LanceDB + BGE-M3, Cross-encoder reranker
+- [x] 하이브리드 플래너 + 태스크별 검색 전략
+- [x] Answerability gate + Governor
+- [x] Claim-level citation verification
+- [x] **Session Query Learning System**
+- [x] FastAPI + WebSocket
+- [x] 420+ 테스트
+
+### 프론트엔드
+- [x] React 19 + TypeScript + Vite SPA
+- [x] 5탭 워크스페이스 (Home, Terminal, Repository, Skills, Admin)
+- [x] **Repository 파일 트리** + lazy loading
+- [x] **12종 전용 뷰어**
+- [x] **이미지 첨부 Terminal** (Gemma 4 vision)
+- [x] WRAP/NOWRAP 토글 + 인코딩 헤더
+- [x] **학습 패턴 Admin UI**
 
 ## 사용 도구
 
 - **[ProjectHub](https://projecthub.co.kr)** — AI 기반 프로젝트 관리 및 빌드 오케스트레이션 플랫폼
-- **[Colligi](https://colligi.ai)** — 아키텍처 설계와 기술 의사결정을 위한 집단지성 분석 시스템
+- **[Colligi](https://colligi.ai)** — 아키텍처 설계와 기술 의사결정 집단지성 분석 시스템
 
 ## 라이선스
 
