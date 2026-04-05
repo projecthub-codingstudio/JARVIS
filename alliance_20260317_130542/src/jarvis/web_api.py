@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -364,6 +364,77 @@ async def list_learned_patterns(retrieval_task: str | None = None):
         return LearnedPatternsResponse(patterns=summaries, total=len(summaries))
     finally:
         conn.close()
+
+
+class VisionAskResponse(BaseModel):
+    answer: str
+    model_id: str
+    elapsed_ms: int
+
+
+_vision_backend_cache: dict[str, object] = {}
+
+
+def _get_vision_backend(model_alias: str = "gemma4:e4b"):
+    """Lazy-load GemmaVlmBackend (cached across requests)."""
+    cached = _vision_backend_cache.get(model_alias)
+    if cached is not None:
+        return cached
+    from jarvis.runtime.gemma_vlm_backend import GemmaVlmBackend
+    from jarvis.contracts import RuntimeDecision
+    backend = GemmaVlmBackend()
+    decision = RuntimeDecision(
+        tier="deep",
+        backend="mlx",
+        model_id=model_alias,
+        context_window=131072,
+    )
+    backend.load(decision)
+    _vision_backend_cache[model_alias] = backend
+    return backend
+
+
+@app.post("/api/ask/vision", response_model=VisionAskResponse)
+async def ask_vision(
+    text: str = Form(...),
+    image: UploadFile = File(...),
+    model: str = Form("gemma4:e4b"),
+):
+    """Answer a question about an uploaded image using Gemma 4 vision model."""
+    import tempfile
+    import time as _time
+
+    # Validate image type
+    allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    filename = image.filename or "upload"
+    ext = Path(filename).suffix.lower()
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail=f"Unsupported image type: {ext}")
+
+    # Save to temp file (mlx_vlm requires a file path)
+    content = await image.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 20MB)")
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        backend = _get_vision_backend(model)
+        t0 = _time.perf_counter()
+        answer = backend.generate_with_image(prompt=text, image_path=tmp_path)
+        elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+        return VisionAskResponse(
+            answer=answer,
+            model_id=backend.model_id,
+            elapsed_ms=elapsed_ms,
+        )
+    finally:
+        try:
+            Path(tmp_path).unlink()
+        except Exception:
+            pass
 
 
 class ExtractedTextChunk(BaseModel):
