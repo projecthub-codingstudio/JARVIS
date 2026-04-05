@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
+import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import type { RendererProps } from './TextRenderer';
 
 function formatSize(bytes: number): string {
@@ -77,9 +79,22 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
           className="flex-1 w-full border-0 bg-white"
         />
       ) : (
-        <pre className="flex-1 overflow-auto custom-scrollbar p-4 font-mono text-xs text-on-surface bg-surface-container-lowest whitespace-pre-wrap break-all">
-          {html || '내용 없음'}
-        </pre>
+        <div className="flex-1 overflow-auto custom-scrollbar">
+          <SyntaxHighlighter
+            language="xml"
+            style={atomOneDark}
+            showLineNumbers
+            wrapLongLines
+            customStyle={{
+              margin: 0,
+              padding: '1.5rem',
+              background: 'transparent',
+              fontSize: '0.8125rem',
+            }}
+          >
+            {html || '내용 없음'}
+          </SyntaxHighlighter>
+        </div>
       )}
     </div>
   );
