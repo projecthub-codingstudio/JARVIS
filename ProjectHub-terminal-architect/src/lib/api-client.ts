@@ -16,6 +16,7 @@ import type {
   Status,
   BrowseResponse,
   LearnedPatternsResponse,
+  ExtractedTextResponse,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000';
@@ -222,6 +223,16 @@ export const apiClient = {
     });
     if (!res.ok) {
       throw new Error(`Forget pattern failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async getExtractedText(path: string, limit: number = 200): Promise<ExtractedTextResponse> {
+    const res = await fetch(
+      `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path)}&limit=${limit}`,
+    );
+    if (!res.ok) {
+      throw new Error(`Extracted text fetch failed: ${res.status}`);
     }
     return res.json();
   },

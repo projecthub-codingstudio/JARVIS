@@ -366,6 +366,88 @@ async def list_learned_patterns(retrieval_task: str | None = None):
         conn.close()
 
 
+class ExtractedTextChunk(BaseModel):
+    chunk_id: str
+    text: str
+    heading_path: str
+
+
+class ExtractedTextResponse(BaseModel):
+    path: str
+    document_id: str
+    total_chunks: int
+    chunks: list[ExtractedTextChunk]
+
+
+@app.get("/api/file/extracted", response_model=ExtractedTextResponse)
+async def get_extracted_text(path: str, limit: int = 200):
+    """Return indexed/extracted text chunks for binary documents (HWP, DOCX, PDF, etc.)."""
+    kb_root = _resolve_kb_root()
+    if kb_root is None:
+        raise HTTPException(status_code=500, detail="Knowledge base path not configured")
+
+    # Resolve absolute path for document lookup
+    raw_path = Path(path).expanduser()
+    if not raw_path.is_absolute():
+        abs_path = str((kb_root / raw_path).resolve())
+    else:
+        abs_path = str(raw_path.resolve())
+
+    conn = _learning_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+    try:
+        import unicodedata as _unicodedata
+        # macOS stores filesystem paths in NFD; incoming request may be NFC.
+        # Try multiple normalizations to match what the indexer wrote.
+        candidates = []
+        seen = set()
+        for form in ("NFC", "NFD", None):
+            variant = _unicodedata.normalize(form, abs_path) if form else abs_path
+            if variant not in seen:
+                seen.add(variant)
+                candidates.append(variant)
+
+        doc_row = None
+        for variant in candidates:
+            doc_row = conn.execute(
+                "SELECT document_id FROM documents WHERE path = ?",
+                (variant,),
+            ).fetchone()
+            if doc_row is not None:
+                break
+        if doc_row is None:
+            raise HTTPException(status_code=404, detail=f"Document not indexed: {path}")
+
+        document_id = doc_row[0]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            "SELECT chunk_id, text, heading_path FROM chunks "
+            "WHERE document_id = ? ORDER BY line_start, byte_start LIMIT ?",
+            (document_id, limit),
+        ).fetchall()
+        chunks = [
+            ExtractedTextChunk(
+                chunk_id=r[0],
+                text=r[1] or "",
+                heading_path=r[2] or "",
+            )
+            for r in rows
+        ]
+        return ExtractedTextResponse(
+            path=path,
+            document_id=document_id,
+            total_chunks=total,
+            chunks=chunks,
+        )
+    finally:
+        conn.close()
+
+
 class ForgetPatternRequest(BaseModel):
     pattern_id: str | None = None  # if None, delete all patterns
 
