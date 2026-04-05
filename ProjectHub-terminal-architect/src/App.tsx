@@ -113,7 +113,7 @@ export default function App() {
     addLog,
   } = useAppStore();
 
-  const { sendMessage } = useJarvis();
+  const { sendMessage, sendMessageWithImage } = useJarvis();
 
   useEffect(() => {
     document.documentElement.classList.add('dark');
@@ -442,6 +442,7 @@ export default function App() {
                 onOpenArtifact={openArtifact}
                 sessionId={sessionId}
                 onSubmit={handleSendMessage}
+                onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
               />
             </motion.div>
@@ -471,6 +472,7 @@ export default function App() {
                 onOpenArtifact={openArtifact}
                 sessionId={sessionId}
                 onSubmit={handleSendMessage}
+                onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
               />
             </motion.div>

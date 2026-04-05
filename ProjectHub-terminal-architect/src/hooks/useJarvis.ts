@@ -158,8 +158,60 @@ export const useJarvis = () => {
     sendMessage(reply);
   }, [sendMessage]);
 
+  const sendMessageWithImage = useCallback(async (text: string, image: File) => {
+    if (isLoading) return;
+    const displayText = text.trim() || '(이미지 분석)';
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'operator',
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      }),
+      content: `📷 ${image.name}\n\n${displayText}`,
+    };
+    addMessage(userMessage);
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await apiClient.askVision(displayText, image);
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'architect',
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        }),
+        content: normalizeResponseText(result.answer),
+        has_evidence: false,
+        answer_kind: 'retrieval_result',
+      };
+      addMessage(assistantMessage);
+      addLog({
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        type: 'info',
+        message: `Vision query (${result.model_id}, ${result.elapsed_ms}ms): ${image.name}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Vision request failed';
+      setError(msg);
+      addMessage({
+        id: (Date.now() + 1).toString(),
+        role: 'architect',
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+        }),
+        content: `Vision error: ${msg}`,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [isLoading, addMessage, setLoading, setError, addLog]);
+
   return {
     sendMessage,
+    sendMessageWithImage,
     handleSuggestedReply,
     sessionId,
   };
