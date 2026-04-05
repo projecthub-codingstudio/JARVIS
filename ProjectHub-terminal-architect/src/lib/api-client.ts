@@ -227,6 +227,26 @@ export const apiClient = {
     return res.json();
   },
 
+  async askVision(
+    text: string,
+    image: File,
+    model: string = 'gemma4:e4b',
+  ): Promise<{ answer: string; model_id: string; elapsed_ms: number }> {
+    const form = new FormData();
+    form.append('text', text);
+    form.append('image', image);
+    form.append('model', model);
+    const res = await fetch(`${API_BASE_URL}/api/ask/vision`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`Vision ask failed: ${res.status} ${detail}`);
+    }
+    return res.json();
+  },
+
   async getExtractedText(path: string, limit: number = 200): Promise<ExtractedTextResponse> {
     const res = await fetch(
       `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path)}&limit=${limit}`,
