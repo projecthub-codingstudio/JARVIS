@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { RendererProps } from './TextRenderer';
 
 const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
@@ -51,7 +52,7 @@ const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content 
           prose-li:text-on-surface
           prose-table:text-sm prose-th:text-on-surface prose-td:text-on-surface-variant prose-th:border-outline/30 prose-td:border-outline/20
           prose-hr:border-outline/20">
-          <ReactMarkdown>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
         </article>
       </div>
     </div>
