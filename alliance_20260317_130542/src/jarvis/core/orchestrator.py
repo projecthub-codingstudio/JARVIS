@@ -82,6 +82,7 @@ class Orchestrator:
         error_monitor: ErrorMonitor | None = None,
         user_knowledge_store: object | None = None,
         knowledge_base_path: Path | None = None,
+        learning_coordinator: object | None = None,
     ) -> None:
         self._governor = governor
         self._query_decomposer = query_decomposer
@@ -101,8 +102,9 @@ class Orchestrator:
         self._user_knowledge_store = user_knowledge_store
         self._knowledge_base_path = knowledge_base_path
         self._answerability_gate = AnswerabilityGate()
+        self._learning = learning_coordinator
 
-    def handle_turn(self, user_input: str) -> ConversationTurn:
+    def handle_turn(self, user_input: str, *, session_id: str = "") -> ConversationTurn:
         started_at = time.perf_counter()
         turn = ConversationTurn(user_input=user_input)
 
@@ -176,6 +178,9 @@ class Orchestrator:
                 gate_result=gate_result,
                 evidence=evidence,
                 started_at=started_at,
+                user_input=user_input,
+                analysis=analysis,
+                session_id=session_id,
             )
 
         # 6. Safe mode: search-only response, no generation
@@ -231,9 +236,25 @@ class Orchestrator:
                 tags={"has_evidence": "true" if answer_has_evidence else "false"},
             )
 
+        if self._learning is not None:
+            try:
+                self._learning.record_outcome(
+                    session_id=session_id,
+                    turn_id=turn.turn_id,
+                    query_text=user_input,
+                    retrieval_task=str(getattr(analysis, "retrieval_task", "") or ""),
+                    entities=dict(getattr(analysis, "entities", {}) or {}),
+                    outcome="answer",
+                    reason_code="",
+                    citation_paths=[c.source_path for c in answer.evidence.items if c.source_path],
+                    confidence=1.0,
+                )
+            except Exception:
+                pass
+
         return turn
 
-    def handle_turn_stream(self, user_input: str) -> Iterator[str | ConversationTurn]:
+    def handle_turn_stream(self, user_input: str, *, session_id: str = "") -> Iterator[str | ConversationTurn]:
         """Stream a turn — yields tokens then a final ConversationTurn.
 
         Retrieval is synchronous. Only the LLM generation phase streams.
@@ -298,6 +319,9 @@ class Orchestrator:
                 evidence=evidence,
                 started_at=started_at,
                 streaming=True,
+                user_input=user_input,
+                analysis=analysis,
+                session_id=session_id,
             )
             yield blocked_turn
             return
@@ -348,6 +372,21 @@ class Orchestrator:
                 (time.perf_counter() - started_at) * 1000,
                 tags={"has_evidence": "true" if answer_has_evidence else "false", "streaming": "true"},
             )
+        if self._learning is not None:
+            try:
+                self._learning.record_outcome(
+                    session_id=session_id,
+                    turn_id=turn.turn_id,
+                    query_text=user_input,
+                    retrieval_task=str(getattr(analysis, "retrieval_task", "") or ""),
+                    entities=dict(getattr(analysis, "entities", {}) or {}),
+                    outcome="answer",
+                    reason_code="",
+                    citation_paths=[c.source_path for c in answer.evidence.items if c.source_path],
+                    confidence=1.0,
+                )
+            except Exception:
+                pass
         yield turn
 
     @property
@@ -624,6 +663,9 @@ class Orchestrator:
         evidence: VerifiedEvidenceSet,
         started_at: float,
         streaming: bool = False,
+        user_input: str = "",
+        analysis: object | None = None,
+        session_id: str = "",
     ) -> ConversationTurn:
         filtered_evidence = VerifiedEvidenceSet(
             items=(),
@@ -661,6 +703,21 @@ class Orchestrator:
                 (time.perf_counter() - started_at) * 1000,
                 tags=tags,
             )
+        if self._learning is not None:
+            try:
+                self._learning.record_outcome(
+                    session_id=session_id,
+                    turn_id=turn.turn_id,
+                    query_text=user_input,
+                    retrieval_task=str(getattr(analysis, "retrieval_task", "") or ""),
+                    entities=dict(getattr(analysis, "entities", {}) or {}),
+                    outcome=gate_result.decision,
+                    reason_code=gate_result.reason_code,
+                    citation_paths=[],
+                    confidence=gate_result.confidence,
+                )
+            except Exception:
+                pass
         return turn
 
     def _apply_post_generation_guard(
