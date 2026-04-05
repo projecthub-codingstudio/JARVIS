@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import {
   ArrowRight,
@@ -7,10 +7,12 @@ import {
   Command,
   Database,
   FileText,
+  ImagePlus,
   Link2,
   LoaderCircle,
   ShieldAlert,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { normalizeResponseText } from '../../lib/response-text';
 import { cn } from '../../lib/utils';
@@ -33,6 +35,7 @@ interface TerminalWorkspaceProps {
   onOpenArtifact: (artifact: Artifact) => void;
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onImageSubmit?: (text: string, image: File) => void;
 }
 
 function getArtifactIcon(artifact: Artifact) {
@@ -743,7 +746,16 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   onOpenArtifact,
   sessionId,
   onSubmit,
+  onImageSubmit,
 }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const imagePreviewUrl = useMemo(() => (
+    selectedImage ? URL.createObjectURL(selectedImage) : null
+  ), [selectedImage]);
+  useEffect(() => {
+    return () => { if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl); };
+  }, [imagePreviewUrl]);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const terminalScrollRef = useRef<HTMLDivElement | null>(null);
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
@@ -1250,24 +1262,77 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
         <div className="border-t border-white/8 bg-surface-container-lowest/90 p-4 backdrop-blur">
           <div className="mx-auto max-w-6xl">
             <form
-              onSubmit={onSubmit}
-              className="flex items-center gap-3 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
+              onSubmit={(event) => {
+                if (selectedImage && onImageSubmit) {
+                  event.preventDefault();
+                  onImageSubmit(inputValue, selectedImage);
+                  onInputChange('');
+                  setSelectedImage(null);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                  return;
+                }
+                onSubmit(event);
+              }}
+              className="flex flex-col gap-2 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary/10 font-mono text-secondary">▌</span>
-              <input
-                ref={inputRef}
-                value={inputValue}
-                onChange={(event) => onInputChange(event.target.value)}
-                placeholder="질문이나 명령을 입력하세요. 예: 최근 문서 요약해 줘"
-                className="w-full min-w-0 bg-transparent font-sans text-[15px] text-on-surface outline-none placeholder:text-outline"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-2 text-primary transition hover:border-primary/35 hover:bg-primary/14"
-              >
-                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] font-mono uppercase text-outline">Cmd+K</span>
-                <ArrowRight size={16} />
-              </button>
+              {imagePreviewUrl && (
+                <div className="flex items-center gap-3 border-b border-white/10 pb-2">
+                  <img src={imagePreviewUrl} alt="첨부" className="h-12 w-12 rounded object-cover border border-white/10" />
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate text-xs text-on-surface">{selectedImage?.name}</div>
+                    <div className="text-[10px] font-mono text-outline">
+                      {selectedImage ? `${(selectedImage.size / 1024).toFixed(1)} KB` : ''} · Gemma 4 E4B vision
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedImage(null);
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                    className="rounded p-1 text-outline hover:bg-white/5 hover:text-on-surface"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary/10 font-mono text-secondary">▌</span>
+                <input
+                  ref={inputRef}
+                  value={inputValue}
+                  onChange={(event) => onInputChange(event.target.value)}
+                  placeholder={selectedImage ? "이미지에 대해 질문하세요..." : "질문이나 명령을 입력하세요. 예: 최근 문서 요약해 줘"}
+                  className="w-full min-w-0 bg-transparent font-sans text-[15px] text-on-surface outline-none placeholder:text-outline"
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) setSelectedImage(file);
+                  }}
+                />
+                {onImageSubmit && (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-surface-container-high px-2.5 py-2 text-outline transition hover:border-secondary/30 hover:text-secondary"
+                    title="이미지 첨부 (Gemma 4 Vision)"
+                  >
+                    <ImagePlus size={14} />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-2 text-primary transition hover:border-primary/35 hover:bg-primary/14"
+                >
+                  <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] font-mono uppercase text-outline">Cmd+K</span>
+                  <ArrowRight size={16} />
+                </button>
+              </div>
             </form>
           </div>
         </div>

@@ -200,6 +200,59 @@ class GemmaVlmBackend:
         """
         yield self.generate(prompt, context, intent)
 
+    def generate_with_image(
+        self,
+        prompt: str,
+        image_path: str,
+        *,
+        context: str = "",
+        max_tokens: int = 1024,
+    ) -> str:
+        """Generate a response describing/answering about an image.
+
+        Args:
+            prompt: User question about the image.
+            image_path: Absolute path to image file (PNG, JPG, etc).
+            context: Optional RAG evidence context.
+            max_tokens: Max output tokens.
+
+        Returns:
+            Generated response text.
+        """
+        if self._model is None or self._processor is None:
+            raise RuntimeError("No Gemma model loaded. Call load() first.")
+
+        from mlx_vlm import generate as vlm_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        full_prompt = (
+            f"{context}\n\n{prompt}" if context.strip() else prompt
+        )
+
+        formatted_prompt = apply_chat_template(
+            self._processor, self._config, full_prompt, num_images=1
+        )
+
+        t0 = time.perf_counter()
+        output = vlm_generate(
+            self._model,
+            self._processor,
+            formatted_prompt,
+            image=image_path,
+            config=self._config,
+            max_tokens=max_tokens,
+            temperature=0.7,
+            verbose=False,
+        )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        text = output.text if hasattr(output, "text") else str(output)
+        logger.info(
+            "Gemma vision generated %d chars in %.0fms (model=%s, image=%s)",
+            len(text), elapsed_ms, self._model_id, image_path,
+        )
+        return text
+
 
 # Runtime-checkable verification
 assert isinstance(GemmaVlmBackend(), LLMBackendProtocol)
