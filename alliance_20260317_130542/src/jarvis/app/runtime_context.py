@@ -27,6 +27,11 @@ from jarvis.retrieval.vector_index import VectorIndex
 from jarvis.runtime.embedding_runtime import EmbeddingRuntime
 from jarvis.runtime.mlx_runtime import MLXRuntime
 from jarvis.runtime.model_router import ModelRouter
+from jarvis.learning import schema_sql_path
+from jarvis.learning.pattern_store import PatternStore
+from jarvis.learning.coordinator import LearningCoordinator
+from jarvis.learning.embedding_adapter import BgeM3Adapter
+from jarvis.learning.batch_scheduler import BatchScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -687,9 +692,47 @@ def build_runtime_context(
     if llm_backend is not None:
         planner_backend = LLMIntentJSONBackend(llm_backend=llm_backend)
 
+    # Initialize LearningCoordinator (optional, skips on error)
+    learning_coordinator: object | None = None
+    batch_scheduler: object | None = None
+    try:
+        schema_sql = Path(schema_sql_path()).read_text(encoding="utf-8")
+        result.db.executescript(schema_sql)
+
+        # Share the embedding runtime used by the vector index
+        shared_embedding_runtime = EmbeddingRuntime()
+
+        pattern_store = PatternStore(db=result.db)
+        embedding_adapter = BgeM3Adapter(runtime=shared_embedding_runtime)
+        learning_coordinator = LearningCoordinator(
+            store=pattern_store,
+            embed_fn=embedding_adapter.embed,
+            similarity_fn=embedding_adapter.similarity,
+        )
+        learning_coordinator.refresh_index()
+        logger.info("LearningCoordinator initialized")
+    except Exception as exc:
+        logger.warning("LearningCoordinator unavailable: %s", exc)
+        learning_coordinator = None
+
+    # Start batch scheduler
+    if learning_coordinator is not None:
+        try:
+            batch_scheduler = BatchScheduler(
+                coordinator=learning_coordinator,
+                interval_seconds=600.0,
+                lookback_seconds=300,
+            )
+            batch_scheduler.start()
+            logger.info("Learning batch scheduler started (10-min interval)")
+        except Exception as exc:
+            logger.warning("Batch scheduler failed to start: %s", exc)
+            batch_scheduler = None
+
     planner_kwargs: dict[str, object] = {
         "model_id": "qwen3.5:9b",
         "knowledge_base_path": resolved_kb_path,
+        "learning_coordinator": learning_coordinator,
     }
     if planner_backend is not None:
         planner_kwargs["lightweight_backend"] = planner_backend
@@ -721,6 +764,7 @@ def build_runtime_context(
         error_monitor=error_monitor,
         user_knowledge_store=_create_user_knowledge_store(result.db),
         knowledge_base_path=resolved_kb_path,
+        learning_coordinator=learning_coordinator,
     )
 
     return RuntimeContext(
