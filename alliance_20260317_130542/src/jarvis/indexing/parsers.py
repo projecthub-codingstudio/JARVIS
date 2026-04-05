@@ -894,6 +894,7 @@ def _parse_hwp(path: Path) -> str:
     Falls back to hwp5txt (text-only, tables lost) if XML parsing fails.
     Returns empty string if pyhwp is not available (graceful degradation).
     """
+    import shutil
     import subprocess
 
     # Prefer hwp5proc xml: preserves table content as structured XML

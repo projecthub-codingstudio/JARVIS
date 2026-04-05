@@ -1057,6 +1057,11 @@ class MLXRuntime:
         if history:
             context = f"[이전 대화]\n{history}\n\n[참고 증거]\n{context}"
 
+        # Assemble conversation history (sliding window, 3 turns)
+        history = self._assemble_history(recent_turns)
+        if history:
+            context = f"[이전 대화]\n{history}\n\n[참고 증거]\n{context}"
+
         # Real backend path
         if self._backend is not None:
             t0 = time.perf_counter()

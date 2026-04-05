@@ -106,6 +106,11 @@ class EvidenceBuilder:
         wants_function = bool(_FUNCTION_QUERY_RE.search(query_text))
         query_phrases = _document_query_phrases(query_text)
 
+        # Extract filename and identifier terms from query for boost scoring
+        query_text = " ".join(f.text for f in fragments)
+        query_filenames = {m.lower() for m in _FILENAME_RE.findall(query_text)}
+        query_identifiers = {m for m in _CODE_IDENT_RE.findall(query_text) if len(m) > 4}
+
         items: list[EvidenceItem] = []
         for i, result in enumerate(results, 1):
             chunk_row = self._db.execute(
