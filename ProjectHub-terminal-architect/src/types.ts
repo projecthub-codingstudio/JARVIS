@@ -343,3 +343,18 @@ export interface LearnedPatternsResponse {
   patterns: LearnedPatternSummary[];
   total: number;
 }
+
+/* ── Extracted text (binary docs indexed as chunks) ── */
+
+export interface ExtractedTextChunk {
+  chunk_id: string;
+  text: string;
+  heading_path: string;
+}
+
+export interface ExtractedTextResponse {
+  path: string;
+  document_id: string;
+  total_chunks: number;
+  chunks: ExtractedTextChunk[];
+}
