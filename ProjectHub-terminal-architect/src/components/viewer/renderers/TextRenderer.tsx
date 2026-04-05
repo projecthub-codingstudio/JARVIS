@@ -8,7 +8,8 @@ export interface RendererProps {
   content?: string;
 }
 
-const LINES_PER_PAGE = 30;
+const INITIAL_LINE_LIMIT = 5000;  // show all lines up to this, then paginate
+const LINES_PER_PAGE = 2000;
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -47,10 +48,10 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
 
   const text = fileContent || content || artifact.preview || '내용 없음';
   const allLines = text.split('\n');
-  const [visibleCount, setVisibleCount] = useState(LINES_PER_PAGE);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_LINE_LIMIT);
 
   // Reset visible count when content changes
-  useEffect(() => { setVisibleCount(LINES_PER_PAGE); }, [text]);
+  useEffect(() => { setVisibleCount(INITIAL_LINE_LIMIT); }, [text]);
 
   const visibleLines = allLines.slice(0, visibleCount);
   const hasMore = visibleCount < allLines.length;

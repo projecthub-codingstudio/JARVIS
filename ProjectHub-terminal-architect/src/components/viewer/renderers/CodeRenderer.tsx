@@ -17,7 +17,8 @@ function detectLanguage(path: string): string {
   return EXT_TO_LANG[ext] || 'plaintext';
 }
 
-const LINES_PER_PAGE = 40;
+const INITIAL_LINE_LIMIT = 3000;  // syntax highlighting is CPU-heavy; paginate very long files
+const LINES_PER_PAGE = 2000;
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -58,10 +59,10 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   const language = detectLanguage(artifact.path || artifact.full_path || '');
 
   const allLines = useMemo(() => fullCode.split('\n'), [fullCode]);
-  const [visibleCount, setVisibleCount] = useState(LINES_PER_PAGE);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_LINE_LIMIT);
 
   // Reset visible count when content changes (e.g., file loaded)
-  useEffect(() => { setVisibleCount(LINES_PER_PAGE); }, [fullCode]);
+  useEffect(() => { setVisibleCount(INITIAL_LINE_LIMIT); }, [fullCode]);
 
   const visibleCode = allLines.slice(0, visibleCount).join('\n');
   const hasMore = visibleCount < allLines.length;
