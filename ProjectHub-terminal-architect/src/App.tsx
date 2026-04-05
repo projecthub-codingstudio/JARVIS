@@ -346,7 +346,10 @@ export default function App() {
     <div className="h-screen overflow-hidden bg-surface text-on-surface">
       <header className="fixed inset-x-0 top-0 z-50 flex h-12 items-center justify-between border-b border-white/5 bg-surface px-4">
         <div className="flex items-center gap-6">
-          <div className="text-sm font-bold tracking-tight text-primary">ProjectHub</div>
+          <div className="flex items-center gap-2">
+            <img src="/projecthub-icon.png" alt="ProjectHub" className="h-6 w-6 rounded" />
+            <div className="text-sm font-bold tracking-tight text-primary">ProjectHub-JARVIS</div>
+          </div>
           <nav className="hidden items-center gap-4 md:flex">
             {SHELL_NAV.map(({ key, label }) => (
               <button

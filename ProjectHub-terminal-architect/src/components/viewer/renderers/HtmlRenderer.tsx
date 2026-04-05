@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+import { WrapText } from 'lucide-react';
 import type { RendererProps } from './TextRenderer';
 
 function formatSize(bytes: number): string {
@@ -16,6 +17,7 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   const [encoding, setEncoding] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [wrapLines, setWrapLines] = useState(true);
 
   useEffect(() => {
     if (!fileUrl) return;
@@ -56,7 +58,19 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
         <span>HTML</span>
         {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
         {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
-        <div className="ml-auto flex gap-1">
+        <div className="ml-auto flex items-center gap-1">
+          {mode === 'source' && (
+            <button
+              onClick={() => setWrapLines(w => !w)}
+              className={`flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
+                wrapLines ? 'bg-primary/15 text-primary' : 'text-outline hover:text-on-surface'
+              }`}
+              title={wrapLines ? "줄바꿈 끄기 (가로 스크롤)" : "줄바꿈 켜기"}
+            >
+              <WrapText size={10} />
+              {wrapLines ? 'WRAP' : 'NOWRAP'}
+            </button>
+          )}
           <button
             onClick={() => setMode('rendered')}
             className={`px-2 py-0.5 rounded ${mode === 'rendered' ? 'bg-primary/20 text-primary' : 'text-outline hover:text-on-surface'}`}
@@ -84,7 +98,7 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
             language="xml"
             style={atomOneDark}
             showLineNumbers
-            wrapLongLines
+            wrapLongLines={wrapLines}
             customStyle={{
               margin: 0,
               padding: '1.5rem',
