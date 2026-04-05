@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { ExternalLink, FileText } from 'lucide-react';
+import { ChevronDown, ExternalLink, FileText } from 'lucide-react';
 import { apiClient } from '../../../lib/api-client';
 import type { ExtractedTextChunk } from '../../../types';
 import type { RendererProps } from './TextRenderer';
+
+const CHUNKS_PER_PAGE = 40;  // roughly one screen's worth
 
 const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
   const [chunks, setChunks] = useState<ExtractedTextChunk[]>([]);
   const [totalChunks, setTotalChunks] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(CHUNKS_PER_PAGE);
 
   const relativePath = artifact.path || artifact.full_path || '';
   const fileUrl = artifact.full_path ? apiClient.getFileUrl(artifact.full_path) : '';
@@ -18,6 +21,7 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setVisibleCount(CHUNKS_PER_PAGE);
 
     apiClient
       .getExtractedText(relativePath, 500)
@@ -38,6 +42,10 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
     return () => { cancelled = true; };
   }, [relativePath]);
 
+  const visibleChunks = chunks.slice(0, visibleCount);
+  const hasMore = visibleCount < chunks.length;
+  const remaining = chunks.length - visibleCount;
+
   const fallbackText = artifact.preview || '인덱싱된 미리보기가 없습니다.';
 
   return (
@@ -51,7 +59,7 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
               <p className="text-[10px] font-mono text-on-surface-variant uppercase">
                 HWP 문서 — 인덱스 추출 텍스트
                 {totalChunks !== null && (
-                  <> · <span className="text-secondary">{chunks.length} / {totalChunks}</span> chunks</>
+                  <> · <span className="text-secondary">{visibleChunks.length} / {totalChunks}</span> chunks</>
                 )}
               </p>
             </div>
@@ -79,7 +87,7 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
 
           {!loading && chunks.length > 0 && (
             <div className="space-y-3">
-              {chunks.map((c) => (
+              {visibleChunks.map((c) => (
                 <div key={c.chunk_id} className="group">
                   {c.heading_path && (
                     <div className="text-[10px] font-mono uppercase tracking-wider text-outline mb-1 group-hover:text-secondary transition-colors">
@@ -91,9 +99,18 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
                   </div>
                 </div>
               ))}
-              {totalChunks !== null && chunks.length < totalChunks && (
+              {hasMore && (
+                <button
+                  onClick={() => setVisibleCount(prev => prev + CHUNKS_PER_PAGE)}
+                  className="w-full mt-4 py-3 flex items-center justify-center gap-2 text-primary border border-primary/30 hover:bg-primary/10 transition-all text-xs font-mono uppercase tracking-widest"
+                >
+                  <ChevronDown size={14} />
+                  더 보기 ({remaining}개 청크 남음)
+                </button>
+              )}
+              {!hasMore && totalChunks !== null && chunks.length < totalChunks && (
                 <div className="mt-6 pt-4 border-t border-outline/10 text-center text-xs text-outline font-mono">
-                  전체 {totalChunks} chunks 중 처음 {chunks.length}개만 표시 중 — 원본 열기로 전체 보기
+                  인덱스에 {totalChunks} chunks 중 처음 {chunks.length}개만 캐시됨 — 원본 열기로 전체 보기
                 </div>
               )}
             </div>
