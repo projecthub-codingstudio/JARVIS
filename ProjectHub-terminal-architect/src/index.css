@@ -1,0 +1,105 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-primary: var(--primary);
+  --color-primary-dim: var(--primary-dim);
+  --color-secondary: var(--secondary);
+  --color-tertiary: var(--tertiary);
+  --color-surface: var(--surface);
+  --color-surface-low: var(--surface-low);
+  --color-surface-high: var(--surface-high);
+  --color-surface-highest: var(--surface-highest);
+  --color-surface-container: var(--surface-container);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container-highest: var(--surface-container-highest);
+  --color-surface-container-lowest: var(--surface-container-lowest);
+  --color-outline: var(--outline);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-on-primary: var(--on-primary);
+  --color-secondary-container: var(--secondary-container);
+  --color-surface-variant: var(--surface-variant);
+  --color-error-container: var(--error-container);
+}
+
+@layer base {
+  :root {
+    --primary: #96ccff;
+    --primary-dim: #5b96c9;
+    --secondary: #88d982;
+    --tertiary: #c9bfff;
+    --surface: #131313;
+    --surface-low: #1c1b1b;
+    --surface-high: #20201f;
+    --surface-highest: #353535;
+    --surface-container: #20201f;
+    --surface-container-low: #1c1b1b;
+    --surface-container-high: #2a2a2a;
+    --surface-container-highest: #353535;
+    --surface-container-lowest: #0e0e0e;
+    --surface-variant: #353535;
+    --secondary-container: #005b14;
+    --error-container: #93000a;
+    --outline: #8b919a;
+    --on-surface: #e5e2e1;
+    --on-surface-variant: #c1c7d0;
+    --on-primary: #003353;
+  }
+
+  .dark {
+    --primary: #96ccff;
+    --primary-dim: #5b96c9;
+    --secondary: #88d982;
+    --tertiary: #c9bfff;
+    --surface: #131313;
+    --surface-low: #1c1b1b;
+    --surface-high: #20201f;
+    --surface-highest: #353535;
+    --surface-container: #20201f;
+    --surface-container-low: #1c1b1b;
+    --surface-container-high: #2a2a2a;
+    --surface-container-highest: #353535;
+    --surface-container-lowest: #0e0e0e;
+    --surface-variant: #353535;
+    --secondary-container: #005b14;
+    --error-container: #93000a;
+    --outline: #8b919a;
+    --on-surface: #e5e2e1;
+    --on-surface-variant: #c1c7d0;
+    --on-primary: #003353;
+  }
+
+  body {
+    @apply bg-surface text-on-surface font-sans antialiased;
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--primary-dim) var(--surface-container-lowest);
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--surface-container-lowest);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--surface-highest);
+  border-radius: 999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-dim);
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Terminal Architect",
+  "description": "A high-fidelity RAG (Retrieval-Augmented Generation) dashboard for digital architects featuring real-time asset synthesis and AI-driven analysis.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

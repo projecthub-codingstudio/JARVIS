@@ -49,12 +49,11 @@ def indexed_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 class TestFTSIndexNoDb:
-    def test_stub_returns_hit(self) -> None:
+    def test_returns_empty_without_db(self) -> None:
         fts = FTSIndex()
         fragments = [TypedQueryFragment(text="test", language="en", query_type="keyword")]
         hits = fts.search(fragments)
-        assert len(hits) >= 1
-        assert isinstance(hits[0], SearchHit)
+        assert hits == []
 
 
 class TestFTSIndexWithDb:

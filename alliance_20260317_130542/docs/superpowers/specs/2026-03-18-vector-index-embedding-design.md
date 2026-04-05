@@ -1,5 +1,7 @@
 # Vector Index + Embedding Runtime Design
 
+> **Status note (2026-03-25):** This is a historical design document. The current runtime still degrades gracefully when optional vector dependencies are unavailable, but it no longer treats missing retrieval state as a stub-evidence path for grounded answering.
+
 **Date**: 2026-03-18
 **Status**: Approved (spec review passed)
 **Spec References**: TASK-E93DF600 (Sec 5, 7, 9, 11, 12, 13), TASK-9A8DC5D5 (Sec 4, 7, 10, 13)
