@@ -107,7 +107,7 @@ export function RepositoryWorkspace({ initialPath, onClearInitialPath }: Reposit
   return (
     <div className="flex h-full">
       {/* Left: File tree */}
-      <div className="w-64 shrink-0 border-r border-white/10 bg-black/20">
+      <div className="w-96 shrink-0 border-r border-white/10 bg-black/20">
         <FileTreePanel onSelectFile={handleSelectFile} />
       </div>
 
