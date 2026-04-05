@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, WrapText } from 'lucide-react';
 import type { Artifact } from '../../../types';
 
 export interface RendererProps {
@@ -49,6 +49,7 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   const text = fileContent || content || artifact.preview || '내용 없음';
   const allLines = text.split('\n');
   const [visibleCount, setVisibleCount] = useState(INITIAL_LINE_LIMIT);
+  const [wrapLines, setWrapLines] = useState(true);
 
   // Reset visible count when content changes
   useEffect(() => { setVisibleCount(INITIAL_LINE_LIMIT); }, [text]);
@@ -68,27 +69,37 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   return (
     <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-4 font-mono text-sm">
       <div className="mx-auto max-w-[1400px] rounded-xl border border-white/8 bg-surface px-6 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
-      {(encoding || fileSize !== null) && (
-        <div className="mb-3 flex items-center gap-3 border-b border-outline/10 pb-2 text-[10px] font-mono uppercase tracking-wider text-outline">
-          {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
-          {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
-          <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
-        </div>
-      )}
-      <table className="w-full border-collapse">
-        <tbody>
-          {visibleLines.map((line, i) => (
-            <tr key={i} className="hover:bg-surface-container-high/45">
-              <td className="pr-4 text-right text-outline select-none w-12 align-top text-xs">
-                {i + 1}
-              </td>
-              <td className="text-on-surface whitespace-pre-wrap break-all">
-                {line || '\u00A0'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="mb-3 flex items-center gap-3 border-b border-outline/10 pb-2 text-[10px] font-mono uppercase tracking-wider text-outline">
+        {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}
+        {fileSize !== null && <span>SIZE: <span className="text-secondary">{formatSize(fileSize)}</span></span>}
+        <span>LINES: <span className="text-secondary">{allLines.length}</span></span>
+        <button
+          onClick={() => setWrapLines(w => !w)}
+          className={`ml-auto flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
+            wrapLines ? 'bg-primary/15 text-primary' : 'text-outline hover:text-on-surface'
+          }`}
+          title={wrapLines ? "줄바꿈 끄기 (가로 스크롤)" : "줄바꿈 켜기"}
+        >
+          <WrapText size={10} />
+          {wrapLines ? 'WRAP' : 'NOWRAP'}
+        </button>
+      </div>
+      <div className={wrapLines ? '' : 'overflow-x-auto custom-scrollbar'}>
+        <table className="border-collapse" style={{ width: wrapLines ? '100%' : 'max-content', minWidth: '100%' }}>
+          <tbody>
+            {visibleLines.map((line, i) => (
+              <tr key={i} className="hover:bg-surface-container-high/45">
+                <td className="pr-4 text-right text-outline select-none w-12 align-top text-xs sticky left-0 bg-surface">
+                  {i + 1}
+                </td>
+                <td className={`text-on-surface ${wrapLines ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}>
+                  {line || '\u00A0'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {hasMore && (
         <button
           onClick={() => setVisibleCount(prev => prev + LINES_PER_PAGE)}
