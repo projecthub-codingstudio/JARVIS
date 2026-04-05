@@ -375,9 +375,11 @@ class Planner:
         model_id: str = "qwen3.5:9b",
         lightweight_backend: LightweightPlannerBackend | object | None = _DEFAULT_LIGHTWEIGHT,
         knowledge_base_path: Path | None = None,
+        learning_coordinator: object | None = None,
     ) -> None:
         self._model_id = model_id
         self._knowledge_base_path = knowledge_base_path
+        self._learning = learning_coordinator
         self._heuristic = HeuristicPlanner()
         self._keyword_expander = LightweightKeywordExpander()
         if lightweight_backend is _DEFAULT_LIGHTWEIGHT:
@@ -407,7 +409,7 @@ class Planner:
             if baseline.retrieval_task == "code_lookup" and "target_file" not in baseline.entities:
                 baseline.entities["target_file"] = raw_file_matches[0]
         if self._lightweight_backend is None:
-            return baseline
+            return self._apply_learning_hints(baseline, raw_text)
 
         if isinstance(self._lightweight_backend, LLMIntentJSONBackend):
             should_use_lightweight = True
@@ -415,7 +417,7 @@ class Planner:
             should_use_lightweight = self._should_use_lightweight(raw_text, baseline)
 
         if not should_use_lightweight:
-            return baseline
+            return self._apply_learning_hints(baseline, raw_text)
 
         try:
             enriched = self._lightweight_backend.analyze(normalized_text, baseline)
@@ -425,12 +427,39 @@ class Planner:
 
         result = baseline if enriched is None else self._merge_analysis(baseline, enriched)
         if isinstance(self._lightweight_backend, LLMIntentJSONBackend):
-            return self._merge_keyword_expansion(
+            merged = self._merge_keyword_expansion(
                 raw_text=normalized_text,
                 baseline=baseline,
                 analysis=result,
             )
-        return result
+            return self._apply_learning_hints(merged, raw_text)
+        return self._apply_learning_hints(result, raw_text)
+
+    def _apply_learning_hints(self, result: QueryAnalysis, raw_text: str) -> QueryAnalysis:
+        """Enrich entity dict with learned hints from the learning coordinator."""
+        if self._learning is None:
+            return result
+        try:
+            enriched_entities = self._learning.inject_hints(
+                query=raw_text,
+                retrieval_task=result.retrieval_task,
+                explicit_entities=dict(result.entities),
+            )
+        except Exception:
+            return result
+        if enriched_entities == result.entities:
+            return result
+        return QueryAnalysis(
+            retrieval_task=result.retrieval_task,
+            intent=result.intent,
+            sub_intents=list(result.sub_intents),
+            entities=enriched_entities,
+            search_terms=list(result.search_terms),
+            target_file=result.target_file,
+            language=result.language,
+            confidence=result.confidence,
+            source=result.source,
+        )
 
     def _maybe_normalize_with_identifiers(self, raw_text: str, baseline: QueryAnalysis) -> str:
         normalized = raw_text.strip()
