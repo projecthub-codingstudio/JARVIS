@@ -9,8 +9,8 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
 
   return (
     <div className="flex h-full flex-col bg-surface-lowest">
-      <div className="flex-1 overflow-auto p-6 md:p-10 custom-scrollbar">
-        <div className="mx-auto max-w-4xl rounded-xl border border-white/8 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+      <div className="flex-1 overflow-auto p-4 md:p-6 custom-scrollbar">
+        <div className="mx-auto max-w-[1200px] rounded-xl border border-white/8 bg-surface px-8 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
           <div className="mb-6 flex items-center gap-3 border-b border-outline/10 pb-4">
             <FileText size={20} className="text-primary" />
             <div>

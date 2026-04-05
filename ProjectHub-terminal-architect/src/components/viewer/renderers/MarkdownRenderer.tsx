@@ -48,8 +48,8 @@ const MarkdownRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content 
   }
 
   return (
-    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-6">
-      <div className="mx-auto max-w-4xl rounded-xl border border-white/8 bg-surface px-8 py-8 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-4">
+      <div className="mx-auto max-w-[1200px] rounded-xl border border-white/8 bg-surface px-10 py-8 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
         {(encoding || fileSize !== null) && (
           <div className="mb-4 flex items-center gap-3 border-b border-outline/10 pb-3 text-[10px] font-mono uppercase tracking-wider text-outline">
             <span>MD</span>
