@@ -134,6 +134,61 @@ class VerifiedEvidenceSet:
         return [item.citation for item in self.items if item.citation.state.needs_warning]
 
 
+# --- Context Assembly Models (Pipeline Step 5) ---
+
+
+@dataclass(frozen=True)
+class ExtractedFact:
+    """A single fact deterministically extracted from evidence.
+
+    When confidence == 1.0, the fact was extracted by exact parsing
+    (e.g., table cell lookup). The LLM should use this value as-is.
+
+    key uses composite format for disambiguation: "Day=5 > Breakfast"
+    so multiple table rows don't produce ambiguous identical keys.
+    """
+
+    key: str
+    value: str
+    source_chunk_id: str
+    source_document_id: str = ""
+    confidence: float = 1.0
+
+    @property
+    def is_deterministic(self) -> bool:
+        return self.confidence >= 1.0
+
+
+@dataclass(frozen=True)
+class AssembledContext:
+    """Pre-processed context ready for LLM consumption (Pipeline Step 5).
+
+    Separates deterministic facts (table cells, code identifiers)
+    from text passages that need LLM interpretation.
+    """
+
+    facts: tuple[ExtractedFact, ...] = ()
+    text_passages: tuple[str, ...] = ()
+
+    @property
+    def has_deterministic_facts(self) -> bool:
+        return any(f.is_deterministic for f in self.facts)
+
+    @property
+    def deterministic_facts(self) -> tuple[ExtractedFact, ...]:
+        return tuple(f for f in self.facts if f.is_deterministic)
+
+    def render_for_llm(self) -> str:
+        """Render context for LLM prompt injection."""
+        parts: list[str] = []
+        if self.facts:
+            fact_lines = [f"- {f.key}: {f.value}" for f in self.facts]
+            parts.append("확인된 데이터:\n" + "\n".join(fact_lines))
+        if self.text_passages:
+            parts.append("참고 자료:\n" + "\n".join(self.text_passages))
+        return "\n\n".join(parts)
+
+
 # --- Answer / Draft Models ---
 
 
@@ -232,6 +287,34 @@ class ChunkRecord:
     lexical_morphs: str = ""
     heading_path: str = ""
     embedding_ref: str | None = None
+
+
+# --- Document Element Models (Semantic Chunking) ---
+
+
+@dataclass(frozen=True)
+class DocumentElement:
+    """A typed element extracted from a parsed document.
+
+    element_type: "text", "table", "code", "list", "slide"
+    metadata: type-specific data (headers, rows, language, scope_chain, etc.)
+    """
+
+    element_type: str
+    text: str
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ParsedDocument:
+    """Structured parser output with typed elements."""
+
+    elements: tuple[DocumentElement, ...]
+    metadata: dict = field(default_factory=dict)
+
+    def to_text(self) -> str:
+        """Backward-compatible plain text rendering."""
+        return "\n\n".join(e.text for e in self.elements if e.text)
 
 
 # --- Runtime Models (Spec Section 3.2) ---

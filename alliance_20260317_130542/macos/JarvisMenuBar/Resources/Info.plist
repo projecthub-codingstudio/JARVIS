@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.jarvis.menubar</string>
+	<key>CFBundleName</key>
+	<string>JarvisMenuBar</string>
+	<key>CFBundleDisplayName</key>
+	<string>JARVIS</string>
+	<key>CFBundleExecutable</key>
+	<string>JarvisMenuBar</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JARVIS는 음성 명령을 인식하기 위해 마이크 접근이 필요합니다.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>JARVIS는 말하는 도중 실시간 전사를 통해 탐색 후보를 보여주기 위해 음성 인식 권한이 필요합니다.</string>
+</dict>
+</plist>

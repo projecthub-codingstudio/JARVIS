@@ -14,14 +14,18 @@ from jarvis.contracts.errors import (
 )
 from jarvis.contracts.models import (
     AnswerDraft,
+    AssembledContext,
     ChunkRecord,
     CitationRecord,
     ConversationTurn,
+    DocumentElement,
     DocumentRecord,
     DraftExportRequest,
     DraftExportResult,
     EvidenceItem,
+    ExtractedFact,
     HybridSearchResult,
+    ParsedDocument,
     RuntimeDecision,
     SearchHit,
     SystemStateSnapshot,
@@ -32,6 +36,7 @@ from jarvis.contracts.models import (
 )
 from jarvis.contracts.protocols import (
     ApprovalGatewayProtocol,
+    ContextAssemblerProtocol,
     ConversationStoreProtocol,
     EmbeddingRuntimeProtocol,
     EvidenceBuilderProtocol,
@@ -65,6 +70,8 @@ __all__ = [
     "CitationRecord",
     "EvidenceItem",
     "VerifiedEvidenceSet",
+    "ExtractedFact",
+    "AssembledContext",
     "AnswerDraft",
     "DraftExportRequest",
     "DraftExportResult",
@@ -72,6 +79,8 @@ __all__ = [
     "TaskLogEntry",
     "DocumentRecord",
     "ChunkRecord",
+    "DocumentElement",
+    "ParsedDocument",
     "RuntimeDecision",
     "SystemStateSnapshot",
     # States
@@ -100,6 +109,7 @@ __all__ = [
     "VectorRetrieverProtocol",
     "HybridFusionProtocol",
     "EvidenceBuilderProtocol",
+    "ContextAssemblerProtocol",
     "LLMBackendProtocol",
     "LLMGeneratorProtocol",
     "EmbeddingRuntimeProtocol",

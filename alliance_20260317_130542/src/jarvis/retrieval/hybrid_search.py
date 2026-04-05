@@ -23,13 +23,17 @@ class HybridSearch:
     Phase 0 stub: returns a single fused result from the first hits.
     """
 
-    def __init__(self, *, rrf_k: int = 60) -> None:
-        """Initialize with RRF constant.
+    def __init__(self, *, rrf_k: int = 60, vector_weight: float = 2.0) -> None:
+        """Initialize with RRF constant and vector weight.
 
         Args:
             rrf_k: The k constant for RRF scoring (default 60).
+            vector_weight: Multiplier for vector search scores (default 2.0).
+                Higher values prioritize semantic matching over lexical.
+                Essential for cross-lingual queries (Korean→English keys).
         """
         self._rrf_k = rrf_k
+        self._vector_weight = vector_weight
 
     def fuse(
         self,
@@ -47,20 +51,21 @@ class HybridSearch:
         Returns:
             Ranked list of HybridSearchResult.
         """
+        # Pre-build vector rank lookup for O(1) access (was O(n) linear scan)
+        vector_rank_map: dict[str, int] = {
+            vh.chunk_id: vr for vr, vh in enumerate(vector_hits, 1)
+        }
+
         chunk_ids: set[str] = set()
         results: list[HybridSearchResult] = []
 
         for rank, hit in enumerate(fts_hits, 1):
             if hit.chunk_id not in chunk_ids:
                 chunk_ids.add(hit.chunk_id)
-                vector_rank = None
-                for vr, vh in enumerate(vector_hits, 1):
-                    if vh.chunk_id == hit.chunk_id:
-                        vector_rank = vr
-                        break
+                vector_rank = vector_rank_map.get(hit.chunk_id)
                 rrf_score = 1.0 / (self._rrf_k + rank)
                 if vector_rank is not None:
-                    rrf_score += 1.0 / (self._rrf_k + vector_rank)
+                    rrf_score += self._vector_weight / (self._rrf_k + vector_rank)
                 results.append(
                     HybridSearchResult(
                         chunk_id=hit.chunk_id,
@@ -75,7 +80,7 @@ class HybridSearch:
         for rank, hit in enumerate(vector_hits, 1):
             if hit.chunk_id not in chunk_ids:
                 chunk_ids.add(hit.chunk_id)
-                rrf_score = 1.0 / (self._rrf_k + rank)
+                rrf_score = self._vector_weight / (self._rrf_k + rank)
                 results.append(
                     HybridSearchResult(
                         chunk_id=hit.chunk_id,

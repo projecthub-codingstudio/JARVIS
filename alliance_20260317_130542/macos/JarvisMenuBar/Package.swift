@@ -14,5 +14,10 @@ let package = Package(
             name: "JarvisMenuBar",
             path: "Sources"
         ),
+        .testTarget(
+            name: "JarvisMenuBarTests",
+            dependencies: ["JarvisMenuBar"],
+            path: "Tests/JarvisMenuBarTests"
+        ),
     ]
 )

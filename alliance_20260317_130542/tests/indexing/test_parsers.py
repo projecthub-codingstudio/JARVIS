@@ -103,6 +103,33 @@ class TestParse:
         assert "제목" in text
         assert "한국어" in text
 
+    def test_parse_utf8_korean_markdown_does_not_misdecode_at_sample_boundary(self, tmp_path: Path) -> None:
+        f = tmp_path / "spec.md"
+        long_body = "가" * 3000  # 3-byte UTF-8 chars force the 8192-byte sample to cut mid-character
+        f.write_text(
+            "# Alliance 코딩 지시용 구현 명세서\n\n"
+            "한국어 문서 내용입니다.\n\n"
+            f"{long_body}",
+            encoding="utf-8",
+        )
+
+        text = DocumentParser().parse(f)
+
+        assert "Alliance 코딩 지시용 구현 명세서" in text
+        assert "한국어 문서 내용입니다." in text
+        assert "가" * 100 in text
+        assert "汁楬湡散" not in text
+        assert "ì½" not in text
+
+    def test_parse_utf16_bom_markdown_still_supported(self, tmp_path: Path) -> None:
+        f = tmp_path / "windows_unicode.md"
+        f.write_text("# 제목\n\n윈도우 UTF-16 문서입니다.", encoding="utf-16")
+
+        text = DocumentParser().parse(f)
+
+        assert "제목" in text
+        assert "UTF-16" in text
+
 
 # --- PDF parse tests ---
 

@@ -1,0 +1,17 @@
+{
+  "maps": [
+    {
+      "created_at": "2026-04-04T08:07:34.599560+09:00",
+      "description": "",
+      "edges": [],
+      "map_id": "test",
+      "nodes": [],
+      "notes": "",
+      "tags": [],
+      "title": "TEST",
+      "trigger_query": "",
+      "updated_at": "2026-04-04T08:07:34.599560+09:00"
+    }
+  ],
+  "version": "2026-04-04"
+}

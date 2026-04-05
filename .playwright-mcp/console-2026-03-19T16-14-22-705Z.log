@@ -1,0 +1,3 @@
+[   95763ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/github-copilot/chat/entitlement:0
+[   95996ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/github-copilot/chat/token:0
+[  103172ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/github-copilot/chat/entitlement:0

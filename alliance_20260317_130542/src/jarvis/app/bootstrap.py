@@ -23,7 +23,7 @@ def init_database(config: JarvisConfig) -> sqlite3.Connection:
     assert config.db_path is not None
     config.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(config.db_path))
+    conn = sqlite3.connect(str(config.db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
 
@@ -36,6 +36,21 @@ def init_database(config: JarvisConfig) -> sqlite3.Connection:
         conn.execute("SELECT embedding_ref FROM chunks LIMIT 0")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE chunks ADD COLUMN embedding_ref TEXT DEFAULT NULL")
+
+    # Migration: create user_knowledge table if missing (Tier 3 memory, added in v0.3)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_knowledge (
+            knowledge_id  TEXT PRIMARY KEY,
+            category      TEXT NOT NULL DEFAULT 'general',
+            key           TEXT NOT NULL DEFAULT '',
+            value         TEXT NOT NULL DEFAULT '',
+            confidence    REAL NOT NULL DEFAULT 0.5,
+            source_turn   TEXT DEFAULT NULL,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(category, key)
+        )
+    """)
 
     return conn
 
