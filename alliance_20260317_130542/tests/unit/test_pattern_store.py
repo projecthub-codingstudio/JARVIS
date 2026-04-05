@@ -51,8 +51,8 @@ def test_save_and_fetch_event(store: PatternStore) -> None:
 
 
 def test_get_unanalyzed_events_excludes_recent(store: PatternStore) -> None:
-    store.save_event(_event(event_id="old", created_at=100))
-    store.save_event(_event(event_id="recent", created_at=10_000))
+    store.save_event(_event(event_id="old", query_text="old query", created_at=100))
+    store.save_event(_event(event_id="recent", query_text="recent query", created_at=10_000))
     unanalyzed = store.get_unanalyzed_events(before=5_000)
     ids = {e.event_id for e in unanalyzed}
     assert "old" in ids
@@ -84,3 +84,27 @@ def test_increment_pattern_usage(store: PatternStore) -> None:
 
 def test_get_pattern_returns_none_for_missing(store: PatternStore) -> None:
     assert store.get_pattern("missing") is None
+
+
+def test_save_event_replaces_prior_event_for_same_session_query(store: PatternStore) -> None:
+    """When fallback calls handle_turn twice for the same session+query,
+    only the latest event should remain."""
+    store.save_event(_event(
+        event_id="first", session_id="s1", query_text="diet query",
+        entities={"topic": ["diet"]}, created_at=1000,
+    ))
+    store.save_event(_event(
+        event_id="second", session_id="s1", query_text="diet query",
+        entities={}, created_at=1050,
+    ))
+    events = store.get_session_events("s1")
+    assert len(events) == 1
+    assert events[0].event_id == "second"
+    assert events[0].entities == {}
+
+
+def test_save_event_keeps_distinct_queries_separate(store: PatternStore) -> None:
+    store.save_event(_event(event_id="a", session_id="s1", query_text="query A"))
+    store.save_event(_event(event_id="b", session_id="s1", query_text="query B"))
+    events = store.get_session_events("s1")
+    assert len(events) == 2

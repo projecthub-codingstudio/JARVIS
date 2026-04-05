@@ -15,6 +15,13 @@ class PatternStore:
 
     # ---- events ----
     def save_event(self, event: SessionEvent) -> None:
+        # Dedupe: delete any prior event for same (session_id, query_text)
+        # This handles model-chain fallback where handle_turn fires multiple
+        # times for the same logical query.
+        self._db.execute(
+            "DELETE FROM session_events WHERE session_id = ? AND query_text = ?",
+            (event.session_id, event.query_text),
+        )
         row = event.to_row()
         self._db.execute(
             "INSERT OR REPLACE INTO session_events "
