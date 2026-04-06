@@ -599,6 +599,37 @@ async def forget_learned_patterns(http_request: Request, request: ForgetPatternR
         conn.close()
 
 
+class ForgetDataRequest(BaseModel):
+    scope: str = Field(default="all", pattern="^(all|conversations|session_events|task_logs)$")
+
+
+@app.post("/api/data/forget")
+async def forget_user_data(http_request: Request, request: ForgetDataRequest):
+    """Delete user data: conversations, session events, task logs, or all."""
+    _check_origin(http_request)
+    conn = _learning_db_connection()
+    if conn is None:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+    try:
+        deleted = {}
+        if request.scope in ("all", "conversations"):
+            r = conn.execute("DELETE FROM conversation_turns")
+            deleted["conversation_turns"] = r.rowcount
+        if request.scope in ("all", "session_events"):
+            r = conn.execute("DELETE FROM session_events")
+            deleted["session_events"] = r.rowcount
+        if request.scope in ("all", "task_logs"):
+            r = conn.execute("DELETE FROM task_logs")
+            deleted["task_logs"] = r.rowcount
+        if request.scope == "all":
+            r = conn.execute("DELETE FROM learned_patterns")
+            deleted["learned_patterns"] = r.rowcount
+        conn.commit()
+        return {"deleted": deleted, "scope": request.scope}
+    finally:
+        conn.close()
+
+
 @app.get("/api/file")
 async def serve_file(path: str):
     """Serve a file from allowed directories.
