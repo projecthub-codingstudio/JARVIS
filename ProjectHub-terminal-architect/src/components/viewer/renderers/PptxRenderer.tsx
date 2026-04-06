@@ -87,7 +87,9 @@ const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         });
         if (cancelled) return;
         const slideArray = Array.isArray(result) ? result : [result];
-        const sanitizedSlides = slideArray.map(slide => DOMPurify.sanitize(String(slide)));
+        const sanitizedSlides = slideArray.map(slide =>
+          DOMPurify.sanitize(String(slide), { FORBID_TAGS: ['base'], FORBID_ATTR: ['onerror', 'onload'] }),
+        );
         setSlides(sanitizedSlides);
         setError(false);
         setLoading(false);
