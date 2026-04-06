@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jarvis.service.application import JarvisApplicationService
 from jarvis.service.intent_skill_store import (
@@ -50,8 +50,8 @@ service = JarvisApplicationService()
 
 # Request/Response models
 class AskRequest(BaseModel):
-    text: str
-    session_id: str
+    text: str = Field(max_length=16000)
+    session_id: str = Field(max_length=128)
 
 
 class AskResponse(BaseModel):
@@ -65,7 +65,7 @@ class HealthResponse(BaseModel):
 
 
 class NormalizeRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=16000)
 
 
 class NormalizeResponse(BaseModel):
@@ -416,9 +416,27 @@ async def ask_vision(
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Image too large (max 20MB)")
 
+    # Validate image magic bytes
+    _IMAGE_MAGIC = {
+        b'\x89PNG': '.png',
+        b'\xff\xd8\xff': '.jpg',
+        b'GIF87a': '.gif',
+        b'GIF89a': '.gif',
+        b'RIFF': '.webp',  # WebP starts with RIFF
+        b'BM': '.bmp',
+    }
+    header = content[:8]
+    magic_matched = any(header.startswith(m) for m in _IMAGE_MAGIC)
+    if not magic_matched:
+        raise HTTPException(status_code=400, detail="Invalid image content: magic bytes don't match an image format")
+
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+
+    _ALLOWED_VISION_MODELS = {"gemma4:e4b", "gemma4:e2b"}
+    if model not in _ALLOWED_VISION_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported vision model: {model}")
 
     try:
         backend = _get_vision_backend(model)
@@ -463,6 +481,12 @@ async def get_extracted_text(path: str, limit: int = 200):
         abs_path = str((kb_root / raw_path).resolve())
     else:
         abs_path = str(raw_path.resolve())
+
+    # Security: ensure path is within knowledge base (same as /api/file)
+    try:
+        Path(abs_path).relative_to(kb_root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied: path outside knowledge base")
 
     conn = _learning_db_connection()
     if conn is None:
@@ -665,8 +689,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                     "error": "Invalid JSON format",
                 })
             except Exception as e:
+                import logging
+                logging.getLogger(__name__).exception("WebSocket handler error: session=%s", session_id)
                 await websocket.send_json({
-                    "error": str(e),
+                    "error": "Internal server error",
                 })
                 
     except WebSocketDisconnect:
@@ -687,8 +713,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="JARVIS Web API Server")
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port",

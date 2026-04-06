@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { renderAsync } from 'docx-preview';
 import type { RendererProps } from './TextRenderer';
 
@@ -26,7 +27,23 @@ const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
           inWrapper: true,
         });
       })
-      .then(() => { if (!cancelled) setLoading(false); })
+      .then(() => {
+        // Sanitize docx-preview output to prevent XSS from malicious DOCX files
+        // Using DOMPurify (sanitizer library) to clean the rendered HTML
+        if (!cancelled && containerRef.current) {
+          const sanitized = DOMPurify.sanitize(
+            containerRef.current.innerHTML,
+            { FORBID_TAGS: ['base'], FORBID_ATTR: ['onerror', 'onload'] },
+          );
+          containerRef.current.textContent = '';
+          const wrapper = document.createElement('div');
+          wrapper.innerHTML = sanitized; // DOMPurify-sanitized HTML is safe
+          while (wrapper.firstChild) {
+            containerRef.current.appendChild(wrapper.firstChild);
+          }
+        }
+        if (!cancelled) setLoading(false);
+      })
       .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
 
     return () => { cancelled = true; controller.abort(); };

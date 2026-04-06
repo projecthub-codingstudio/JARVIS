@@ -147,8 +147,37 @@ def parse_action_target(query: str) -> ActionTarget | None:
     )
 
 
+def _validate_action_target(target: ActionTarget) -> str | None:
+    """Validate action target before execution. Returns error message or None."""
+    t = target.target.strip()
+    if not t:
+        return "empty target"
+    if target.action_type == "open_url":
+        from urllib.parse import urlparse
+        parsed = urlparse(t)
+        if parsed.scheme not in ("http", "https"):
+            return f"rejected URL scheme: {parsed.scheme}"
+    else:
+        # App name: reject path separators, .app bundles, file:// schemes
+        if "/" in t or "\\" in t or t.startswith("file:"):
+            return f"rejected app target containing path: {t}"
+    return None
+
+
 def execute_action(target: ActionTarget) -> ActionResult:
     """Execute the action via macOS open command."""
+    validation_error = _validate_action_target(target)
+    if validation_error:
+        logger.warning("Action target rejected: %s", validation_error)
+        return ActionResult(
+            success=False,
+            spoken_response=f"{target.label}을 실행할 수 없습니다.",
+            display_response=f"보안 검증 실패: {validation_error}",
+            label=target.label,
+            action_type=target.action_type,
+            target=target.target,
+            error_message="validation_failed",
+        )
     try:
         if target.action_type == "open_url":
             logger.debug("Executing action: %s %s", target.action_type, target.target)
