@@ -7,12 +7,18 @@ import { ExplorerGrid } from './ExplorerGrid';
 import { ExplorerViewer } from './ExplorerViewer';
 import type { Artifact, FileNode } from '../../types';
 
+interface OpenWindow {
+  id: string;
+  artifact: Artifact;
+  originRect: DOMRect;
+}
+
 export function ExplorerWorkspace() {
   const [currentPath, setCurrentPath] = useState('');
   const [entries, setEntries] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
-  const [originRect, setOriginRect] = useState<DOMRect | null>(null);
+  const [windows, setWindows] = useState<OpenWindow[]>([]);
+  const [zStack, setZStack] = useState<string[]>([]); // ordered by z-index, last = top
 
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -39,13 +45,28 @@ export function ExplorerWorkspace() {
   }, []);
 
   const handleOpenFile = useCallback((file: FileNode, rect: DOMRect) => {
-    setSelectedArtifact(fileNodeToArtifact(file));
-    setOriginRect(rect);
+    const artifact = fileNodeToArtifact(file);
+    // If already open, just bring to front
+    const existing = windows.find((w) => w.id === artifact.id);
+    if (existing) {
+      setZStack((prev) => [...prev.filter((id) => id !== artifact.id), artifact.id]);
+      return;
+    }
+    const win: OpenWindow = { id: artifact.id, artifact, originRect: rect };
+    setWindows((prev) => [...prev, win]);
+    setZStack((prev) => [...prev, win.id]);
+  }, [windows]);
+
+  const handleCloseWindow = useCallback((id: string) => {
+    setWindows((prev) => prev.filter((w) => w.id !== id));
+    setZStack((prev) => prev.filter((wid) => wid !== id));
   }, []);
 
-  const handleClose = useCallback(() => {
-    setSelectedArtifact(null);
-    setOriginRect(null);
+  const handleFocusWindow = useCallback((id: string) => {
+    setZStack((prev) => {
+      if (prev[prev.length - 1] === id) return prev; // already on top
+      return [...prev.filter((wid) => wid !== id), id];
+    });
   }, []);
 
   return (
@@ -59,14 +80,16 @@ export function ExplorerWorkspace() {
         onOpenFile={handleOpenFile}
       />
       <AnimatePresence>
-        {selectedArtifact && originRect && (
+        {windows.map((win) => (
           <ExplorerViewer
-            key={selectedArtifact.id}
-            artifact={selectedArtifact}
-            originRect={originRect}
-            onClose={handleClose}
+            key={win.id}
+            artifact={win.artifact}
+            originRect={win.originRect}
+            zIndex={30 + zStack.indexOf(win.id)}
+            onClose={() => handleCloseWindow(win.id)}
+            onFocus={() => handleFocusWindow(win.id)}
           />
-        )}
+        ))}
       </AnimatePresence>
     </div>
   );
