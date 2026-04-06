@@ -6,6 +6,7 @@ export interface RendererProps {
   artifact: Artifact;
   fileUrl?: string;
   content?: string;
+  scale?: number;
 }
 
 const INITIAL_LINE_LIMIT = 5000;  // show all lines up to this, then paginate

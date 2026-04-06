@@ -195,11 +195,11 @@ export const apiClient = {
   },
 
   getFileUrl(fullPath: string): string {
-    return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath)}`;
+    return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath.normalize('NFC'))}`;
   },
 
   async browse(path: string = ''): Promise<BrowseResponse> {
-    const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path.normalize('NFC'))}`);
     if (!res.ok) {
       throw new Error(`Browse failed: ${res.status} ${res.statusText}`);
     }
@@ -249,7 +249,7 @@ export const apiClient = {
 
   async getExtractedText(path: string, limit: number = 200): Promise<ExtractedTextResponse> {
     const res = await fetch(
-      `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path)}&limit=${limit}`,
+      `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path.normalize('NFC'))}&limit=${limit}`,
     );
     if (!res.ok) {
       throw new Error(`Extracted text fetch failed: ${res.status}`);

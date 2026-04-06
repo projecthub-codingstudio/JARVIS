@@ -23,6 +23,7 @@ export interface ViewerRouterProps {
   artifact: Artifact;
   fileUrl?: string;
   content?: string;
+  scale?: number;
 }
 
 const TextRenderer = React.lazy(() => import('./renderers/TextRenderer'));
@@ -129,7 +130,7 @@ const LoadingSpinner = () => (
   </div>
 );
 
-export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, content }) => {
+export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, content, scale }) => {
   const Renderer = selectRenderer(artifact);
   const rendererMeta = Renderer as unknown as { displayName?: string; name?: string };
 
@@ -147,7 +148,7 @@ export const ViewerRouter: React.FC<ViewerRouterProps> = ({ artifact, fileUrl, c
   return (
     <ViewerErrorBoundary fallbackMessage="뷰어를 불러올 수 없습니다.">
       <Suspense fallback={<LoadingSpinner />}>
-        <Renderer artifact={artifact} fileUrl={fileUrl} content={content} />
+        <Renderer artifact={artifact} fileUrl={fileUrl} content={content} scale={scale} />
       </Suspense>
     </ViewerErrorBoundary>
   );

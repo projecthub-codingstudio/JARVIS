@@ -9,7 +9,7 @@ import {
   Activity,
   BarChart3,
   FolderOpen,
-  House,
+  LayoutDashboard,
   Search,
   TerminalSquare,
   Workflow,
@@ -39,7 +39,7 @@ import type {
 } from './types';
 
 const SHELL_NAV = [
-  { key: 'home' as ViewState, label: 'Home', icon: House },
+  { key: 'home' as ViewState, label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal' as ViewState, label: 'Terminal', icon: TerminalSquare },
   { key: 'repository' as ViewState, label: 'Repository', icon: FolderOpen },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },

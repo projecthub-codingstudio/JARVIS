@@ -2,14 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
-  Command,
+  BarChart3,
   FileText,
   FolderOpen,
-  House,
+  LayoutDashboard,
   Search,
   TerminalSquare,
   Workflow,
-  BarChart3,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { apiClient } from '../../lib/api-client';
@@ -24,7 +23,7 @@ interface CommandPaletteProps {
 }
 
 const NAV_ITEMS: { key: ViewState; label: string; icon: React.ElementType }[] = [
-  { key: 'home', label: 'Home', icon: House },
+  { key: 'home', label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { key: 'repository', label: 'Repository', icon: FolderOpen },
   { key: 'skills', label: 'Skills', icon: Workflow },
