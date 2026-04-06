@@ -26,6 +26,13 @@ else
   #   JARVIS_MENU_BAR_MODEL_CHAIN="stub"                            # Disable LLM
   export JARVIS_MENU_BAR_MODEL_CHAIN="${JARVIS_MENU_BAR_MODEL_CHAIN:-exaone3.5:7.8b,stub}"
 
+  # Truncate old logs (cap at 5MB, keep last 1MB)
+  for logfile in "$PID_DIR/backend.log" "$PID_DIR/backend.err"; do
+    if [ -f "$logfile" ] && [ "$(stat -f%z "$logfile" 2>/dev/null || echo 0)" -gt 5242880 ]; then
+      tail -c 1048576 "$logfile" > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
+    fi
+  done
+
   "$BACKEND_VENV" -m jarvis.web_api --port 8000 > "$PID_DIR/backend.log" 2>"$PID_DIR/backend.err" &
   echo $! > "$PID_DIR/backend.pid"
   echo "  PID: $(cat "$PID_DIR/backend.pid")"

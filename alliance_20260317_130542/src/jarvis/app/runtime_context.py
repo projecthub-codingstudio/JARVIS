@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+
+# L-1: Force HuggingFace offline mode to prevent accidental downloads.
+# Users can override with HF_HUB_OFFLINE=0 in the environment.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
