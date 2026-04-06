@@ -1391,7 +1391,7 @@ def _health_payload(*, context: object) -> dict[str, object]:
         "failed_checks": failed_checks,
         "status_level": "healthy" if not failed_checks else ("warning" if len(failed_checks) <= 2 else "degraded"),
         "chunk_count": context.chunk_count,
-        "knowledge_base_path": str(context.knowledge_base_path) if context.knowledge_base_path else "",
+        "knowledge_base_path": context.knowledge_base_path.name if context.knowledge_base_path else "not configured",
         "bridge_mode": "persistent",
     }
 
@@ -1524,7 +1524,7 @@ def _health_light() -> dict[str, object]:
         "failed_checks": failed_checks,
         "status_level": "healthy" if not failed_checks else ("warning" if len(failed_checks) <= 2 else "degraded"),
         "chunk_count": chunk_count,
-        "knowledge_base_path": str(kb_path) if kb_exists else "",
+        "knowledge_base_path": kb_path.name if kb_exists else "not configured",
         "bridge_mode": "one-shot",
     }
 
