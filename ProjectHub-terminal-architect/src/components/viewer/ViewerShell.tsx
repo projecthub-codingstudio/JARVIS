@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Bookmark, Minus, Plus, Search, Sparkles } from 'lucide-react';
+import { Bookmark, Minus, PanelRightClose, PanelRightOpen, Plus, Search, Sparkles } from 'lucide-react';
 import { apiClient } from '../../lib/api-client';
 import { cn } from '../../lib/utils';
 import { ViewerRouter } from './ViewerRouter';
@@ -38,6 +38,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
 }) => {
   const [documentPrompt, setDocumentPrompt] = useState('');
   const [zoom, setZoom] = useState(1.0);
+  const [showInspector, setShowInspector] = useState(!hideLibrary);
   const filePath = artifact.full_path || artifact.path || '';
   const fileUrl = filePath ? apiClient.getFileUrl(filePath) : undefined;
 
@@ -130,6 +131,13 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
             </button>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowInspector((v) => !v)}
+              className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary"
+              title={showInspector ? 'Hide Inspector' : 'Show Inspector'}
+            >
+              {showInspector ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            </button>
             {fileUrl && (
               <a
                 href={fileUrl}
@@ -169,7 +177,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
         )}
       </section>
 
-      <aside className="hidden w-80 shrink-0 border-l border-white/5 bg-surface-container-low xl:flex xl:flex-col">
+      <aside className={cn('w-80 shrink-0 border-l border-white/5 bg-surface-container-low', showInspector ? 'hidden xl:flex xl:flex-col' : 'hidden')}>
         <div className="border-b border-white/5 bg-surface px-4 py-4">
           <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
             <Sparkles size={12} className="text-tertiary" />
