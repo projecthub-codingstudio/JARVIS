@@ -9,9 +9,12 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Form, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
 from pydantic import BaseModel, Field
 
 from jarvis.service.application import JarvisApplicationService
@@ -44,6 +47,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+_ALLOWED_ORIGINS = {
+    "http://localhost:3000", "http://127.0.0.1:3000",
+    "http://localhost:5173", "http://127.0.0.1:5173",
+}
+
+
+def _check_origin(request: Request) -> None:
+    """Reject cross-origin requests from unknown origins on destructive endpoints."""
+    origin = request.headers.get("origin")
+    if origin and origin not in _ALLOWED_ORIGINS:
+        raise HTTPException(status_code=403, detail="Cross-origin request denied")
+
 
 service = JarvisApplicationService()
 
@@ -355,7 +383,7 @@ async def list_learned_patterns(retrieval_task: str | None = None):
                 entity_hints=json.loads(r[4] or "{}"),
                 reformulation_type=r[5],
                 success_count=r[6],
-                citation_paths=json.loads(r[7] or "[]"),
+                citation_paths=[Path(p).name for p in json.loads(r[7] or "[]")],
                 created_at=r[8],
                 last_used_at=r[9],
             )
@@ -396,11 +424,13 @@ def _get_vision_backend(model_alias: str = "gemma4:e4b"):
 
 @app.post("/api/ask/vision", response_model=VisionAskResponse)
 async def ask_vision(
+    request: Request,
     text: str = Form(...),
     image: UploadFile = File(...),
     model: str = Form("gemma4:e4b"),
 ):
     """Answer a question about an uploaded image using Gemma 4 vision model."""
+    _check_origin(request)
     import tempfile
     import time as _time
 
@@ -469,7 +499,7 @@ class ExtractedTextResponse(BaseModel):
 
 
 @app.get("/api/file/extracted", response_model=ExtractedTextResponse)
-async def get_extracted_text(path: str, limit: int = 200):
+async def get_extracted_text(path: str, limit: int = Query(default=200, ge=1, le=1000)):
     """Return indexed/extracted text chunks for binary documents (HWP, DOCX, PDF, etc.)."""
     kb_root = _resolve_kb_root()
     if kb_root is None:
@@ -548,8 +578,9 @@ class ForgetPatternRequest(BaseModel):
 
 
 @app.post("/api/learned-patterns/forget")
-async def forget_learned_patterns(request: ForgetPatternRequest):
+async def forget_learned_patterns(http_request: Request, request: ForgetPatternRequest):
     """Delete a specific learned pattern, or all patterns if pattern_id is None."""
+    _check_origin(http_request)
     conn = _learning_db_connection()
     if conn is None:
         raise HTTPException(status_code=500, detail="Knowledge base path not configured")
