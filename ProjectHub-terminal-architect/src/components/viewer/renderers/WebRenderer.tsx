@@ -23,7 +23,8 @@ const WebRenderer: React.FC<RendererProps> = ({ artifact }) => {
       </div>
       <iframe
         src={url}
-        sandbox="allow-scripts allow-popups allow-forms"
+        sandbox="allow-scripts allow-forms"
+        referrerPolicy="no-referrer"
         title={artifact.title}
         className="flex-1 w-full border-0"
       />
