@@ -9,6 +9,7 @@ import {
   Activity,
   BarChart3,
   FolderOpen,
+  FolderSearch,
   LayoutDashboard,
   Search,
   TerminalSquare,
@@ -19,6 +20,7 @@ import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
 import { apiClient } from './lib/api-client';
 import { RepositoryWorkspace } from './components/repository/RepositoryWorkspace';
+import { ExplorerWorkspace } from './components/explorer/ExplorerWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
 import { SkillsWorkspace } from './components/workspaces/SkillsWorkspace';
@@ -42,6 +44,7 @@ const SHELL_NAV = [
   { key: 'home' as ViewState, label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal' as ViewState, label: 'Terminal', icon: TerminalSquare },
   { key: 'repository' as ViewState, label: 'Repository', icon: FolderOpen },
+  { key: 'explorer' as ViewState, label: 'Explorer', icon: FolderSearch },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
 ];
@@ -538,6 +541,18 @@ export default function App() {
                 initialPath={repositoryInitialPath}
                 onClearInitialPath={() => setRepositoryInitialPath(null)}
               />
+            </motion.div>
+          ) : null}
+
+          {view === 'explorer' ? (
+            <motion.div
+              key="explorer"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              className="h-full"
+            >
+              <ExplorerWorkspace />
             </motion.div>
           ) : null}
 
