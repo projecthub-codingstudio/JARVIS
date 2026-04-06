@@ -32,12 +32,13 @@ interface ExplorerViewerProps {
   layout?: WindowLayout | null;
   onClose: () => void;
   onFocus: () => void;
+  onAskArtifact?: (artifact: Artifact, prompt: string) => Promise<void> | void;
 }
 
 const MIN_WIDTH = 300;
 const MIN_HEIGHT = 200;
 
-export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, onFocus }: ExplorerViewerProps) {
+export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, onFocus, onAskArtifact }: ExplorerViewerProps) {
   const defaultSize = getDefaultWindowSize(artifact);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
@@ -166,6 +167,7 @@ export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, 
           citations={[]}
           isMobile={false}
           hideLibrary
+          onAskArtifact={onAskArtifact}
         />
       </div>
 

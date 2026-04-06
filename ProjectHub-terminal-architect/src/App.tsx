@@ -534,7 +534,11 @@ export default function App() {
               exit={{ opacity: 0, x: -12 }}
               className="h-full"
             >
-              <ExplorerWorkspace />
+              <ExplorerWorkspace
+                initialPath={repositoryInitialPath}
+                onClearInitialPath={() => setRepositoryInitialPath(null)}
+                onAskArtifact={handleAskArtifact}
+              />
             </motion.div>
           ) : null}
 

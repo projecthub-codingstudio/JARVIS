@@ -17,7 +17,13 @@ interface OpenWindow {
   originRect: DOMRect;
 }
 
-export function ExplorerWorkspace() {
+interface ExplorerWorkspaceProps {
+  initialPath?: string | null;
+  onClearInitialPath?: () => void;
+  onAskArtifact?: (artifact: Artifact, prompt: string) => Promise<void> | void;
+}
+
+export function ExplorerWorkspace({ initialPath, onClearInitialPath, onAskArtifact }: ExplorerWorkspaceProps) {
   const [currentPath, setCurrentPath] = useState('');
   const [entries, setEntries] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,6 +52,35 @@ export function ExplorerWorkspace() {
   useEffect(() => {
     loadDirectory(currentPath);
   }, [currentPath, loadDirectory]);
+
+  // Handle initial path from external navigation (Terminal → Explorer)
+  useEffect(() => {
+    if (!initialPath) return;
+    // Extract directory from file path to navigate there
+    const lastSlash = initialPath.lastIndexOf('/');
+    const dir = lastSlash > 0 ? initialPath.slice(0, lastSlash) : '';
+    setCurrentPath(dir);
+
+    // Open the file in a floating window after entries load
+    const timer = setTimeout(async () => {
+      try {
+        const response = await apiClient.browse(dir);
+        const file = response.entries.find((e) => e.path === initialPath || e.name === initialPath.split('/').pop());
+        if (file && file.type === 'file') {
+          const artifact = fileNodeToArtifact(file);
+          const centerRect = new DOMRect(
+            window.innerWidth / 2 - 50,
+            window.innerHeight / 2 - 50,
+            100, 100,
+          );
+          setWindows((prev) => [...prev, { id: artifact.id, artifact, originRect: centerRect }]);
+          setZStack((prev) => [...prev, artifact.id]);
+        }
+      } catch { /* ignore */ }
+      onClearInitialPath?.();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [initialPath, onClearInitialPath]);
 
   const handleNavigate = useCallback((path: string) => {
     setCurrentPath(path);
@@ -163,6 +198,7 @@ export function ExplorerWorkspace() {
             layout={layouts[win.id] ?? null}
             onClose={() => handleCloseWindow(win.id)}
             onFocus={() => handleFocusWindow(win.id)}
+            onAskArtifact={onAskArtifact}
           />
         ))}
       </AnimatePresence>
