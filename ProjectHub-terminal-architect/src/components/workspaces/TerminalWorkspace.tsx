@@ -1312,7 +1312,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   className="hidden"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
-                    if (file) setSelectedImage(file);
+                    if (file && file.type.startsWith('image/')) setSelectedImage(file);
                   }}
                 />
                 {onImageSubmit && (

@@ -27,7 +27,7 @@ const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         const wb = XLSX.read(buffer, { type: 'array' });
         const parsed: SheetData[] = wb.SheetNames.map(name => {
           const rawHtml = XLSX.utils.sheet_to_html(wb.Sheets[name]);
-          return { name, html: DOMPurify.sanitize(rawHtml) };
+          return { name, html: DOMPurify.sanitize(rawHtml, { FORBID_TAGS: ['base'], FORBID_ATTR: ['onerror', 'onload'] }) };
         });
         setSheets(parsed);
         setLoading(false);

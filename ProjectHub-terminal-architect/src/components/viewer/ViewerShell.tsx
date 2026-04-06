@@ -81,7 +81,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
               return (
                 <button
                   key={item.id}
-                  onClick={() => onSelectArtifact(item)}
+                  onClick={() => onSelectArtifact?.(item)}
                   className={cn(
                     'w-full rounded-r px-3 py-3 text-left transition',
                     selected ? 'border-l-2 border-secondary bg-surface-container-high' : 'hover:bg-surface-container-high'
