@@ -61,3 +61,8 @@ alliance_20260317_130542/macos/JarvisMenuBar/.swiftpm/
 # Firebase config (leaked API keys)
 firebase*.json
 firebase*.ts
+
+# Legacy/archive directories
+terminal-architect/
+stitch/
+*.zip
