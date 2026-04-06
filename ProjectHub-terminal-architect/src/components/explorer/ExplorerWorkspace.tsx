@@ -1,11 +1,15 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
+import { Layers, LayoutGrid, LayoutList } from 'lucide-react';
+import { cn } from '../../lib/utils';
 import { apiClient } from '../../lib/api-client';
 import { fileNodeToArtifact } from '../../lib/file-utils';
 import { ExplorerTree } from './ExplorerTree';
 import { ExplorerGrid } from './ExplorerGrid';
-import { ExplorerViewer } from './ExplorerViewer';
+import { ExplorerViewer, getDefaultWindowSize, type WindowLayout } from './ExplorerViewer';
 import type { Artifact, FileNode } from '../../types';
+
+type LayoutMode = 'free' | 'cascade' | 'tile';
 
 interface OpenWindow {
   id: string;
@@ -18,7 +22,10 @@ export function ExplorerWorkspace() {
   const [entries, setEntries] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [windows, setWindows] = useState<OpenWindow[]>([]);
-  const [zStack, setZStack] = useState<string[]>([]); // ordered by z-index, last = top
+  const [zStack, setZStack] = useState<string[]>([]);
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('free');
+  const [layouts, setLayouts] = useState<Record<string, WindowLayout>>({});
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -46,7 +53,6 @@ export function ExplorerWorkspace() {
 
   const handleOpenFile = useCallback((file: FileNode, rect: DOMRect) => {
     const artifact = fileNodeToArtifact(file);
-    // If already open, just bring to front
     const existing = windows.find((w) => w.id === artifact.id);
     if (existing) {
       setZStack((prev) => [...prev.filter((id) => id !== artifact.id), artifact.id]);
@@ -55,22 +61,90 @@ export function ExplorerWorkspace() {
     const win: OpenWindow = { id: artifact.id, artifact, originRect: rect };
     setWindows((prev) => [...prev, win]);
     setZStack((prev) => [...prev, win.id]);
-  }, [windows]);
+    // Clear auto-layout when opening new window in free mode
+    if (layoutMode === 'free') {
+      setLayouts((prev) => { const next = { ...prev }; delete next[win.id]; return next; });
+    }
+  }, [windows, layoutMode]);
 
   const handleCloseWindow = useCallback((id: string) => {
     setWindows((prev) => prev.filter((w) => w.id !== id));
     setZStack((prev) => prev.filter((wid) => wid !== id));
+    setLayouts((prev) => { const next = { ...prev }; delete next[id]; return next; });
   }, []);
 
   const handleFocusWindow = useCallback((id: string) => {
     setZStack((prev) => {
-      if (prev[prev.length - 1] === id) return prev; // already on top
+      if (prev[prev.length - 1] === id) return prev;
       return [...prev.filter((wid) => wid !== id), id];
     });
   }, []);
 
+  // ── Layout calculations ──
+
+  const applyLayout = useCallback((mode: LayoutMode) => {
+    setLayoutMode(mode);
+    if (mode === 'free' || windows.length === 0) {
+      setLayouts({});
+      return;
+    }
+
+    // Get available area (excluding tree sidebar ~140px and some padding)
+    const container = containerRef.current;
+    const areaWidth = container ? container.clientWidth - 140 : 1000;
+    const areaHeight = container ? container.clientHeight : 700;
+    const offsetX = 140; // tree sidebar width
+
+    if (mode === 'cascade') {
+      const newLayouts: Record<string, WindowLayout> = {};
+      windows.forEach((win, i) => {
+        const size = getDefaultWindowSize(win.artifact);
+        newLayouts[win.id] = {
+          x: offsetX + 30 + i * 30,
+          y: 30 + i * 30,
+          width: Math.min(size.width, areaWidth - 60),
+          height: Math.min(size.height, areaHeight - 60),
+        };
+      });
+      setLayouts(newLayouts);
+      // Reset z-stack to match order
+      setZStack(windows.map((w) => w.id));
+    }
+
+    if (mode === 'tile') {
+      const count = windows.length;
+      const newLayouts: Record<string, WindowLayout> = {};
+
+      if (count === 1) {
+        newLayouts[windows[0].id] = { x: offsetX + 4, y: 4, width: areaWidth - 8, height: areaHeight - 8 };
+      } else if (count === 2) {
+        const halfW = Math.floor((areaWidth - 12) / 2);
+        windows.forEach((win, i) => {
+          newLayouts[win.id] = { x: offsetX + 4 + i * (halfW + 4), y: 4, width: halfW, height: areaHeight - 8 };
+        });
+      } else {
+        // Grid layout: calculate cols/rows
+        const cols = Math.ceil(Math.sqrt(count));
+        const rows = Math.ceil(count / cols);
+        const cellW = Math.floor((areaWidth - (cols + 1) * 4) / cols);
+        const cellH = Math.floor((areaHeight - (rows + 1) * 4) / rows);
+        windows.forEach((win, i) => {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          newLayouts[win.id] = {
+            x: offsetX + 4 + col * (cellW + 4),
+            y: 4 + row * (cellH + 4),
+            width: cellW,
+            height: cellH,
+          };
+        });
+      }
+      setLayouts(newLayouts);
+    }
+  }, [windows]);
+
   return (
-    <div className="relative flex h-full overflow-hidden bg-surface">
+    <div ref={containerRef} className="relative flex h-full overflow-hidden bg-surface">
       <ExplorerTree currentPath={currentPath} onSelectDirectory={handleNavigate} />
       <ExplorerGrid
         currentPath={currentPath}
@@ -86,11 +160,49 @@ export function ExplorerWorkspace() {
             artifact={win.artifact}
             originRect={win.originRect}
             zIndex={30 + zStack.indexOf(win.id)}
+            layout={layouts[win.id] ?? null}
             onClose={() => handleCloseWindow(win.id)}
             onFocus={() => handleFocusWindow(win.id)}
           />
         ))}
       </AnimatePresence>
+
+      {/* Layout toolbar — only show when windows are open */}
+      {windows.length > 1 && (
+        <div className="absolute bottom-3 right-3 z-50 flex items-center gap-1 rounded-lg border border-white/10 bg-surface-container-high/90 px-2 py-1 shadow-lg backdrop-blur-sm">
+          <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-outline">Layout</span>
+          <button
+            onClick={() => applyLayout('free')}
+            className={cn(
+              'rounded p-1 transition',
+              layoutMode === 'free' ? 'bg-surface-container text-primary' : 'text-outline hover:text-on-surface',
+            )}
+            title="Free"
+          >
+            <LayoutList size={14} />
+          </button>
+          <button
+            onClick={() => applyLayout('cascade')}
+            className={cn(
+              'rounded p-1 transition',
+              layoutMode === 'cascade' ? 'bg-surface-container text-primary' : 'text-outline hover:text-on-surface',
+            )}
+            title="Cascade"
+          >
+            <Layers size={14} />
+          </button>
+          <button
+            onClick={() => applyLayout('tile')}
+            className={cn(
+              'rounded p-1 transition',
+              layoutMode === 'tile' ? 'bg-surface-container text-primary' : 'text-outline hover:text-on-surface',
+            )}
+            title="Tile"
+          >
+            <LayoutGrid size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
