@@ -7,6 +7,7 @@ interface AppState {
   assets: Artifact[];
   logs: SystemLog[];
   lastHealthLatency: number | null;
+  lastHealthError: string | null;
   lastLogReadCount: number;
   isLoading: boolean;
   error: string | null;
@@ -37,6 +38,7 @@ interface AppState {
   setSessionId: (sessionId: string) => void;
   addLog: (log: SystemLog) => void;
   setLastHealthLatency: (ms: number | null) => void;
+  setLastHealthError: (error: string | null) => void;
   clearLogs: () => void;
   markLogsRead: () => void;
 
@@ -54,6 +56,7 @@ export const useAppStore = create<AppState>((set) => ({
   assets: [],
   logs: [],
   lastHealthLatency: null,
+  lastHealthError: null,
   lastLogReadCount: 0,
   isLoading: false,
   error: null,
@@ -97,6 +100,7 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ logs: [...state.logs, log] })),
 
   setLastHealthLatency: (ms) => set({ lastHealthLatency: ms }),
+  setLastHealthError: (error) => set({ lastHealthError: error }),
   clearLogs: () => set({ logs: [], lastLogReadCount: 0 }),
   markLogsRead: () => set((state) => ({ lastLogReadCount: state.logs.length })),
 

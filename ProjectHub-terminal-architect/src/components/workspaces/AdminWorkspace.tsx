@@ -7,6 +7,7 @@ import { LearnedPatternsPanel } from '../admin/LearnedPatternsPanel';
 interface AdminWorkspaceProps {
   assets: Artifact[];
   backendStatus: 'checking' | 'online' | 'offline';
+  lastHealthError: string | null;
   citations: Citation[];
   logs: SystemLog[];
   messages: Message[];
@@ -21,6 +22,7 @@ const DEFAULT_LOGS: SystemLog[] = [
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
   assets,
   backendStatus,
+  lastHealthError,
   citations,
   logs,
   messages,
@@ -55,18 +57,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
           </h1>
           <div className="hidden h-4 w-px bg-white/10 md:block" />
           <div className="hidden gap-4 font-mono text-[11px] text-on-surface-variant md:flex">
-            <span>REGION: AP-NORTHEAST-2</span>
-            <span>UPTIME: 342:12:04</span>
-            <span>LOAD: 0.12 0.08 0.05</span>
+            <span>Events: {logs.length}</span>
+            <span>Docs: {assets.length}</span>
+            <span>Refs: {citations.length}</span>
+            {lastHealthError && <span className="text-[#ffb4ab]">{lastHealthError}</span>}
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button className="bg-surface-container-highest px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface transition hover:ring-1 hover:ring-primary/20">
-            Reboot Node
-          </button>
-          <button className="bg-secondary px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#003909] transition hover:opacity-90">
-            Export Dump
-          </button>
+          {backendStatus === 'offline' && (
+            <span className="px-3 py-2 text-[11px] font-mono text-[#ffb4ab]">
+              Backend is offline
+            </span>
+          )}
         </div>
       </div>
 

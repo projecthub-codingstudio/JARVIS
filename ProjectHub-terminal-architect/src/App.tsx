@@ -114,8 +114,10 @@ export default function App() {
     sessionId,
     addLog,
     lastHealthLatency,
+    lastHealthError,
     lastLogReadCount,
     setLastHealthLatency,
+    setLastHealthError,
     clearLogs,
     clearMessages,
     markLogsRead,
@@ -200,22 +202,32 @@ export default function App() {
       try {
         const response = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
         if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          const errorMsg = `HTTP ${response.status}: ${response.statusText}${detail ? ` — ${detail}` : ''}`;
           setBackendStatus('offline');
           setLastHealthLatency(null);
+          setLastHealthError(errorMsg);
+          addLog({ id: `${Date.now()}-health-err`, timestamp: new Date().toISOString(), type: 'error', message: errorMsg });
           return;
         }
         const elapsed = Math.round(performance.now() - start);
         setBackendStatus('online');
         setLastHealthLatency(elapsed);
+        setLastHealthError(null);
         addLog({
           id: `${Date.now()}-health`,
           timestamp: new Date().toISOString(),
           type: 'info',
           message: 'JARVIS backend is connected.',
         });
-      } catch {
+      } catch (err) {
+        const errorMsg = err instanceof Error
+          ? (err.message.includes('Failed to fetch') ? 'Connection refused — backend process not running' : err.message)
+          : 'Unknown connection error';
         setBackendStatus('offline');
         setLastHealthLatency(null);
+        setLastHealthError(errorMsg);
+        addLog({ id: `${Date.now()}-health-err`, timestamp: new Date().toISOString(), type: 'error', message: errorMsg });
       }
     };
 
@@ -553,6 +565,7 @@ export default function App() {
               <AdminWorkspace
                 assets={assets}
                 backendStatus={backendStatus}
+                lastHealthError={lastHealthError}
                 citations={citations}
                 logs={logs}
                 messages={messages}
@@ -587,6 +600,37 @@ export default function App() {
           ) : null}
         </AnimatePresence>
       </main>
+
+      {/* Offline banner with restart */}
+      {backendStatus === 'offline' && (
+        <div className="fixed inset-x-0 top-12 z-50 flex items-center justify-between border-b border-[#ffb4ab]/20 bg-[#ffb4ab]/10 px-4 py-2 lg:left-16">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-2 w-2 rounded-full bg-[#ffb4ab] animate-pulse" />
+            <span className="text-[12px] text-[#ffb4ab]">
+              Backend Offline{lastHealthError ? ` — ${lastHealthError}` : ''}
+            </span>
+          </div>
+          <button
+            onClick={async () => {
+              setBackendStatus('checking');
+              try {
+                const res = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
+                if (res.ok) {
+                  setBackendStatus('online');
+                  setLastHealthError(null);
+                } else {
+                  setBackendStatus('offline');
+                }
+              } catch {
+                setBackendStatus('offline');
+              }
+            }}
+            className="rounded-sm bg-[#ffb4ab]/20 px-3 py-1 text-[11px] font-semibold text-[#ffb4ab] transition hover:bg-[#ffb4ab]/30"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
 
       <footer className="fixed inset-x-0 bottom-0 z-50 flex h-6 items-center border-t border-white/5 bg-surface-container-lowest px-4 font-mono text-[11px]">
         <span className={cn('mr-6', backendStatus === 'online' ? 'text-secondary' : backendStatus === 'checking' ? 'text-primary' : 'text-[#ffb4ab]')}>
