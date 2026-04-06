@@ -4,7 +4,6 @@ import {
   ArrowRight,
   BarChart3,
   FileText,
-  FolderOpen,
   FolderSearch,
   LayoutDashboard,
   Search,
@@ -26,7 +25,6 @@ interface CommandPaletteProps {
 const NAV_ITEMS: { key: ViewState; label: string; icon: React.ElementType }[] = [
   { key: 'home', label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal', label: 'Terminal', icon: TerminalSquare },
-  { key: 'repository', label: 'Repository', icon: FolderOpen },
   { key: 'explorer', label: 'Explorer', icon: FolderSearch },
   { key: 'skills', label: 'Skills', icon: Workflow },
   { key: 'admin', label: 'Admin', icon: BarChart3 },

@@ -91,7 +91,7 @@ const PdfRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, scale }) => {
   const [error, setError] = useState(false);
   const [editingPage, setEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState('');
-  const [showThumbs, setShowThumbs] = useState(true);
+  const [showThumbs, setShowThumbs] = useState(false);
   const thumbListRef = useRef<HTMLDivElement>(null);
 
   const thumbCache = useThumbnailCache(fileUrl, numPages, pageNumber);
