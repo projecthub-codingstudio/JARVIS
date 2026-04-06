@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
 import uuid
@@ -139,8 +140,15 @@ class ActionMapCreateRequest(ActionMapPayload):
 
 # HTTP Endpoints
 @app.post("/api/ask", response_model=AskResponse)
-async def ask(request: AskRequest) -> AskResponse:
-    """Process a text query and return JARVIS response."""
+def ask(request: AskRequest) -> AskResponse:
+    """Process a text query and return JARVIS response.
+
+    NOTE: This is a sync ``def`` endpoint (not ``async def``) so that
+    FastAPI runs it in a thread-pool worker.  The underlying
+    ``service.handle()`` call is blocking (LLM inference can take 30-40 s)
+    and would freeze the entire event loop if called from an ``async``
+    handler, making health-checks and other requests unresponsive.
+    """
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
         session_id=request.session_id,
@@ -148,18 +156,18 @@ async def ask(request: AskRequest) -> AskResponse:
         payload={"text": request.text},
     )
     rpc_response: RpcResponse = service.handle(rpc_request)
-    
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return AskResponse(**rpc_response.payload)
 
 
 @app.get("/api/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
+def health() -> HealthResponse:
     """Check JARVIS backend health status."""
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
@@ -172,7 +180,7 @@ async def health() -> HealthResponse:
 
 
 @app.post("/api/normalize", response_model=NormalizeResponse)
-async def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
+def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
     """Normalize a Korean query."""
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
@@ -181,18 +189,18 @@ async def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
         payload={"text": request.text},
     )
     rpc_response: RpcResponse = service.handle(rpc_request)
-    
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return NormalizeResponse(**rpc_response.payload)
 
 
 @app.get("/api/runtime-state")
-async def runtime_state():
+def runtime_state():
     """Get full runtime state."""
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
@@ -201,23 +209,23 @@ async def runtime_state():
         payload={},
     )
     rpc_response: RpcResponse = service.handle(rpc_request)
-    
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return rpc_response.payload
 
 
 @app.get("/api/skills")
-async def skills_catalog() -> dict[str, Any]:
+def skills_catalog() -> dict[str, Any]:
     return {"catalog": build_skill_catalog()}
 
 
 @app.post("/api/skills")
-async def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
+def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
     try:
         profile = create_skill_profile(request.model_dump())
     except ValueError as exc:
@@ -226,7 +234,7 @@ async def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
 
 
 @app.put("/api/skills/{skill_id}")
-async def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
+def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
     try:
         profile = upsert_skill_profile(skill_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
@@ -235,12 +243,12 @@ async def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str,
 
 
 @app.get("/api/action-maps")
-async def action_maps() -> dict[str, Any]:
+def action_maps() -> dict[str, Any]:
     return {"maps": list_action_maps()}
 
 
 @app.post("/api/action-maps")
-async def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
+def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
     try:
         action_map = create_action_map(request.model_dump())
     except ValueError as exc:
@@ -249,7 +257,7 @@ async def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
 
 
 @app.put("/api/action-maps/{map_id}")
-async def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
+def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
     try:
         action_map = upsert_action_map(map_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
@@ -282,7 +290,7 @@ class BrowseResponse(BaseModel):
 
 
 @app.get("/api/browse", response_model=BrowseResponse)
-async def browse_directory(path: str = ""):
+def browse_directory(path: str = ""):
     """List directory contents within the knowledge base."""
     kb_root = _resolve_kb_root()
     if kb_root is None:
@@ -356,7 +364,7 @@ def _learning_db_connection():
 
 
 @app.get("/api/learned-patterns", response_model=LearnedPatternsResponse)
-async def list_learned_patterns(retrieval_task: str | None = None):
+def list_learned_patterns(retrieval_task: str | None = None):
     """List all learned patterns, optionally filtered by retrieval_task."""
     import json
     conn = _learning_db_connection()
@@ -468,7 +476,7 @@ async def ask_vision(
     if model not in _ALLOWED_VISION_MODELS:
         raise HTTPException(status_code=400, detail=f"Unsupported vision model: {model}")
 
-    try:
+    def _run_vision_sync():
         backend = _get_vision_backend(model)
         t0 = _time.perf_counter()
         answer = backend.generate_with_image(prompt=text, image_path=tmp_path)
@@ -478,6 +486,9 @@ async def ask_vision(
             model_id=backend.model_id,
             elapsed_ms=elapsed_ms,
         )
+
+    try:
+        return await asyncio.to_thread(_run_vision_sync)
     finally:
         try:
             Path(tmp_path).unlink()
@@ -499,7 +510,7 @@ class ExtractedTextResponse(BaseModel):
 
 
 @app.get("/api/file/extracted", response_model=ExtractedTextResponse)
-async def get_extracted_text(path: str, limit: int = Query(default=200, ge=1, le=1000)):
+def get_extracted_text(path: str, limit: int = Query(default=200, ge=1, le=1000)):
     """Return indexed/extracted text chunks for binary documents (HWP, DOCX, PDF, etc.)."""
     kb_root = _resolve_kb_root()
     if kb_root is None:
@@ -578,7 +589,7 @@ class ForgetPatternRequest(BaseModel):
 
 
 @app.post("/api/learned-patterns/forget")
-async def forget_learned_patterns(http_request: Request, request: ForgetPatternRequest):
+def forget_learned_patterns(http_request: Request, request: ForgetPatternRequest):
     """Delete a specific learned pattern, or all patterns if pattern_id is None."""
     _check_origin(http_request)
     conn = _learning_db_connection()
@@ -604,7 +615,7 @@ class ForgetDataRequest(BaseModel):
 
 
 @app.post("/api/data/forget")
-async def forget_user_data(http_request: Request, request: ForgetDataRequest):
+def forget_user_data(http_request: Request, request: ForgetDataRequest):
     """Delete user data: conversations, session events, task logs, or all."""
     _check_origin(http_request)
     conn = _learning_db_connection()
@@ -631,7 +642,7 @@ async def forget_user_data(http_request: Request, request: ForgetDataRequest):
 
 
 @app.get("/api/file")
-async def serve_file(path: str):
+def serve_file(path: str):
     """Serve a file from allowed directories.
 
     Validates that the requested path is within the knowledge_base

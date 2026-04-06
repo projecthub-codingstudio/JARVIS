@@ -601,31 +601,40 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Offline banner with restart */}
+      {/* Offline banner with retry */}
       {backendStatus === 'offline' && (
-        <div className="fixed inset-x-0 top-12 z-50 flex items-center justify-between border-b border-[#ffb4ab]/20 bg-[#ffb4ab]/10 px-4 py-2 lg:left-16">
+        <div className="fixed inset-x-0 top-12 z-50 flex items-center justify-between border-b border-[#ffb4ab]/30 bg-[#93000a] px-4 py-2 lg:left-16">
           <div className="flex items-center gap-3">
             <span className="inline-flex h-2 w-2 rounded-full bg-[#ffb4ab] animate-pulse" />
-            <span className="text-[12px] text-[#ffb4ab]">
+            <span className="text-[12px] font-medium text-[#ffdad6]">
               Backend Offline{lastHealthError ? ` — ${lastHealthError}` : ''}
             </span>
           </div>
           <button
             onClick={async () => {
               setBackendStatus('checking');
+              setLastHealthError(null);
               try {
                 const res = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
                 if (res.ok) {
                   setBackendStatus('online');
                   setLastHealthError(null);
+                  setLastHealthLatency(null);
+                  addLog({ id: `${Date.now()}-retry`, timestamp: new Date().toISOString(), type: 'info', message: 'Backend reconnected via manual retry.' });
                 } else {
+                  const detail = await res.text().catch(() => '');
                   setBackendStatus('offline');
+                  setLastHealthError(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
                 }
-              } catch {
+              } catch (err) {
+                const msg = err instanceof Error && err.message.includes('Failed to fetch')
+                  ? 'Connection refused — backend process not running'
+                  : (err instanceof Error ? err.message : 'Connection failed');
                 setBackendStatus('offline');
+                setLastHealthError(msg);
               }
             }}
-            className="rounded-sm bg-[#ffb4ab]/20 px-3 py-1 text-[11px] font-semibold text-[#ffb4ab] transition hover:bg-[#ffb4ab]/30"
+            className="shrink-0 rounded-sm bg-[#ffdad6]/20 px-3 py-1 text-[11px] font-semibold text-[#ffdad6] transition hover:bg-[#ffdad6]/30"
           >
             Retry Connection
           </button>
