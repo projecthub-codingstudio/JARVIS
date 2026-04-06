@@ -6,6 +6,8 @@ interface AppState {
   messages: Message[];
   assets: Artifact[];
   logs: SystemLog[];
+  lastHealthLatency: number | null;
+  lastLogReadCount: number;
   isLoading: boolean;
   error: string | null;
   sessionId: string;
@@ -34,6 +36,9 @@ interface AppState {
   setHasEvidence: (hasEvidence: boolean) => void;
   setSessionId: (sessionId: string) => void;
   addLog: (log: SystemLog) => void;
+  setLastHealthLatency: (ms: number | null) => void;
+  clearLogs: () => void;
+  markLogsRead: () => void;
 
   // Repository
   setFileTree: (entries: FileNode[]) => void;
@@ -48,6 +53,8 @@ export const useAppStore = create<AppState>((set) => ({
   messages: [],
   assets: [],
   logs: [],
+  lastHealthLatency: null,
+  lastLogReadCount: 0,
   isLoading: false,
   error: null,
   sessionId: typeof crypto !== 'undefined' ? crypto.randomUUID() : 'default-session',
@@ -88,6 +95,10 @@ export const useAppStore = create<AppState>((set) => ({
   
   addLog: (log) =>
     set((state) => ({ logs: [...state.logs, log] })),
+
+  setLastHealthLatency: (ms) => set({ lastHealthLatency: ms }),
+  clearLogs: () => set({ logs: [], lastLogReadCount: 0 }),
+  markLogsRead: () => set((state) => ({ lastLogReadCount: state.logs.length })),
 
   setFileTree: (entries) => set({ fileTree: entries }),
   cacheDirectory: (path, entries) =>

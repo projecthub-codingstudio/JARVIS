@@ -256,4 +256,17 @@ export const apiClient = {
     }
     return res.json();
   },
+
+  async forgetData(scope: 'all' | 'conversations' | 'session_events' | 'task_logs'): Promise<{ deleted: Record<string, number> }> {
+    const res = await fetch(`${API_BASE_URL}/api/data/forget`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`Forget data failed: ${res.status} ${detail}`);
+    }
+    return res.json();
+  },
 };
