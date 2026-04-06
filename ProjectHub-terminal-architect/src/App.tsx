@@ -8,14 +8,10 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
   BarChart3,
-  Bell,
   FolderOpen,
-  HelpCircle,
   House,
   Search,
-  Settings,
   TerminalSquare,
-  UserRound,
   Workflow,
 } from 'lucide-react';
 import { cn } from './lib/utils';
@@ -26,6 +22,11 @@ import { RepositoryWorkspace } from './components/repository/RepositoryWorkspace
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
 import { SkillsWorkspace } from './components/workspaces/SkillsWorkspace';
+import { CommandPalette } from './components/shell/CommandPalette';
+import { NotificationBell } from './components/shell/NotificationBell';
+import { SettingsPopover } from './components/shell/SettingsPopover';
+import { SessionInfo } from './components/shell/SessionInfo';
+import { HelpPopover } from './components/shell/HelpPopover';
 import type {
   ActionMap,
   ActionMapCreateInput,
@@ -99,6 +100,7 @@ export default function App() {
   const [actionMapsLoading, setActionMapsLoading] = useState(false);
   const [actionMapsError, setActionMapsError] = useState<string | null>(null);
   const [repositoryInitialPath, setRepositoryInitialPath] = useState<string | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const {
     messages,
@@ -111,6 +113,12 @@ export default function App() {
     logs,
     sessionId,
     addLog,
+    lastHealthLatency,
+    lastLogReadCount,
+    setLastHealthLatency,
+    clearLogs,
+    clearMessages,
+    markLogsRead,
   } = useAppStore();
 
   const { sendMessage, sendMessageWithImage } = useJarvis();
@@ -127,6 +135,17 @@ export default function App() {
     syncViewport();
     window.addEventListener('resize', syncViewport);
     return () => window.removeEventListener('resize', syncViewport);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
 
   useEffect(() => {
@@ -177,13 +196,17 @@ export default function App() {
 
   useEffect(() => {
     const checkBackend = async () => {
+      const start = performance.now();
       try {
         const response = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
         if (!response.ok) {
           setBackendStatus('offline');
+          setLastHealthLatency(null);
           return;
         }
+        const elapsed = Math.round(performance.now() - start);
         setBackendStatus('online');
+        setLastHealthLatency(elapsed);
         addLog({
           id: `${Date.now()}-health`,
           timestamp: new Date().toISOString(),
@@ -192,13 +215,14 @@ export default function App() {
         });
       } catch {
         setBackendStatus('offline');
+        setLastHealthLatency(null);
       }
     };
 
     void checkBackend();
     const interval = window.setInterval(checkBackend, 30000);
     return () => window.clearInterval(interval);
-  }, [addLog]);
+  }, [addLog, setLastHealthLatency]);
 
   const selectArtifact = useCallback((artifact: Artifact) => {
     setSelectedArtifact((current) => {
@@ -334,6 +358,14 @@ export default function App() {
     setView(target);
   };
 
+  const handleCommandPaletteSend = useCallback(async (text: string) => {
+    setInputValue(text);
+    setView('terminal');
+    setTerminalFocusNonce((current) => current + 1);
+    await sendMessage(text);
+    setInputValue('');
+  }, [sendMessage]);
+
   useEffect(() => {
     if (view !== 'skills') return;
     void loadSkillCatalog();
@@ -350,7 +382,7 @@ export default function App() {
             <img src="/projecthub-icon.png" alt="ProjectHub" className="h-6 w-6 rounded" />
             <div className="text-sm font-bold tracking-tight text-primary">ProjectHub-JARVIS</div>
           </div>
-          <nav className="hidden items-center gap-4 md:flex">
+          <nav className="hidden items-center gap-4 md:flex lg:hidden">
             {SHELL_NAV.map(({ key, label }) => (
               <button
                 key={key}
@@ -369,22 +401,33 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          <label className="hidden items-center gap-2 rounded-sm bg-surface-container-lowest px-3 py-1 md:flex">
+          <button
+            onClick={() => setCommandPaletteOpen(true)}
+            className="hidden items-center gap-2 rounded-sm bg-surface-container-lowest px-3 py-1 md:flex"
+          >
             <Search size={14} className="text-outline" />
-            <input
-              className="w-44 bg-transparent text-[12px] text-on-surface outline-none placeholder:text-outline"
-              placeholder="Global Search..."
-            />
-          </label>
-          <button className="text-primary transition hover:bg-surface-container-high hover:text-on-surface">
-            <Bell size={16} />
+            <span className="w-44 text-left text-[12px] text-outline">Global Search...</span>
+            <kbd className="rounded border border-white/10 px-1 py-0.5 text-[9px] font-mono text-outline">
+              Cmd+K
+            </kbd>
           </button>
-          <button className="text-primary transition hover:bg-surface-container-high hover:text-on-surface">
-            <Settings size={16} />
-          </button>
-          <div className="flex h-7 w-7 items-center justify-center rounded-sm border border-white/10 bg-surface-container-highest text-outline">
-            <UserRound size={14} />
-          </div>
+          <NotificationBell
+            logs={logs}
+            unreadCount={Math.max(0, logs.length - lastLogReadCount)}
+            onMarkRead={markLogsRead}
+            onClearAll={clearLogs}
+          />
+          <SettingsPopover
+            onClearMessages={clearMessages}
+            addLog={addLog}
+          />
+          <SessionInfo
+            sessionId={sessionId}
+            backendStatus={backendStatus}
+            artifactCount={assets.length}
+            citationCount={citations.length}
+            messageCount={messages.length}
+          />
         </div>
       </header>
 
@@ -410,10 +453,12 @@ export default function App() {
         </div>
 
         <div className="mt-auto flex w-full flex-col items-center gap-4 pb-8">
-          <button className="text-outline transition hover:text-on-surface">
-            <HelpCircle size={18} />
-          </button>
-          <button className="text-outline transition hover:text-on-surface">
+          <HelpPopover backendStatus={backendStatus} />
+          <button
+            onClick={() => handleNavigate('admin')}
+            className="text-outline transition hover:text-on-surface"
+            title="System Activity"
+          >
             <Activity size={18} />
           </button>
         </div>
@@ -547,8 +592,8 @@ export default function App() {
           {backendStatus === 'online' ? 'SYSTEM READY' : backendStatus === 'checking' ? 'SYSTEM CHECKING' : 'SYSTEM OFFLINE'}
         </span>
         <div className="flex flex-1 items-center gap-6 text-outline">
-          <span>branch:main</span>
-          <span>latency:14ms</span>
+          <span>backend:{backendStatus}</span>
+          <span>latency:{lastHealthLatency !== null ? `${lastHealthLatency}ms` : '--'}</span>
           <span>session:{sessionId.slice(0, 8)}</span>
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
         </div>
@@ -557,6 +602,18 @@ export default function App() {
           <span>refs:{citations.length}</span>
         </div>
       </footer>
+
+      <AnimatePresence>
+        {commandPaletteOpen && (
+          <CommandPalette
+            open={commandPaletteOpen}
+            onClose={() => setCommandPaletteOpen(false)}
+            onNavigate={(target) => { handleNavigate(target); setCommandPaletteOpen(false); }}
+            onSendMessage={handleCommandPaletteSend}
+            onNavigateToFile={(path) => { navigateToFile(path); setCommandPaletteOpen(false); }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
