@@ -781,7 +781,8 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   const activityLogs = logs.slice(-4).reverse();
 
   const terminalBlocks = useMemo(() => buildMessageBlocks(messages), [messages]);
-  const visibleAssets = assets.slice(0, 3);
+  const [showAllAssets, setShowAllAssets] = useState(false);
+  const visibleAssets = showAllAssets ? assets : assets.slice(0, 6);
   const currentCitations = citations.slice(0, 3);
   const sourceMapEntries = useMemo(() => buildSourceMapEntries(citations, assets), [citations, assets]);
   const latestArchitect = [...messages].reverse().find((message) => message.role === 'architect');
@@ -1027,22 +1028,32 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 Workspace Artifacts
               </div>
               {visibleAssets.length > 0 ? (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {visibleAssets.map((artifact) => (
-                    <button
-                      key={artifact.id}
-                      onClick={() => onOpenArtifact(artifact)}
-                      className="border border-white/5 bg-surface-container-lowest text-left transition hover:border-primary/30 hover:bg-surface-container"
-                    >
-                      <div className="flex h-28 items-end justify-between bg-gradient-to-br from-surface-container-highest via-surface-container-low to-surface-container-lowest p-3">
-                        <div className="min-w-0 rounded-sm bg-surface/80 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.12em] text-on-surface">
-                          <div className="truncate">{artifact.title}</div>
+                <>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    {visibleAssets.map((artifact) => (
+                      <button
+                        key={artifact.id}
+                        onClick={() => onOpenArtifact(artifact)}
+                        className="border border-white/5 bg-surface-container-lowest text-left transition hover:border-primary/30 hover:bg-surface-container"
+                      >
+                        <div className="flex h-28 items-end justify-between bg-gradient-to-br from-surface-container-highest via-surface-container-low to-surface-container-lowest p-3">
+                          <div className="min-w-0 rounded-sm bg-surface/80 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.12em] text-on-surface">
+                            <div className="truncate">{artifact.title}</div>
+                          </div>
+                          {getArtifactIcon(artifact)}
                         </div>
-                        {getArtifactIcon(artifact)}
-                      </div>
+                      </button>
+                    ))}
+                  </div>
+                  {assets.length > 6 && (
+                    <button
+                      onClick={() => setShowAllAssets((v) => !v)}
+                      className="mt-2 w-full py-2 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high"
+                    >
+                      {showAllAssets ? `접기 (${assets.length}개 중 6개만 보기)` : `전체 보기 (${assets.length}개)`}
                     </button>
-                  ))}
-                </div>
+                  )}
+                </>
               ) : (
                 <div className="border border-white/5 bg-surface-container-low px-4 py-5 text-sm text-on-surface-variant">
                   아직 로드된 문서가 없습니다. 첫 질의를 보내면 관련 아티팩트가 이 영역에 표시됩니다.
@@ -1337,7 +1348,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <div className="text-[11px] font-mono text-outline">{assets.length} available</div>
                 </div>
                 <div className="grid gap-2 lg:grid-cols-3">
-                  {assets.slice(0, 3).map((artifact) => (
+                  {(showAllAssets ? assets : assets.slice(0, 3)).map((artifact) => (
                     <button
                       key={artifact.id}
                       onClick={() => onOpenArtifact(artifact)}
@@ -1345,7 +1356,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                     >
                       <div className="min-w-0">
                         <div className="truncate text-[10px] uppercase tracking-[0.12em] text-outline">
-                          Evidence Artifact
+                          {artifact.subtitle || 'Evidence Artifact'}
                         </div>
                         <div className="mt-1 truncate text-sm font-medium text-on-surface">{artifact.title}</div>
                       </div>
@@ -1353,6 +1364,14 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                     </button>
                   ))}
                 </div>
+                {assets.length > 3 && (
+                  <button
+                    onClick={() => setShowAllAssets((v) => !v)}
+                    className="mt-2 w-full py-1.5 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high rounded"
+                  >
+                    {showAllAssets ? '접기' : `전체 ${assets.length}개 보기`}
+                  </button>
+                )}
               </div>
             )}
 

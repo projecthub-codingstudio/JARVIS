@@ -813,7 +813,10 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                    "을", "를", "의", "에", "은", "는", "이", "가", "로", "으로", "에서",
                    "언어", "프로그래밍", "관한", "대한", "해서", "하는", "된", "있나", "있어"):
         search_term = search_term.replace(filler, " ")
-    search_term = " ".join(search_term.split()).strip()
+    # Clean up punctuation and single-char residue
+    search_term = re.sub(r'[.,!?·…~]', ' ', search_term)
+    search_term = " ".join(w for w in search_term.split() if len(w) >= 2 or w.isascii())
+    search_term = search_term.strip()
     if not search_term:
         return None
 
