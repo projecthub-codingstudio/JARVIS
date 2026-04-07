@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Bookmark,
   Braces,
   Code2,
   File,
@@ -29,9 +30,10 @@ function getFileIcon(node: FileNode) {
 interface FileIconCardProps {
   node: FileNode;
   onClick: (node: FileNode, rect: DOMRect) => void;
+  bookmarked?: boolean;
 }
 
-export function FileIconCard({ node, onClick }: FileIconCardProps) {
+export function FileIconCard({ node, onClick, bookmarked }: FileIconCardProps) {
   const Icon = getFileIcon(node);
   const color = node.type === 'directory' ? '#eab308' : getFileColor(node.extension);
   const size = formatFileSize(node.size);
@@ -44,8 +46,16 @@ export function FileIconCard({ node, onClick }: FileIconCardProps) {
   return (
     <button
       onClick={handleClick}
-      className="group flex flex-col items-center gap-2 rounded-lg border border-white/5 bg-surface-container-low p-4 text-center transition hover:border-primary/30 hover:bg-surface-container hover:scale-[1.02]"
+      className={cn(
+        'group relative flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition hover:scale-[1.02]',
+        bookmarked
+          ? 'border-primary/40 bg-primary/5 hover:border-primary/60 hover:bg-primary/10'
+          : 'border-white/5 bg-surface-container-low hover:border-primary/30 hover:bg-surface-container',
+      )}
     >
+      {bookmarked && (
+        <Bookmark size={10} className="absolute top-1.5 right-1.5 text-primary fill-primary" />
+      )}
       <Icon size={36} style={{ color }} />
       <span className="w-full truncate text-[11px] text-on-surface">{node.name}</span>
       {size && <span className="text-[9px] text-outline">{size}</span>}

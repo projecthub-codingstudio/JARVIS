@@ -8,7 +8,7 @@ interface SheetData {
   html: string;
 }
 
-const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
+const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, scale }) => {
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [activeSheet, setActiveSheet] = useState(0);
   const [error, setError] = useState(false);
@@ -82,6 +82,8 @@ const XlsxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
         ) : (
           <div
             className="xlsx-preview text-sm"
+            style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left', transition: 'transform 0.2s' } : undefined}
+            // currentHtml is DOMPurify-sanitized above (line 30)
             dangerouslySetInnerHTML={{ __html: currentHtml }}
           />
         )}

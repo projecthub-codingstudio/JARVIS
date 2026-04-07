@@ -195,6 +195,7 @@ export function ExplorerWorkspace({ initialPath, onClearInitialPath, onAskArtifa
             artifact={win.artifact}
             originRect={win.originRect}
             zIndex={30 + zStack.indexOf(win.id)}
+            isFocused={zStack[zStack.length - 1] === win.id}
             layout={layouts[win.id] ?? null}
             onClose={() => handleCloseWindow(win.id)}
             onFocus={() => handleFocusWindow(win.id)}

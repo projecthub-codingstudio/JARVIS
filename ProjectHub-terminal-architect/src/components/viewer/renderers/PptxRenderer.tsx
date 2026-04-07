@@ -7,7 +7,7 @@ import type { RendererProps } from './TextRenderer';
 const DEFAULT_VIEWPORT = { width: 960, height: 540 };
 const THUMB_VIEWPORT = { width: 160, height: 90 };
 
-const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
+const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, scale }) => {
   const stageRef = useRef<HTMLDivElement>(null);
   const [slides, setSlides] = useState<string[]>([]);
   const [thumbSlides, setThumbSlides] = useState<string[]>([]);
@@ -208,8 +208,11 @@ const PptxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
           ) : (
             <div
               className="bg-white shadow-lg"
-              dangerouslySetInnerHTML={{ __html: slides[slideIndex] || '' }}
-            />
+              style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top center', transition: 'transform 0.2s' } : undefined}
+            >
+              {/* Slide HTML is DOMPurify-sanitized in the render effect (line 106) */}
+              <div dangerouslySetInnerHTML={{ __html: slides[slideIndex] || '' }} />
+            </div>
           )}
         </div>
       </div>

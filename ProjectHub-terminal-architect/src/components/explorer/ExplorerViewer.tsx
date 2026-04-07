@@ -29,6 +29,7 @@ interface ExplorerViewerProps {
   artifact: Artifact;
   originRect: DOMRect;
   zIndex: number;
+  isFocused?: boolean;
   layout?: WindowLayout | null;
   onClose: () => void;
   onFocus: () => void;
@@ -38,7 +39,7 @@ interface ExplorerViewerProps {
 const MIN_WIDTH = 300;
 const MIN_HEIGHT = 200;
 
-export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, onFocus, onAskArtifact }: ExplorerViewerProps) {
+export function ExplorerViewer({ artifact, originRect, zIndex, isFocused, layout, onClose, onFocus, onAskArtifact }: ExplorerViewerProps) {
   const defaultSize = getDefaultWindowSize(artifact);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
@@ -103,7 +104,10 @@ export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, 
 
   return (
     <motion.div
-      className="absolute flex flex-col overflow-hidden border border-white/10 bg-surface shadow-2xl"
+      className={cn(
+        'absolute flex flex-col overflow-hidden bg-surface shadow-2xl transition-[border-color]',
+        isFocused ? 'border border-primary/50' : 'border border-white/10',
+      )}
       style={{ zIndex, borderRadius: maximized ? 0 : 8 }}
       initial={{
         x: originRect.left,
@@ -131,14 +135,18 @@ export function ExplorerViewer({ artifact, originRect, zIndex, layout, onClose, 
     >
       {/* Title bar */}
       <div
-        className={cn('flex h-8 shrink-0 items-center justify-between bg-surface-container-high px-2 select-none', maximized ? 'cursor-default' : 'cursor-move')}
+        className={cn(
+          'flex h-8 shrink-0 items-center justify-between px-2 select-none transition-colors',
+          isFocused ? 'bg-primary/15' : 'bg-surface-container-high',
+          maximized ? 'cursor-default' : 'cursor-move',
+        )}
         onPointerDown={handleDragDown}
         onPointerMove={handleDragMove}
         onPointerUp={handleDragUp}
       >
         <div className="flex items-center gap-2 min-w-0">
           <GripHorizontal size={12} className="shrink-0 text-outline/50" />
-          <span className="truncate text-[11px] text-on-surface-variant">{artifact.title}</span>
+          <span className={cn('truncate text-[11px]', isFocused ? 'text-on-surface' : 'text-on-surface-variant')}>{artifact.title}</span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button

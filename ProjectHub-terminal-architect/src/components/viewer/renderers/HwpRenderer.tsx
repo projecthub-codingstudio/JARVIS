@@ -6,7 +6,7 @@ import type { RendererProps } from './TextRenderer';
 
 const CHUNKS_PER_PAGE = 40;  // roughly one screen's worth
 
-const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
+const HwpRenderer: React.FC<RendererProps> = ({ artifact, scale }) => {
   const [chunks, setChunks] = useState<ExtractedTextChunk[]>([]);
   const [totalChunks, setTotalChunks] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,6 +52,9 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
     <div className="flex h-full flex-col bg-surface-lowest">
       <div className="flex-1 overflow-auto p-4 md:p-6 custom-scrollbar">
         <div className="mx-auto max-w-[1200px] rounded-xl border border-white/8 bg-surface px-8 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
+          <div
+            style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top center', transition: 'transform 0.2s' } : undefined}
+          >
           <div className="mb-6 flex items-center gap-3 border-b border-outline/10 pb-4">
             <FileText size={20} className="text-primary" />
             <div className="flex-1">
@@ -115,6 +118,7 @@ const HwpRenderer: React.FC<RendererProps> = ({ artifact }) => {
               )}
             </div>
           )}
+          </div>
         </div>
       </div>
       {fileUrl && (

@@ -124,6 +124,18 @@ function selectRenderer(artifact: Artifact) {
   return TextRenderer;
 }
 
+export type ZoomMode = 'scale' | 'font' | 'transform' | 'none';
+
+export function getZoomMode(artifact: Artifact): ZoomMode {
+  const Renderer = selectRenderer(artifact);
+  if (Renderer === PdfRenderer) return 'scale';
+  if (Renderer === ImageRenderer) return 'transform';
+  if (Renderer === TextRenderer || Renderer === CodeRenderer) return 'font';
+  if (Renderer === VideoRenderer || Renderer === WebRenderer) return 'none';
+  // Markdown, HTML, Docx, Xlsx, Pptx, Hwp → CSS transform
+  return 'transform';
+}
+
 const LoadingSpinner = () => (
   <div className="h-full flex items-center justify-center">
     <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />

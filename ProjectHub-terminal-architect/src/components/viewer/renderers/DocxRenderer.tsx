@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { renderAsync } from 'docx-preview';
 import type { RendererProps } from './TextRenderer';
 
-const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
+const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, scale }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -77,7 +77,11 @@ const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
           <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         </div>
       )}
-      <div ref={containerRef} className={loading ? 'hidden' : ''} />
+      <div
+        ref={containerRef}
+        className={loading ? 'hidden' : ''}
+        style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top center', transition: 'transform 0.2s' } : undefined}
+      />
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { Message, SystemLog, Citation, Artifact, GuideDirective, Presentation, FileNode } from '../types';
 
 interface AppState {
@@ -48,9 +49,13 @@ interface AppState {
   setSelectedFilePath: (path: string | null) => void;
   toggleExpandedDir: (path: string) => void;
   expandToPath: (filePath: string) => void;
+
+  // Bookmarks
+  bookmarks: string[];
+  toggleBookmark: (path: string) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>()(persist((set) => ({
   // Initial state
   messages: [],
   assets: [],
@@ -127,4 +132,17 @@ export const useAppStore = create<AppState>((set) => ({
       const merged = [...new Set([...state.expandedDirs, ...dirs])];
       return { expandedDirs: merged, selectedFilePath: filePath };
     }),
+
+  // Bookmarks
+  bookmarks: [],
+  toggleBookmark: (path) =>
+    set((state) => ({
+      bookmarks: state.bookmarks.includes(path)
+        ? state.bookmarks.filter((b) => b !== path)
+        : [...state.bookmarks, path],
+    })),
+}), {
+  name: 'projecthub-storage',
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({ bookmarks: state.bookmarks }),
 }));
