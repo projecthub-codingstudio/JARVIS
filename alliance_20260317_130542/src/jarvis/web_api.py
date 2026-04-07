@@ -397,6 +397,13 @@ def restart_server(request: Request):
     def _do_restart() -> None:
         _time.sleep(0.5)  # let the HTTP response flush
         logger.info("Restarting backend process via os.execv...")
+        # Update PID file if it exists (start.sh writes .pids/backend.pid)
+        pid_file = Path(__file__).resolve().parent.parent.parent.parent / "ProjectHub-terminal-architect" / ".pids" / "backend.pid"
+        if pid_file.exists():
+            try:
+                pid_file.write_text(str(os.getpid()))
+            except Exception:
+                pass
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     threading.Thread(target=_do_restart, daemon=True, name="restart").start()

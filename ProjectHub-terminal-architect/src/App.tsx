@@ -266,6 +266,7 @@ export default function App() {
   }, [addLog]);
 
   const handleRestart = useCallback(async () => {
+    if (!window.confirm('백엔드를 재시작하시겠습니까?\n재시작 중에는 질의가 불가능합니다.')) return;
     addLog({ id: `${Date.now()}-restart`, timestamp: new Date().toISOString(), type: 'info', message: 'Backend restart requested...' });
     setBackendStatus('checking');
     setLastHealthError('Backend is restarting...');
