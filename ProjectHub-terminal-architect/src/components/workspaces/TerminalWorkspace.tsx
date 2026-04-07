@@ -44,6 +44,23 @@ interface TerminalWorkspaceProps {
   onRestart?: () => void;
 }
 
+function RestartProgress() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = window.setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <div className="flex items-center gap-2 rounded bg-primary/10 px-3 py-2">
+      <div className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-primary">
+        Restarting{elapsed > 0 ? ` · ${elapsed}s` : ''}
+      </span>
+    </div>
+  );
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -923,9 +940,13 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   Restart
                   </button>
                 )}
-                <div className={cn('bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]', statusTone)}>
-                  {backendStatus}
-                </div>
+                {backendStatus === 'checking' ? (
+                  <RestartProgress />
+                ) : (
+                  <div className={cn('bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]', statusTone)}>
+                    {backendStatus}
+                  </div>
+                )}
               </div>
             </div>
 

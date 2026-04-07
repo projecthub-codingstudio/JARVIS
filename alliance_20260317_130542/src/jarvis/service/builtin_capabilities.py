@@ -955,6 +955,7 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
         source_profile="knowledge_base",
         primary_source_type="document",
         artifacts=artifacts,
+        ui_hints={"preferred_view": "documents"},
         presentation=_presentation(
             layout="master_detail",
             title="Document Search",

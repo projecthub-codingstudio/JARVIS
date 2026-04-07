@@ -8,6 +8,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
   BarChart3,
+  FileSearch2,
   FolderSearch,
   LayoutDashboard,
   Search,
@@ -18,6 +19,7 @@ import { cn } from './lib/utils';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
 import { apiClient, type IndexingState } from './lib/api-client';
+import { DocumentsWorkspace } from './components/documents/DocumentsWorkspace';
 import { ExplorerWorkspace } from './components/explorer/ExplorerWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
@@ -42,6 +44,7 @@ const SHELL_NAV = [
   { key: 'home' as ViewState, label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal' as ViewState, label: 'Terminal', icon: TerminalSquare },
   { key: 'explorer' as ViewState, label: 'Explorer', icon: FolderSearch },
+  { key: 'documents' as ViewState, label: 'Documents', icon: FileSearch2 },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
 ];
@@ -195,6 +198,13 @@ export default function App() {
       if (assets.length > 0) {
         setView('explorer');
       }
+      return;
+    }
+
+    if (preferredView === 'documents') {
+      if (assets.length > 0) {
+        setView('documents');
+      }
     }
   }, [assets.length, citations.length, guide?.ui_hints?.preferred_view]);
 
@@ -249,11 +259,12 @@ export default function App() {
     };
 
     void checkBackend();
-    // Poll faster during indexing for progress updates
-    const intervalMs = indexingState.status === 'scanning' || indexingState.status === 'indexing' ? 3000 : 30000;
+    // Poll faster during restart/checking or indexing
+    const isPollingFast = backendStatus === 'checking' || indexingState.status === 'scanning' || indexingState.status === 'indexing';
+    const intervalMs = isPollingFast ? 2000 : 30000;
     const interval = window.setInterval(checkBackend, intervalMs);
     return () => window.clearInterval(interval);
-  }, [addLog, setLastHealthLatency, indexingState.status]);
+  }, [addLog, setLastHealthLatency, indexingState.status, backendStatus]);
 
   const handleReindex = useCallback(async () => {
     try {
@@ -596,6 +607,21 @@ export default function App() {
               <ExplorerWorkspace
                 initialPath={repositoryInitialPath}
                 onClearInitialPath={() => setRepositoryInitialPath(null)}
+                onAskArtifact={handleAskArtifact}
+              />
+            </motion.div>
+          ) : null}
+
+          {view === 'documents' ? (
+            <motion.div
+              key="documents"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              className="h-full"
+            >
+              <DocumentsWorkspace
+                assets={assets}
                 onAskArtifact={handleAskArtifact}
               />
             </motion.div>

@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import {
   ArrowRight,
   BarChart3,
+  FileSearch2,
   FileText,
   FolderSearch,
   LayoutDashboard,
@@ -26,6 +27,7 @@ const NAV_ITEMS: { key: ViewState; label: string; icon: React.ElementType }[] = 
   { key: 'home', label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { key: 'explorer', label: 'Explorer', icon: FolderSearch },
+  { key: 'documents', label: 'Documents', icon: FileSearch2 },
   { key: 'skills', label: 'Skills', icon: Workflow },
   { key: 'admin', label: 'Admin', icon: BarChart3 },
 ];

@@ -172,7 +172,7 @@ export function ExplorerViewer({ artifact, originRect, zIndex, isFocused, layout
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={(e) => { e.stopPropagation(); setMaximized((v) => !v); }}
+            onClick={(e) => { e.stopPropagation(); setMaximized((v) => !v); onFocus(); }}
             onPointerDown={(e) => e.stopPropagation()}
             className="rounded-full p-0.5 text-outline transition hover:bg-surface-container hover:text-on-surface"
             title={maximized ? 'Restore' : 'Maximize'}
