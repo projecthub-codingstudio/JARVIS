@@ -4673,80 +4673,99 @@ def _generate_single_chunk(backend: object, prompt: str, context: str) -> tuple[
     return response, hit_limit
 
 
-def _ask_about_document(query: str, document_path: str) -> tuple[dict[str, object] | None, str]:
-    """Answer questions about a specific document using a dedicated LLM backend.
+_TEXT_EXTENSIONS = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".rb", ".rs", ".go", ".php", ".sh", ".zsh", ".bash",
+    ".r", ".m", ".mm", ".sql", ".md", ".txt", ".json", ".yaml", ".yml", ".xml",
+    ".html", ".css", ".scss", ".toml", ".ini", ".cfg", ".conf", ".vue", ".svelte",
+}
 
-    Bypasses the RAG pipeline entirely — reads the file directly and sends
-    to Gemma 4 E4B (or EXAONE fallback) with a code-analysis prompt.
+_CODE_EXTENSIONS = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java",
+    ".c", ".cpp", ".h", ".cs", ".rb", ".rs", ".go", ".sh",
+}
 
-    Returns (response_payload, "") on success or (None, reason) on failure.
+
+def _resolve_file_path(document_path: str) -> Path | None:
+    """Resolve a document path (absolute or KB-relative) to an existing file."""
+    from pathlib import Path as P
+    path = P(document_path).expanduser()
+    if path.is_file():
+        return path
+    from jarvis.app.runtime_context import resolve_knowledge_base_path
+    resolved = (resolve_knowledge_base_path() / document_path).resolve()
+    return resolved if resolved.is_file() else None
+
+
+def _read_file_content(path: Path, max_chars: int = 20000) -> str:
+    """Read file content: text files directly, binary via indexed chunks."""
+    ext = path.suffix.lower()
+    if ext in _TEXT_EXTENSIONS:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+        except Exception:
+            pass
+    # Binary fallback: try indexed chunks
+    context_text = _inject_document_context("", str(path)).strip()
+    if context_text:
+        import re
+        m = re.search(r"\[문서 컨텍스트:.*?\]\n(.*?)\n\[/문서 컨텍스트\]", context_text, re.DOTALL)
+        return (m.group(1) if m else context_text)[:max_chars]
+    return ""
+
+
+def _ask_about_documents(query: str, document_paths: list[str]) -> tuple[dict[str, object] | None, str]:
+    """Answer questions using multiple document files as context.
+
+    Reads all provided files, combines into evidence context, and sends
+    to the LLM for analysis. Returns (response_payload, "") on success
+    or (None, reason) on failure.
     """
     import logging as _logging
-    from pathlib import Path
-
     _log = _logging.getLogger(__name__)
-
-    path = Path(document_path).expanduser()
-    if not path.is_absolute() or not path.is_file():
-        # Try resolving as KB-relative path
-        from jarvis.app.runtime_context import resolve_knowledge_base_path
-        kb_root = resolve_knowledge_base_path()
-        resolved = (kb_root / document_path).resolve()
-        if resolved.is_file():
-            path = resolved
-        elif not path.is_file():
-            return None, f"파일이 존재하지 않습니다: {document_path} (KB root: {kb_root})"
-
-    filename = path.name
-
-    # Read file content
-    TEXT_EXTENSIONS = {
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java", ".c", ".cpp",
-        ".h", ".hpp", ".cs", ".rb", ".rs", ".go", ".php", ".sh", ".zsh", ".bash",
-        ".r", ".m", ".mm", ".sql", ".md", ".txt", ".json", ".yaml", ".yml", ".xml",
-        ".html", ".css", ".scss", ".toml", ".ini", ".cfg", ".conf", ".vue", ".svelte",
-    }
-    ext = path.suffix.lower()
-    file_content = ""
-    if ext in TEXT_EXTENSIONS:
-        try:
-            file_content = path.read_text(encoding="utf-8", errors="replace")[:20000]
-        except Exception as exc:
-            return None, f"파일 읽기 실패: {exc}"
-    if not file_content:
-        context_text = _inject_document_context("", document_path).strip()
-        if context_text:
-            import re
-            m = re.search(r"\[문서 컨텍스트:.*?\]\n(.*?)\n\[/문서 컨텍스트\]", context_text, re.DOTALL)
-            file_content = m.group(1) if m else context_text
-    if not file_content:
-        return None, f"파일 내용을 읽을 수 없습니다 (ext={ext}, path={document_path})"
 
     backend = _get_doc_analysis_backend()
     if backend is None:
-        return None, "LLM 백엔드 로드 실패 (Gemma, EXAONE 모두 사용 불가)"
+        return None, "LLM 백엔드 로드 실패"
 
     backend_name = getattr(backend, '_model_id', 'unknown')
-
-    # Dynamically fit file content within context window.
-    # Code (ASCII) ≈ 3 chars/token, Korean response ≈ 1.5 chars/token.
-    # Allocate 1/3 of context window for file, 2/3 for response.
     ctx_window = getattr(backend, '_context_window', 8192)
-    prompt_overhead_tokens = 400  # system prompt + analysis prompt
+
+    # Budget: 1/3 for files, 2/3 for response
+    prompt_overhead_tokens = 400
     usable_tokens = ctx_window - prompt_overhead_tokens
     file_token_budget = usable_tokens // 3
-    file_char_budget = file_token_budget * 3  # code is ~3 chars/token
+    total_file_char_budget = file_token_budget * 3  # ~3 chars/token for code
+    per_file_budget = max(2000, total_file_char_budget // max(len(document_paths), 1))
 
-    if len(file_content) > file_char_budget:
-        file_content = file_content[:file_char_budget] + f"\n\n... (전체 파일 중 {file_char_budget}자만 포함)"
+    # Read all files
+    file_sections: list[str] = []
+    loaded_files: list[tuple[str, str]] = []  # (filename, path)
+    total_chars = 0
 
-    evidence_context = f"[현재 열린 파일: {filename}]\n{file_content}"
-    # Pass the user's query as-is — let the LLM naturally decide how to respond.
-    # If the query is about the code → LLM analyzes. If casual → LLM responds naturally.
-    analysis_prompt = query
+    for doc_path in document_paths:
+        resolved = _resolve_file_path(doc_path)
+        if resolved is None:
+            continue
+        remaining = total_file_char_budget - total_chars
+        if remaining < 500:
+            break
+        budget = min(per_file_budget, remaining)
+        content = _read_file_content(resolved, max_chars=budget)
+        if not content:
+            continue
+        filename = resolved.name
+        loaded_files.append((filename, doc_path))
+        file_sections.append(f"[파일: {filename}]\n{content}")
+        total_chars += len(content)
+
+    if not file_sections:
+        return None, f"읽을 수 있는 파일이 없습니다 ({len(document_paths)}개 경로 중 0개 성공)"
+
+    evidence_context = "\n\n".join(file_sections)
 
     try:
-        answer = _generate_full_response(backend, analysis_prompt, evidence_context)
+        answer = _generate_full_response(backend, query, evidence_context)
     except Exception as exc:
         _log.error("Document analysis failed: %s", exc)
         return None, f"LLM 생성 실패 (backend={backend_name}): {exc}"
@@ -4756,20 +4775,30 @@ def _ask_about_document(query: str, document_path: str) -> tuple[dict[str, objec
 
     from jarvis.service.builtin_capabilities import _response_payload, _presentation, _block, _artifact
 
-    doc_artifact = _artifact(
-        artifact_id="doc_context_0",
-        type_name="code" if Path(document_path).suffix.lower() in {
-            ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java",
-            ".c", ".cpp", ".h", ".cs", ".rb", ".rs", ".go", ".sh",
-        } else "document",
-        title=filename,
-        subtitle="문서 컨텍스트 질문",
-        path=document_path,
-        full_path=document_path,
-        preview=document_path,
-        source_type="document",
-    )
+    artifacts = []
+    citations = []
+    for i, (filename, doc_path) in enumerate(loaded_files):
+        aid = f"doc_context_{i}"
+        artifacts.append(_artifact(
+            artifact_id=aid,
+            type_name="code" if Path(doc_path).suffix.lower() in _CODE_EXTENSIONS else "document",
+            title=filename,
+            subtitle="참조 문서",
+            path=doc_path,
+            full_path=doc_path,
+            preview=doc_path,
+            source_type="document",
+        ))
+        citations.append({
+            "label": filename,
+            "source_path": filename,
+            "full_source_path": doc_path,
+            "source_type": "document",
+            "quote": "",
+            "relevance_score": 1.0,
+        })
 
+    subtitle = loaded_files[0][0] if len(loaded_files) == 1 else f"{loaded_files[0][0]} 외 {len(loaded_files) - 1}개"
     payload = _response_payload(
         query=query,
         response_text=answer.strip(),
@@ -4778,28 +4807,21 @@ def _ask_about_document(query: str, document_path: str) -> tuple[dict[str, objec
         skill="direct_document_qa",
         source_profile="knowledge_base",
         primary_source_type="document",
-        artifacts=[doc_artifact],
-        citations=[{
-            "label": filename,
-            "source_path": filename,
-            "full_source_path": document_path,
-            "source_type": "document",
-            "quote": "",
-            "relevance_score": 1.0,
-        }],
+        artifacts=artifacts,
+        citations=citations,
         presentation=_presentation(
             layout="stack",
             title="Document Analysis",
-            subtitle=filename,
+            subtitle=subtitle,
             selected_artifact_id="doc_context_0",
             blocks=[
-                _block(block_id="answer", kind="answer", title="분석 결과", subtitle="소스 코드 분석"),
+                _block(block_id="answer", kind="answer", title="분석 결과", subtitle=f"{len(loaded_files)}개 문서 참조"),
                 _block(
-                    block_id="detail",
-                    kind="detail",
-                    title="문서",
-                    subtitle="원본 소스",
-                    artifact_ids=["doc_context_0"],
+                    block_id="list",
+                    kind="list",
+                    title="참조 문서",
+                    subtitle="분석에 사용된 문서",
+                    artifact_ids=[f"doc_context_{i}" for i in range(len(artifacts))],
                 ),
             ],
         ),
@@ -4940,10 +4962,11 @@ class JarvisApplicationService:
                         code="INVALID_ARGUMENT",
                         message="text is required",
                     )
-                context_document_path = str(request.payload.get("context_document_path", "")).strip()
-                if context_document_path:
+                raw_paths = request.payload.get("context_document_paths") or []
+                context_document_paths = [str(p).strip() for p in raw_paths if str(p).strip()] if isinstance(raw_paths, list) else []
+                if context_document_paths:
                     # Direct LLM call — bypass RAG entirely
-                    doc_result, doc_fail_reason = _ask_about_document(text, context_document_path)
+                    doc_result, doc_fail_reason = _ask_about_documents(text, context_document_paths)
                     if doc_result is not None:
                         _prime_tts_cache_async(doc_result)
                         return ok_response(

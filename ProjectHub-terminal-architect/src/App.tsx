@@ -113,7 +113,7 @@ export default function App() {
   const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null>(null);
   const [indexingState, setIndexingState] = useState<IndexingState>({ status: 'idle', processed: 0, total: 0, last_completed: null, error: null });
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
-  const [lastDocumentContext, setLastDocumentContext] = useState<string | null>(null);
+  const [documentContextPaths, setDocumentContextPaths] = useState<string[]>([]);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
   const [skillCatalogError, setSkillCatalogError] = useState<string | null>(null);
@@ -220,6 +220,9 @@ export default function App() {
     if (preferredView === 'documents') {
       if (assets.length > 0) {
         setView('documents');
+        // Set all search result paths as document context for follow-up Q&A
+        const paths = assets.map((a) => a.full_path || a.path).filter(Boolean);
+        if (paths.length > 0) setDocumentContextPaths(paths);
       }
     }
   }, [assets.length, citations.length, guide?.ui_hints?.preferred_view]);
@@ -415,7 +418,7 @@ export default function App() {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
     }
-    await sendMessage(inputValue, lastDocumentContext ? { contextDocumentPath: lastDocumentContext } : undefined);
+    await sendMessage(inputValue, documentContextPaths.length > 0 ? { contextDocumentPaths: documentContextPaths } : undefined);
     setInputValue('');
   };
 
@@ -427,10 +430,10 @@ export default function App() {
       ? `${artifactLabel}에서 ${normalizedPrompt}`
       : normalizedPrompt;
     const docPath = artifact.full_path || artifact.path || '';
-    if (docPath) setLastDocumentContext(docPath);
+    if (docPath) setDocumentContextPaths([docPath]);
     setView('terminal');
     setTerminalFocusNonce((current) => current + 1);
-    await sendMessage(contextualQuery, docPath ? { contextDocumentPath: docPath } : undefined);
+    await sendMessage(contextualQuery, docPath ? { contextDocumentPaths: [docPath] } : undefined);
   }, [sendMessage]);
 
   const handleNavigate = (target: ViewState) => {
@@ -439,9 +442,9 @@ export default function App() {
       setTerminalFocusNonce((current) => current + 1);
       return;
     }
-    // Clear document context when navigating away from terminal
-    if (target !== 'documents') {
-      setLastDocumentContext(null);
+    // Clear document context when navigating away from terminal/documents
+    if (target !== 'documents' && target !== 'terminal') {
+      setDocumentContextPaths([]);
     }
     setView(target);
   };
@@ -614,8 +617,8 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
-                documentContext={lastDocumentContext}
-                onClearDocumentContext={() => setLastDocumentContext(null)}
+                documentContext={documentContextPaths}
+                onClearDocumentContext={() => setDocumentContextPaths([])}
               />
             </motion.div>
           ) : null}

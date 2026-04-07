@@ -227,7 +227,7 @@ def _auto_detect_new_files(health_data: dict) -> None:
 class AskRequest(BaseModel):
     text: str = Field(max_length=16000)
     session_id: str = Field(max_length=128)
-    context_document_path: str | None = None
+    context_document_paths: list[str] | None = None
 
 
 class AskResponse(BaseModel):
@@ -305,8 +305,8 @@ def ask(request: AskRequest) -> AskResponse:
     handler, making health-checks and other requests unresponsive.
     """
     payload: dict[str, object] = {"text": request.text}
-    if request.context_document_path:
-        payload["context_document_path"] = request.context_document_path
+    if request.context_document_paths:
+        payload["context_document_paths"] = request.context_document_paths
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
         session_id=request.session_id,

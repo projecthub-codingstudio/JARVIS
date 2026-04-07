@@ -42,7 +42,7 @@ interface TerminalWorkspaceProps {
   indexingState?: IndexingState;
   onReindex?: () => void;
   onRestart?: () => void;
-  documentContext?: string | null;
+  documentContext?: string[];
   onClearDocumentContext?: () => void;
 }
 
@@ -1426,11 +1426,16 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               }}
               className="flex flex-col gap-2 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
             >
-              {documentContext && onClearDocumentContext && (
+              {documentContext && documentContext.length > 0 && onClearDocumentContext && (
                 <div className="flex items-center gap-2 border-b border-white/10 pb-2">
                   <FileText size={12} className="shrink-0 text-secondary" />
                   <span className="truncate text-[11px] text-secondary">
-                    {documentContext.split('/').pop()}
+                    {documentContext.length === 1
+                      ? documentContext[0].split('/').pop()
+                      : `${documentContext[0].split('/').pop()} 외 ${documentContext.length - 1}개 문서`}
+                  </span>
+                  <span className="shrink-0 rounded-full bg-secondary/15 px-1.5 text-[9px] font-bold text-secondary">
+                    {documentContext.length}
                   </span>
                   <button
                     type="button"

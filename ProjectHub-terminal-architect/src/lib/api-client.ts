@@ -25,7 +25,7 @@ const API_BASE_URL = import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:80
 export interface AskRequest {
   text: string;
   session_id: string;
-  context_document_path?: string;
+  context_document_paths?: string[];
 }
 
 export interface Response {
