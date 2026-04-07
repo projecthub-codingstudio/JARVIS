@@ -166,15 +166,14 @@ function buildMessageBlocks(messages: Message[]) {
 }
 
 function buildSourceMapEntries(citations: Citation[], assets: Artifact[]) {
-  const entries: Array<{ id: string; label: string; kind: 'citation' | 'artifact' }> = [];
+  const entries: Array<{ id: string; label: string; kind: 'citation' | 'artifact'; score?: number }> = [];
   const seen = new Set<string>();
 
   for (const citation of citations) {
     const label = citation.source_path || citation.full_source_path;
     if (!label || seen.has(label)) continue;
     seen.add(label);
-    entries.push({ id: `citation-${label}`, label, kind: 'citation' });
-    if (entries.length >= 4) return entries;
+    entries.push({ id: `citation-${label}`, label, kind: 'citation', score: citation.relevance_score });
   }
 
   for (const artifact of assets) {
@@ -182,11 +181,12 @@ function buildSourceMapEntries(citations: Citation[], assets: Artifact[]) {
     if (!label || seen.has(label)) continue;
     seen.add(label);
     entries.push({ id: `artifact-${label}`, label, kind: 'artifact' });
-    if (entries.length >= 4) return entries;
   }
 
   return entries;
 }
+
+const GRAPH_MAX = 8;
 
 const markdownComponents: Components = {
   h1: ({ children }) => <h1 className="mb-3 text-[18px] font-semibold tracking-tight text-on-surface">{children}</h1>,
@@ -1521,40 +1521,70 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
           </div>
 
           <div>
-            <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
-              Source Map
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
+                Source Map
+              </span>
+              {sourceMapEntries.length > 0 && (
+                <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">
+                  {sourceMapEntries.length}
+                </span>
+              )}
             </div>
             <div className="relative aspect-square overflow-hidden rounded-xl border border-white/8 bg-surface-container-lowest">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(150,204,255,0.12),transparent_45%)]" />
               <div className="absolute inset-0 bg-[linear-gradient(transparent_24px,rgba(255,255,255,0.03)_25px),linear-gradient(90deg,transparent_24px,rgba(255,255,255,0.03)_25px)] bg-[length:25px_25px]" />
               {sourceMapEntries.length > 0 ? (
                 <>
+                  {/* Radial lines from center to each node */}
                   <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {[{ x: 20, y: 20 }, { x: 80, y: 24 }, { x: 24, y: 78 }, { x: 78, y: 80 }].slice(0, sourceMapEntries.length).map((point, index) => (
-                      <line
-                        key={`line-${sourceMapEntries[index].id}`}
-                        x1="50"
-                        y1="50"
-                        x2={point.x}
-                        y2={point.y}
-                        stroke="rgba(255,255,255,0.16)"
-                        strokeWidth="1"
-                      />
-                    ))}
+                    {sourceMapEntries.slice(0, GRAPH_MAX).map((entry, i) => {
+                      const count = Math.min(sourceMapEntries.length, GRAPH_MAX);
+                      const angle = (2 * Math.PI / count) * i - Math.PI / 2;
+                      const r = 34;
+                      const px = 50 + r * Math.cos(angle);
+                      const py = 50 + r * Math.sin(angle);
+                      return (
+                        <line
+                          key={`line-${entry.id}`}
+                          x1="50" y1="50" x2={px} y2={py}
+                          stroke={entry.kind === 'citation' ? 'rgba(150,204,255,0.25)' : 'rgba(200,170,255,0.20)'}
+                          strokeWidth="0.8"
+                        />
+                      );
+                    })}
                   </svg>
-                  <div className="absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-tertiary/20 text-[10px] font-semibold uppercase tracking-[0.12em] text-tertiary shadow-[0_0_16px_rgba(201,191,255,0.25)]">
+                  {/* Center node */}
+                  <div className="absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-tertiary/20 text-[9px] font-semibold uppercase tracking-[0.12em] text-tertiary shadow-[0_0_16px_rgba(201,191,255,0.25)]">
                     Answer
                   </div>
-                  {[{ x: 'left-4 top-4', tone: 'bg-secondary text-secondary' }, { x: 'right-4 top-4', tone: 'bg-primary text-primary' }, { x: 'left-4 bottom-4', tone: 'bg-primary text-primary' }, { x: 'right-4 bottom-4', tone: 'bg-secondary text-secondary' }].slice(0, sourceMapEntries.length).map((slot, index) => (
-                    <div key={sourceMapEntries[index].id} className={cn('absolute w-24', slot.x)}>
-                      <div className="flex items-center gap-2">
-                        <span className={cn('h-2.5 w-2.5 rounded-full shadow-[0_0_14px_rgba(150,204,255,0.35)]', sourceMapEntries[index].kind === 'citation' ? 'bg-secondary' : 'bg-primary')} />
-                        <span className="line-clamp-2 text-[10px] leading-relaxed text-on-surface-variant">
-                          {sourceMapEntries[index].label}
+                  {/* Radial source nodes */}
+                  {sourceMapEntries.slice(0, GRAPH_MAX).map((entry, i) => {
+                    const count = Math.min(sourceMapEntries.length, GRAPH_MAX);
+                    const angle = (2 * Math.PI / count) * i - Math.PI / 2;
+                    const r = 38;
+                    const left = 50 + r * Math.cos(angle);
+                    const top = 50 + r * Math.sin(angle);
+                    const dotColor = entry.kind === 'citation' ? 'bg-secondary' : 'bg-primary';
+                    return (
+                      <div
+                        key={entry.id}
+                        className="absolute flex items-center gap-1"
+                        style={{
+                          left: `${left}%`,
+                          top: `${top}%`,
+                          transform: 'translate(-50%, -50%)',
+                          maxWidth: '42%',
+                        }}
+                        title={entry.label}
+                      >
+                        <span className={cn('h-2 w-2 shrink-0 rounded-full shadow-[0_0_10px_rgba(150,204,255,0.3)]', dotColor)} />
+                        <span className="truncate text-[8px] leading-tight text-on-surface-variant">
+                          {entry.label.split('/').pop() || entry.label}
                         </span>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </>
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs leading-relaxed text-on-surface-variant">
@@ -1562,6 +1592,20 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 </div>
               )}
             </div>
+            {/* Overflow list for remaining sources */}
+            {sourceMapEntries.length > GRAPH_MAX && (
+              <div className="mt-2 space-y-1">
+                {sourceMapEntries.slice(GRAPH_MAX).map((entry) => (
+                  <div key={entry.id} className="flex items-center gap-1.5">
+                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', entry.kind === 'citation' ? 'bg-secondary/60' : 'bg-primary/60')} />
+                    <span className="truncate text-[10px] text-outline">{entry.label.split('/').pop() || entry.label}</span>
+                    {entry.score != null && (
+                      <span className="ml-auto shrink-0 text-[9px] font-mono text-outline">{(entry.score * 100).toFixed(0)}%</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="mt-2 text-[11px] leading-relaxed text-on-surface-variant">
               현재 응답과 연결된 근거 문서 및 결과 문서를 표시합니다.
             </div>
