@@ -614,6 +614,8 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
+                documentContext={lastDocumentContext}
+                onClearDocumentContext={() => setLastDocumentContext(null)}
               />
             </motion.div>
           ) : null}

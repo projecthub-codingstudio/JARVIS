@@ -42,6 +42,8 @@ interface TerminalWorkspaceProps {
   indexingState?: IndexingState;
   onReindex?: () => void;
   onRestart?: () => void;
+  documentContext?: string | null;
+  onClearDocumentContext?: () => void;
 }
 
 function RestartProgress() {
@@ -781,6 +783,8 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   indexingState,
   onReindex,
   onRestart,
+  documentContext,
+  onClearDocumentContext,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -1422,6 +1426,22 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               }}
               className="flex flex-col gap-2 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
             >
+              {documentContext && onClearDocumentContext && (
+                <div className="flex items-center gap-2 border-b border-white/10 pb-2">
+                  <FileText size={12} className="shrink-0 text-secondary" />
+                  <span className="truncate text-[11px] text-secondary">
+                    {documentContext.split('/').pop()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onClearDocumentContext}
+                    className="ml-auto shrink-0 rounded p-0.5 text-outline transition hover:bg-white/5 hover:text-on-surface"
+                    title="문서 컨텍스트 해제"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )}
               {imagePreviewUrl && (
                 <div className="flex items-center gap-3 border-b border-white/10 pb-2">
                   <img src={imagePreviewUrl} alt="첨부" className="h-12 w-12 rounded object-cover border border-white/10" />
