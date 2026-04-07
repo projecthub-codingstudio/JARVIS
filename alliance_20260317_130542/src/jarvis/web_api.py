@@ -579,6 +579,98 @@ def browse_directory(path: str = ""):
     return BrowseResponse(path=path, entries=entries)
 
 
+@app.get("/api/search-docs")
+def search_documents(q: str = Query(..., min_length=1, max_length=200)):
+    """Search indexed documents by filename, path, or content keywords."""
+    kb_root = _resolve_kb_root()
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    data_dir = resolve_menubar_data_dir()
+    db = init_database(JarvisConfig(data_dir=data_dir))
+
+    try:
+        terms = q.lower().split()
+
+        # 1) Path/filename match
+        all_docs = db.execute(
+            "SELECT document_id, path, size_bytes, indexing_status FROM documents "
+            "WHERE indexing_status IN ('INDEXED', 'FAILED') ORDER BY path"
+        ).fetchall()
+
+        path_matches = []
+        for doc_id, doc_path, size_bytes, status in all_docs:
+            path_lower = doc_path.lower()
+            if all(t in path_lower for t in terms):
+                rel = doc_path
+                if kb_root:
+                    try:
+                        rel = str(Path(doc_path).relative_to(kb_root.resolve()))
+                    except ValueError:
+                        pass
+                chunk_count = db.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
+                ).fetchone()[0]
+                path_matches.append({
+                    "document_id": doc_id,
+                    "path": rel,
+                    "full_path": doc_path,
+                    "name": Path(doc_path).name,
+                    "size_bytes": size_bytes,
+                    "chunk_count": chunk_count,
+                    "status": status,
+                    "match_type": "path",
+                })
+
+        # 2) FTS content match (top 10 documents by chunk hits)
+        fts_query = " AND ".join(f'"{t}"' for t in terms if len(t) >= 2)
+        content_matches = []
+        if fts_query:
+            try:
+                fts_rows = db.execute(
+                    "SELECT c.document_id, COUNT(*) as hits "
+                    "FROM chunks_fts fts "
+                    "JOIN chunks c ON c.rowid = fts.rowid "
+                    "WHERE chunks_fts MATCH ? "
+                    "GROUP BY c.document_id ORDER BY hits DESC LIMIT 10",
+                    (fts_query,),
+                ).fetchall()
+                matched_doc_ids = {m["document_id"] for m in path_matches}
+                for doc_id, hits in fts_rows:
+                    if doc_id in matched_doc_ids:
+                        continue
+                    doc_row = db.execute(
+                        "SELECT path, size_bytes, indexing_status FROM documents WHERE document_id = ?",
+                        (doc_id,),
+                    ).fetchone()
+                    if not doc_row:
+                        continue
+                    doc_path, size_bytes, status = doc_row
+                    rel = doc_path
+                    if kb_root:
+                        try:
+                            rel = str(Path(doc_path).relative_to(kb_root.resolve()))
+                        except ValueError:
+                            pass
+                    content_matches.append({
+                        "document_id": doc_id,
+                        "path": rel,
+                        "full_path": doc_path,
+                        "name": Path(doc_path).name,
+                        "size_bytes": size_bytes,
+                        "chunk_count": hits,
+                        "status": status,
+                        "match_type": "content",
+                    })
+            except Exception:
+                pass  # FTS match syntax error — skip
+
+        return {"query": q, "results": path_matches + content_matches}
+    finally:
+        db.close()
+
+
 # ---- Learned Patterns Management ----
 
 class LearnedPatternSummary(BaseModel):

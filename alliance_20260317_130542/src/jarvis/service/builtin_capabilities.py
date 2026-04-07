@@ -34,6 +34,10 @@ _WEB_QUERY_RE = re.compile(
     r"(웹사이트|홈페이지|사이트|웹에서|웹\s*검색|사이트\s*찾|검색해\s*줘|homepage|website|web\s+search|search\s+the\s+web)",
     re.IGNORECASE,
 )
+_DOC_FIND_RE = re.compile(
+    r"(문서.*찾|파일.*찾|문서.*검색|파일.*검색|관련\s*문서|문서.*목록|문서.*리스트|문서.*있|find\s+doc|list\s+doc|search\s+doc)",
+    re.IGNORECASE,
+)
 _CALC_HINT_RE = re.compile(
     r"(계산|더하기|빼기|곱하기|나누기|퍼센트|percent|calculate|what is|얼마)",
     re.IGNORECASE,
@@ -361,6 +365,7 @@ def resolve_builtin_capability(
         "capability_help": lambda: _build_help_response(normalized) if _HELP_QUERY_RE.search(normalized) else None,
         "runtime_status": _handle_runtime_status,
         "open_website": lambda: _build_direct_website_response(normalized, direct_url) if direct_url is not None else None,
+        "doc_find": lambda: _build_doc_find_response(normalized) if _DOC_FIND_RE.search(normalized) else None,
         "web_search": lambda: _build_web_search_response(normalized) if _WEB_QUERY_RE.search(normalized) else None,
         "open_document": _handle_open_document,
         "recent_context": _handle_recent_context,
@@ -790,6 +795,97 @@ def _build_weather_response(query: str) -> dict[str, object]:
                 detail_title="날씨 상세",
                 artifact_ids=[artifact["id"] for artifact in artifacts],
                 include_evidence=True,
+            ),
+        ),
+    )
+
+
+def _build_doc_find_response(query: str) -> dict[str, object] | None:
+    """Search local knowledge base documents by filename/path keywords."""
+    import json as _json
+
+    # Extract search terms — remove filler words
+    search_term = query
+    for filler in ("문서", "파일", "찾아", "줘", "줘.", "검색", "해줘", "모두", "모든",
+                   "관련", "을", "를", "를.", "의", "에", "한", "해", "전부", "있는",
+                   "보여", "알려", "목록", "리스트"):
+        search_term = search_term.replace(filler, " ")
+    search_term = " ".join(search_term.split()).strip()
+    if not search_term:
+        return None
+
+    try:
+        url = f"http://127.0.0.1:8000/api/search-docs?q={urllib.parse.quote(search_term)}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return None
+
+    results = data.get("results", [])
+    if not results:
+        return None
+
+    artifacts = []
+    for i, doc in enumerate(results[:10]):
+        name = doc.get("name", "")
+        ext = Path(name).suffix.lower() if name else ""
+        viewer = "code"
+        if ext in (".pdf",):
+            viewer = "document"
+        elif ext in (".xlsx", ".xls", ".csv"):
+            viewer = "document"
+        elif ext in (".pptx",):
+            viewer = "document"
+        elif ext in (".docx", ".hwp", ".hwpx"):
+            viewer = "document"
+        elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".xml", ".html"):
+            viewer = "text"
+        elif ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"):
+            viewer = "image"
+
+        status_label = "" if doc.get("status") == "INDEXED" else " [인덱싱 실패]"
+        match_label = "경로 일치" if doc.get("match_type") == "path" else "내용 일치"
+
+        artifacts.append(_artifact(
+            artifact_id=f"doc_find_{i}",
+            type_name="document",
+            title=name,
+            subtitle=f"{match_label} · {doc.get('chunk_count', 0)} chunks{status_label}",
+            path=doc.get("path", ""),
+            full_path=doc.get("full_path", ""),
+            preview=doc.get("path", ""),
+            source_type="document",
+            viewer_kind=viewer,
+        ))
+
+    path_count = sum(1 for r in results[:10] if r.get("match_type") == "path")
+    content_count = len(artifacts) - path_count
+    parts = []
+    if path_count:
+        parts.append(f"파일명/경로 일치 {path_count}개")
+    if content_count:
+        parts.append(f"내용 일치 {content_count}개")
+    response_text = f"\"{search_term}\" 관련 문서 {len(artifacts)}개를 찾았습니다 ({', '.join(parts)})."
+
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="doc_find",
+        skill="builtin_doc_find",
+        source_profile="knowledge_base",
+        primary_source_type="document",
+        artifacts=artifacts,
+        presentation=_presentation(
+            layout="master_detail",
+            title="Document Search",
+            subtitle=f"{len(artifacts)}개 결과",
+            selected_artifact_id=artifacts[0]["id"] if artifacts else "",
+            blocks=_blocks_for_answer_list_detail(
+                answer_title="검색 결과",
+                list_title="문서 목록",
+                detail_title="문서 미리보기",
+                artifact_ids=[a["id"] for a in artifacts],
             ),
         ),
     )
