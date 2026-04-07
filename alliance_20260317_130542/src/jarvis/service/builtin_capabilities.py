@@ -35,7 +35,9 @@ _WEB_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _DOC_FIND_RE = re.compile(
-    r"(문서.*찾|파일.*찾|문서.*검색|파일.*검색|관련\s*문서|문서.*목록|문서.*리스트|문서.*있|find\s+doc|list\s+doc|search\s+doc)",
+    r"(문서.*찾|파일.*찾|책.*찾|자료.*찾|문서.*검색|파일.*검색|책.*검색|자료.*검색"
+    r"|관련\s*문서|관련\s*책|관련\s*자료|문서.*목록|문서.*리스트|문서.*있"
+    r"|찾아\s*줘|find\s+doc|list\s+doc|search\s+doc|find\s+file|find\s+book)",
     re.IGNORECASE,
 )
 _CALC_HINT_RE = re.compile(
@@ -801,73 +803,144 @@ def _build_weather_response(query: str) -> dict[str, object]:
 
 
 def _build_doc_find_response(query: str) -> dict[str, object] | None:
-    """Search local knowledge base documents by filename/path keywords."""
-    import json as _json
-
-    # Extract search terms — remove filler words and Korean particles
+    """Search local knowledge base documents by filename/path keywords (direct DB query)."""
+    # Extract search terms
     search_term = query
-    for filler in ("문서", "파일", "찾아", "줘", "검색", "해줘", "해주", "주세요",
+    for filler in ("문서", "파일", "책", "자료", "찾아", "줘", "검색", "해줘", "해주", "주세요",
                    "모두", "모든", "관련", "전부", "있는", "보여", "알려", "목록", "리스트",
                    "들을", "들이", "들의", "들은", "들도", "들",
                    "을", "를", "의", "에", "은", "는", "이", "가", "로", "으로", "에서",
-                   "언어", "프로그래밍", "관한", "대한", "해서", "하는"):
+                   "언어", "프로그래밍", "관한", "대한", "해서", "하는", "된", "있나", "있어"):
         search_term = search_term.replace(filler, " ")
     search_term = " ".join(search_term.split()).strip()
     if not search_term:
         return None
 
     try:
-        url = f"http://127.0.0.1:8000/api/search-docs?q={urllib.parse.quote(search_term)}"
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = _json.loads(resp.read())
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.app.runtime_context import resolve_knowledge_base_path
+        from jarvis.runtime_paths import resolve_menubar_data_dir
+
+        data_dir = resolve_menubar_data_dir()
+        kb_path = resolve_knowledge_base_path()
+        db = init_database(JarvisConfig(data_dir=data_dir))
     except Exception:
         return None
 
-    results = data.get("results", [])
-    if not results:
-        return None
+    try:
+        terms = search_term.lower().split()
 
+        # 1) Path/filename match (ANY term)
+        all_docs = db.execute(
+            "SELECT document_id, path, size_bytes, indexing_status FROM documents "
+            "WHERE indexing_status IN ('INDEXED', 'FAILED') ORDER BY path"
+        ).fetchall()
+
+        results: list[dict] = []
+        for doc_id, doc_path, size_bytes, status in all_docs:
+            path_lower = doc_path.lower()
+            hits = sum(1 for t in terms if t in path_lower)
+            if hits == 0:
+                continue
+            rel = doc_path
+            try:
+                rel = str(Path(doc_path).relative_to(kb_path.resolve()))
+            except (ValueError, Exception):
+                pass
+            chunk_count = db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchone()[0]
+            results.append({
+                "name": Path(doc_path).name,
+                "path": rel,
+                "full_path": doc_path,
+                "chunk_count": chunk_count,
+                "status": status,
+                "match_type": "path",
+                "score": hits,
+            })
+
+        # 2) FTS content match
+        fts_query = " AND ".join(f'"{t}"' for t in terms if len(t) >= 2)
+        if fts_query:
+            try:
+                matched_ids = {r["full_path"] for r in results}
+                fts_rows = db.execute(
+                    "SELECT c.document_id, COUNT(*) as hits "
+                    "FROM chunks_fts fts JOIN chunks c ON c.rowid = fts.rowid "
+                    "WHERE chunks_fts MATCH ? GROUP BY c.document_id ORDER BY hits DESC LIMIT 10",
+                    (fts_query,),
+                ).fetchall()
+                for doc_id, hits in fts_rows:
+                    doc_row = db.execute(
+                        "SELECT path, size_bytes, indexing_status FROM documents WHERE document_id = ?",
+                        (doc_id,),
+                    ).fetchone()
+                    if not doc_row or doc_row[0] in matched_ids:
+                        continue
+                    rel = doc_row[0]
+                    try:
+                        rel = str(Path(doc_row[0]).relative_to(kb_path.resolve()))
+                    except (ValueError, Exception):
+                        pass
+                    results.append({
+                        "name": Path(doc_row[0]).name,
+                        "path": rel,
+                        "full_path": doc_row[0],
+                        "chunk_count": hits,
+                        "status": doc_row[2],
+                        "match_type": "content",
+                        "score": 0,
+                    })
+            except Exception:
+                pass
+
+        results.sort(key=lambda m: (-m["score"], m["path"]))
+
+        if not results:
+            return None
+    finally:
+        db.close()
+
+    # Build artifacts
     artifacts = []
-    for i, doc in enumerate(results[:10]):
-        name = doc.get("name", "")
+    for i, doc in enumerate(results[:15]):
+        name = doc["name"]
         ext = Path(name).suffix.lower() if name else ""
-        viewer = "code"
-        if ext in (".pdf",):
-            viewer = "document"
-        elif ext in (".xlsx", ".xls", ".csv"):
-            viewer = "document"
-        elif ext in (".pptx",):
-            viewer = "document"
-        elif ext in (".docx", ".hwp", ".hwpx"):
+        if ext in (".pdf", ".xlsx", ".xls", ".csv", ".pptx", ".docx", ".hwp", ".hwpx"):
             viewer = "document"
         elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".xml", ".html"):
             viewer = "text"
         elif ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"):
             viewer = "image"
+        else:
+            viewer = "code"
 
-        status_label = "" if doc.get("status") == "INDEXED" else " [인덱싱 실패]"
-        match_label = "경로 일치" if doc.get("match_type") == "path" else "내용 일치"
+        status_label = "" if doc["status"] == "INDEXED" else " [인덱싱 실패]"
+        match_label = "경로 일치" if doc["match_type"] == "path" else "내용 일치"
 
         artifacts.append(_artifact(
             artifact_id=f"doc_find_{i}",
             type_name="document",
             title=name,
-            subtitle=f"{match_label} · {doc.get('chunk_count', 0)} chunks{status_label}",
-            path=doc.get("path", ""),
-            full_path=doc.get("full_path", ""),
-            preview=doc.get("path", ""),
+            subtitle=f"{match_label} · {doc['chunk_count']} chunks{status_label}",
+            path=doc["path"],
+            full_path=doc["full_path"],
+            preview=doc["path"],
             source_type="document",
             viewer_kind=viewer,
         ))
 
-    path_count = sum(1 for r in results[:10] if r.get("match_type") == "path")
+    path_count = sum(1 for r in results[:15] if r["match_type"] == "path")
     content_count = len(artifacts) - path_count
     parts = []
     if path_count:
         parts.append(f"파일명/경로 일치 {path_count}개")
     if content_count:
         parts.append(f"내용 일치 {content_count}개")
-    response_text = f"\"{search_term}\" 관련 문서 {len(artifacts)}개를 찾았습니다 ({', '.join(parts)})."
+
+    response_text = f"\"{search_term}\" 관련 문서 {len(artifacts)}개를 지식베이스에서 찾았습니다 ({', '.join(parts)})."
 
     return _response_payload(
         query=query,
