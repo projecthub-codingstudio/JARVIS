@@ -4542,34 +4542,59 @@ def _inject_document_context(query: str, document_path: str) -> str:
     return f"[문서 컨텍스트: {path.name}]\n{content}\n[/문서 컨텍스트]\n\n{query}"
 
 
-def _get_doc_analysis_backend():
-    """Get the LLM backend from the already-loaded runtime context.
+_doc_backend_instance: object | None = None
+_doc_backend_lock = threading.Lock()
 
-    Reuses the same model that _run_menu_bridge_ask_with_fallback uses,
-    avoiding duplicate model loading.
+
+def _get_doc_analysis_backend():
+    """Get or create a Gemma 4 E4B backend for document analysis (128K context).
+
+    Falls back to the runtime context's existing backend if Gemma is unavailable.
+    The backend is cached as a singleton to avoid reloading on every request.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    model_chain = _menu_bar_model_chain()
-    for model_id in model_chain:
-        if model_id.strip().lower() == "stub":
-            continue
-        try:
-            context = _get_runtime_context(model_id=model_id)
-            # Access the backend through orchestrator → llm_generator → _backend
-            generator = getattr(context.orchestrator, '_llm_generator', None)
-            if generator is None:
-                continue
-            backend = getattr(generator, '_backend', None)
-            if backend is not None and getattr(backend, 'is_loaded', False):
-                _log.info("Document analysis: reusing backend %s", getattr(backend, 'model_id', model_id))
-                return backend
-        except Exception as exc:
-            _log.warning("Failed to get runtime context for %s: %s", model_id, exc)
-            continue
+    global _doc_backend_instance
+    with _doc_backend_lock:
+        if _doc_backend_instance is not None and getattr(_doc_backend_instance, 'is_loaded', False):
+            return _doc_backend_instance
 
-    _log.error("No loaded LLM backend found in runtime contexts")
+        # Try Gemma 4 E4B (128K context, best for document analysis)
+        try:
+            from jarvis.runtime.gemma_vlm_backend import GemmaVlmBackend
+            from jarvis.contracts import RuntimeDecision
+            backend = GemmaVlmBackend()
+            backend.load(RuntimeDecision(
+                model_id="gemma4:e4b",
+                context_window=131072,
+            ))
+            _doc_backend_instance = backend
+            _log.info("Document analysis: Gemma 4 E4B loaded (128K context)")
+            return backend
+        except Exception as exc:
+            _log.warning("Gemma 4 E4B unavailable: %s — falling back to runtime context backend", exc)
+
+        # Fallback: reuse already-loaded backend from runtime context
+        model_chain = _menu_bar_model_chain()
+        for model_id in model_chain:
+            if model_id.strip().lower() == "stub":
+                continue
+            try:
+                context = _get_runtime_context(model_id=model_id)
+                generator = getattr(context.orchestrator, '_llm_generator', None)
+                if generator is None:
+                    continue
+                backend = getattr(generator, '_backend', None)
+                if backend is not None and getattr(backend, 'is_loaded', False):
+                    _doc_backend_instance = backend
+                    _log.info("Document analysis: reusing runtime backend %s", getattr(backend, 'model_id', model_id))
+                    return backend
+            except Exception as exc2:
+                _log.warning("Runtime context fallback failed for %s: %s", model_id, exc2)
+                continue
+
+    _log.error("No LLM backend available for document analysis")
     return None
 
 
@@ -4632,78 +4657,20 @@ _DOCUMENT_ANALYSIS_SYSTEM_PROMPT = (
 def _generate_single_chunk(backend: object, prompt: str, context: str) -> tuple[str, bool]:
     """Generate one chunk via the backend. Returns (text, hit_max_tokens).
 
-    hit_max_tokens=True means the response was truncated (no EOS), needs continuation.
+    Prepends the document analysis system prompt to the context so that
+    backend.generate() (which calls build_system_message) includes our
+    analysis instructions in the evidence section, overriding the default
+    brevity constraint.
     """
-    # Use document analysis system prompt (NOT the default RAG prompt
-    # which instructs "1-3문장으로 간결하게" and causes early EOS)
-    system_message = _DOCUMENT_ANALYSIS_SYSTEM_PROMPT
-    if context.strip():
-        system_message += f"\n\n===== 참고 자료 =====\n{context}\n===== 참고 자료 끝 ====="
+    augmented_context = _DOCUMENT_ANALYSIS_SYSTEM_PROMPT + "\n\n" + context
+    response = backend.generate(prompt, augmented_context, "document_explanation")
 
-    tokenizer = getattr(backend, '_tokenizer', None)
-    model = getattr(backend, '_model', None)
+    # Rough truncation detection: if response chars > 40% of context window
+    # (in chars), the model may have hit the token limit
+    ctx_window = getattr(backend, '_context_window', 8192)
+    hit_limit = len(response) > ctx_window * 0.8 if response else False
 
-    # MLXBackend path
-    if tokenizer is not None and model is not None:
-        from mlx_lm import generate as mlx_generate
-        from mlx_lm.sample_utils import make_sampler
-
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": prompt},
-        ]
-        template_kwargs: dict = {}
-        try:
-            tokenizer.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False)
-            template_kwargs["enable_thinking"] = False
-        except (TypeError, Exception):
-            pass
-        formatted = tokenizer.apply_chat_template(messages, add_generation_prompt=True, **template_kwargs)
-        prompt_tokens = len(formatted) if isinstance(formatted, list) else len(tokenizer.encode(formatted))
-        context_window = getattr(backend, '_context_window', 32768)
-        max_tokens = context_window - prompt_tokens
-        if max_tokens < 256:
-            return "", False
-
-        sampler = make_sampler(0.7, 0.9, 0.0, 1)
-        response = mlx_generate(model, tokenizer, prompt=formatted, max_tokens=max_tokens, sampler=sampler)
-
-        # Detect truncation: count response tokens vs max_tokens
-        response_tokens = len(tokenizer.encode(response)) if response else 0
-        hit_limit = response_tokens >= max_tokens - 10  # within 10 tokens of limit
-
-        return response, hit_limit
-
-    # GemmaVlmBackend path
-    processor = getattr(backend, '_processor', None)
-    config = getattr(backend, '_config', None)
-    if processor is not None and model is not None:
-        from mlx_vlm import generate as vlm_generate
-        from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template
-        full_prompt = f"{system_message}\n\n{prompt}"
-        formatted = vlm_apply_chat_template(processor, config, full_prompt, num_images=0)
-        context_window = getattr(backend, '_context_window', 131072)
-        try:
-            prompt_tokens = len(processor.tokenizer.encode(formatted))
-        except Exception:
-            prompt_tokens = len(formatted) // 4
-        max_tokens = context_window - prompt_tokens
-        if max_tokens < 256:
-            return "", False
-
-        output = vlm_generate(model, processor, formatted, config=config, max_tokens=max_tokens, temperature=0.7, verbose=False)
-        response = output.text if hasattr(output, "text") else str(output)
-
-        try:
-            response_tokens = len(processor.tokenizer.encode(response))
-        except Exception:
-            response_tokens = len(response) // 4
-        hit_limit = response_tokens >= max_tokens - 10
-        return response, hit_limit
-
-    # Fallback
-    response = backend.generate(prompt, context, "document_explanation")
-    return response, False
+    return response, hit_limit
 
 
 def _ask_about_document(query: str, document_path: str) -> tuple[dict[str, object] | None, str]:
