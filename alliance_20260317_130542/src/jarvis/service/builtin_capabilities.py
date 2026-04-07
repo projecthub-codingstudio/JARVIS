@@ -804,11 +804,13 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
     """Search local knowledge base documents by filename/path keywords."""
     import json as _json
 
-    # Extract search terms — remove filler words
+    # Extract search terms — remove filler words and Korean particles
     search_term = query
-    for filler in ("문서", "파일", "찾아", "줘", "줘.", "검색", "해줘", "모두", "모든",
-                   "관련", "을", "를", "를.", "의", "에", "한", "해", "전부", "있는",
-                   "보여", "알려", "목록", "리스트"):
+    for filler in ("문서", "파일", "찾아", "줘", "검색", "해줘", "해주", "주세요",
+                   "모두", "모든", "관련", "전부", "있는", "보여", "알려", "목록", "리스트",
+                   "들을", "들이", "들의", "들은", "들도", "들",
+                   "을", "를", "의", "에", "은", "는", "이", "가", "로", "으로", "에서",
+                   "언어", "프로그래밍", "관한", "대한", "해서", "하는"):
         search_term = search_term.replace(filler, " ")
     search_term = " ".join(search_term.split()).strip()
     if not search_term:

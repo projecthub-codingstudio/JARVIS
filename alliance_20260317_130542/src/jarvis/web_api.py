@@ -602,26 +602,32 @@ def search_documents(q: str = Query(..., min_length=1, max_length=200)):
         path_matches = []
         for doc_id, doc_path, size_bytes, status in all_docs:
             path_lower = doc_path.lower()
-            if all(t in path_lower for t in terms):
-                rel = doc_path
-                if kb_root:
-                    try:
-                        rel = str(Path(doc_path).relative_to(kb_root.resolve()))
-                    except ValueError:
-                        pass
-                chunk_count = db.execute(
-                    "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
-                ).fetchone()[0]
-                path_matches.append({
-                    "document_id": doc_id,
-                    "path": rel,
-                    "full_path": doc_path,
-                    "name": Path(doc_path).name,
-                    "size_bytes": size_bytes,
-                    "chunk_count": chunk_count,
-                    "status": status,
-                    "match_type": "path",
-                })
+            hits = sum(1 for t in terms if t in path_lower)
+            if hits == 0:
+                continue
+            rel = doc_path
+            if kb_root:
+                try:
+                    rel = str(Path(doc_path).relative_to(kb_root.resolve()))
+                except ValueError:
+                    pass
+            chunk_count = db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchone()[0]
+            path_matches.append({
+                "document_id": doc_id,
+                "path": rel,
+                "full_path": doc_path,
+                "name": Path(doc_path).name,
+                "size_bytes": size_bytes,
+                "chunk_count": chunk_count,
+                "status": status,
+                "match_type": "path",
+                "_score": hits,
+            })
+        path_matches.sort(key=lambda m: (-m["_score"], m["path"]))
+        for m in path_matches:
+            del m["_score"]
 
         # 2) FTS content match (top 10 documents by chunk hits)
         fts_query = " AND ".join(f'"{t}"' for t in terms if len(t) >= 2)
