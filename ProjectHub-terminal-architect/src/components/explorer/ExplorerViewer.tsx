@@ -11,11 +11,23 @@ export function getDefaultWindowSize(artifact: Artifact): { width: number; heigh
   const ext = (artifact.path || artifact.full_path || '').split('.').pop()?.toLowerCase() || '';
   const kind = artifact.viewer_kind?.toLowerCase() || '';
 
-  if (ext === 'pptx' || ext === 'ppt') return { width: 800, height: 500 };
-  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return { width: 850, height: 550 };
-  if (kind === 'image') return { width: 700, height: 600 };
-  if (kind === 'code' || kind === 'text') return { width: 650, height: 750 };
-  return { width: 600, height: 850 };
+  // Available viewport (minus sidebar ~140px, some padding)
+  const maxH = typeof window !== 'undefined' ? window.innerHeight - 80 : 900;
+  const maxW = typeof window !== 'undefined' ? window.innerWidth - 200 : 1000;
+
+  if (ext === 'pptx' || ext === 'ppt') return { width: Math.min(800, maxW), height: Math.min(500, maxH) };
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return { width: Math.min(850, maxW), height: Math.min(550, maxH) };
+  if (kind === 'image') return { width: Math.min(700, maxW), height: Math.min(600, maxH) };
+  if (kind === 'code' || kind === 'text') return { width: Math.min(650, maxW), height: Math.min(750, maxH) };
+
+  // PDF / documents: A4 ratio (1:1.414), fit one full page in viewport
+  if (ext === 'pdf' || ext === 'docx' || ext === 'doc' || ext === 'hwp' || ext === 'hwpx') {
+    const h = Math.min(maxH, 960);
+    const w = Math.min(Math.round(h / 1.414) + 40, maxW); // +40 for scrollbar/padding
+    return { width: w, height: h };
+  }
+
+  return { width: Math.min(650, maxW), height: Math.min(850, maxH) };
 }
 
 export interface WindowLayout {
