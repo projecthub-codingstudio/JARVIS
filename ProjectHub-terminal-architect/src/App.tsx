@@ -214,9 +214,10 @@ export default function App() {
         }
         const elapsed = Math.round(performance.now() - start);
         const data = await response.json().catch(() => null);
-        setBackendStatus('online');
+        const isStarting = data?.health?.status_level === 'starting';
+        setBackendStatus(isStarting ? 'checking' : 'online');
         setLastHealthLatency(elapsed);
-        setLastHealthError(null);
+        setLastHealthError(isStarting ? 'Backend is loading models...' : null);
         if (data?.health?.chunk_count != null) {
           setKbStats({
             chunks: data.health.chunk_count ?? 0,

@@ -22,15 +22,6 @@ import logging
 import threading
 import time as _time
 
-from jarvis.service.application import JarvisApplicationService
-from jarvis.service.intent_skill_store import (
-    build_skill_catalog,
-    create_action_map,
-    create_skill_profile,
-    list_action_maps,
-    upsert_action_map,
-    upsert_skill_profile,
-)
 from jarvis.service.protocol import RpcRequest, RpcResponse
 
 logger = logging.getLogger(__name__)
@@ -79,7 +70,32 @@ def _check_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Cross-origin request denied")
 
 
-service = JarvisApplicationService()
+# Lazy-loaded service — heavy imports (MLX, Whisper, TTS) happen in background
+_service_instance = None
+_service_lock = threading.Lock()
+_service_ready = threading.Event()
+
+
+def _init_service_background() -> None:
+    """Load JarvisApplicationService in a background thread."""
+    global _service_instance
+    try:
+        from jarvis.service.application import JarvisApplicationService
+        _service_instance = JarvisApplicationService()
+        _service_ready.set()
+        logger.info("JarvisApplicationService initialized")
+    except Exception as exc:
+        logger.error("Failed to initialize service: %s", exc)
+        _service_ready.set()  # unblock waiters even on failure
+
+
+def _get_service():
+    """Get the service instance, returning None if not yet ready."""
+    return _service_instance
+
+
+# Start background init on module load — server starts immediately
+threading.Thread(target=_init_service_background, daemon=True, name="service-init").start()
 
 
 # ── Indexing state tracker ──────────────────────────────────
@@ -167,26 +183,43 @@ def _trigger_reindex(*, auto: bool = False) -> bool:
     return True
 
 
+_auto_detect_last_check = 0.0  # throttle to once per 60s
+
+
 def _auto_detect_new_files(health_data: dict) -> None:
-    """Compare KB file count vs indexed doc count; auto-trigger reindex if mismatch."""
+    """Compare KB file count vs indexed doc count; auto-trigger reindex if mismatch.
+    Runs file scan in a background thread to avoid blocking health endpoint."""
+    global _auto_detect_last_check
+
     if _index_state["status"] in ("scanning", "indexing"):
-        return  # already running
+        return
 
-    try:
-        from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
+    now = _time.time()
+    if now - _auto_detect_last_check < 60:
+        return
+    _auto_detect_last_check = now
 
-        kb_path = resolve_knowledge_base_path()
-        if not kb_path.exists():
-            return
+    doc_count = health_data.get("doc_count", 0)
+    failed_count = health_data.get("failed_doc_count", 0)
+    indexed_count = doc_count + failed_count
 
-        file_count = sum(1 for f in kb_path.rglob("*") if f.is_file() and is_indexable(f))
-        indexed_count = health_data.get("doc_count", 0) + health_data.get("failed_doc_count", 0)
+    def _check_and_trigger() -> None:
+        try:
+            from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
 
-        if file_count > indexed_count:
-            logger.info("Auto-reindex: %d files on disk vs %d indexed, triggering reindex", file_count, indexed_count)
-            _trigger_reindex(auto=True)
-    except Exception:
-        pass  # don't break health check
+            kb_path = resolve_knowledge_base_path()
+            if not kb_path.exists():
+                return
+
+            file_count = sum(1 for f in kb_path.rglob("*") if f.is_file() and is_indexable(f))
+
+            if file_count > indexed_count:
+                logger.info("Auto-reindex: %d files on disk vs %d indexed", file_count, indexed_count)
+                _trigger_reindex(auto=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=_check_and_trigger, daemon=True, name="auto-detect").start()
 
 
 # Request/Response models
@@ -250,6 +283,14 @@ class ActionMapCreateRequest(ActionMapPayload):
     map_id: str
 
 
+def _require_service():
+    """Get service or raise 503 if not yet initialized."""
+    svc = _get_service()
+    if svc is None:
+        raise HTTPException(status_code=503, detail="Backend is starting up, please wait...")
+    return svc
+
+
 # HTTP Endpoints
 @app.post("/api/ask", response_model=AskResponse)
 def ask(request: AskRequest) -> AskResponse:
@@ -267,7 +308,7 @@ def ask(request: AskRequest) -> AskResponse:
         request_type="ask_text",
         payload={"text": request.text},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
 
     if not rpc_response.ok:
         raise HTTPException(
@@ -280,14 +321,32 @@ def ask(request: AskRequest) -> AskResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    """Check JARVIS backend health status."""
+    """Check JARVIS backend health status. Responds even during service initialization."""
+    svc = _get_service()
+    if svc is None:
+        # Service still loading — return minimal health with startup status
+        health_data: dict[str, object] = {
+            "healthy": False,
+            "message": "Backend is starting up...",
+            "checks": {},
+            "details": {},
+            "status_level": "starting",
+            "chunk_count": 0,
+            "doc_count": 0,
+            "failed_doc_count": 0,
+            "total_size_bytes": 0,
+            "embedding_count": 0,
+            "indexing": _get_index_state(),
+        }
+        return HealthResponse(health=health_data)
+
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
         session_id="health-check",
         request_type="health",
         payload={},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
+    rpc_response: RpcResponse = svc.handle(rpc_request)
     health_data = rpc_response.payload.get("health", {})
 
     # Auto-detect new files and trigger reindex if needed
@@ -319,7 +378,7 @@ def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
         request_type="normalize_query",
         payload={"text": request.text},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
 
     if not rpc_response.ok:
         raise HTTPException(
@@ -339,7 +398,7 @@ def runtime_state():
         request_type="runtime_state",
         payload={},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
 
     if not rpc_response.ok:
         raise HTTPException(
@@ -350,15 +409,29 @@ def runtime_state():
     return rpc_response.payload
 
 
+def _skill_store():
+    from jarvis.service.intent_skill_store import (
+        build_skill_catalog,
+        create_action_map,
+        create_skill_profile,
+        list_action_maps,
+        upsert_action_map,
+        upsert_skill_profile,
+    )
+    return build_skill_catalog, create_skill_profile, upsert_skill_profile, list_action_maps, create_action_map, upsert_action_map
+
+
 @app.get("/api/skills")
 def skills_catalog() -> dict[str, Any]:
+    build_skill_catalog, *_ = _skill_store()
     return {"catalog": build_skill_catalog()}
 
 
 @app.post("/api/skills")
 def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
+    build_skill_catalog, create_skill_profile_fn, *_ = _skill_store()
     try:
-        profile = create_skill_profile(request.model_dump())
+        profile = create_skill_profile_fn(request.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile, "catalog": build_skill_catalog()}
@@ -366,8 +439,9 @@ def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
 
 @app.put("/api/skills/{skill_id}")
 def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
+    build_skill_catalog, _, upsert_skill_profile_fn, *_ = _skill_store()
     try:
-        profile = upsert_skill_profile(skill_id, request.model_dump(exclude_none=False))
+        profile = upsert_skill_profile_fn(skill_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile, "catalog": build_skill_catalog()}
@@ -375,25 +449,28 @@ def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
 
 @app.get("/api/action-maps")
 def action_maps() -> dict[str, Any]:
-    return {"maps": list_action_maps()}
+    *_, list_action_maps_fn, _, _ = _skill_store()
+    return {"maps": list_action_maps_fn()}
 
 
 @app.post("/api/action-maps")
 def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
+    *_, list_action_maps_fn, create_action_map_fn, _ = _skill_store()
     try:
-        action_map = create_action_map(request.model_dump())
+        action_map = create_action_map_fn(request.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"action_map": action_map, "maps": list_action_maps()}
+    return {"action_map": action_map, "maps": list_action_maps_fn()}
 
 
 @app.put("/api/action-maps/{map_id}")
 def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
+    *_, list_action_maps_fn, _, upsert_action_map_fn = _skill_store()
     try:
-        action_map = upsert_action_map(map_id, request.model_dump(exclude_none=False))
+        action_map = upsert_action_map_fn(map_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"action_map": action_map, "maps": list_action_maps()}
+    return {"action_map": action_map, "maps": list_action_maps_fn()}
 
 
 def _resolve_kb_root() -> Path | None:
@@ -878,7 +955,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                 )
                 
                 # Handle request
-                rpc_response: RpcResponse = service.handle(rpc_request)
+                rpc_response: RpcResponse = _require_service().handle(rpc_request)
                 
                 # Send response
                 if rpc_response.ok:
