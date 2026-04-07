@@ -41,6 +41,7 @@ interface TerminalWorkspaceProps {
   kbStats?: { chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null;
   indexingState?: IndexingState;
   onReindex?: () => void;
+  onRestart?: () => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -762,6 +763,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   kbStats,
   indexingState,
   onReindex,
+  onRestart,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -910,6 +912,16 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {onRestart && (
+                  <button
+                    onClick={onRestart}
+                    disabled={backendStatus === 'checking'}
+                    className="rounded bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-outline transition hover:text-primary hover:bg-surface-container-highest disabled:opacity-30"
+                    title="백엔드 재시작"
+                  >
+                  Restart
+                  </button>
+                )}
                 <div className={cn('bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]', statusTone)}>
                   {backendStatus}
                 </div>

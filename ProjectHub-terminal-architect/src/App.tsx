@@ -265,6 +265,14 @@ export default function App() {
     }
   }, [addLog]);
 
+  const handleRestart = useCallback(async () => {
+    addLog({ id: `${Date.now()}-restart`, timestamp: new Date().toISOString(), type: 'info', message: 'Backend restart requested...' });
+    setBackendStatus('checking');
+    setLastHealthError('Backend is restarting...');
+    setKbStats(null);
+    await apiClient.restart();
+  }, [addLog, setLastHealthLatency]);
+
   const selectArtifact = useCallback((artifact: Artifact) => {
     setSelectedArtifact((current) => {
       if (!current) return artifact;
@@ -541,6 +549,7 @@ export default function App() {
                 kbStats={kbStats}
                 indexingState={indexingState}
                 onReindex={handleReindex}
+                onRestart={handleRestart}
               />
             </motion.div>
           ) : null}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
+import sys
 import uuid
 import argparse
 from pathlib import Path
@@ -386,6 +387,20 @@ def reindex(request: Request):
         "started": started,
         "indexing": _get_index_state(),
     }
+
+
+@app.post("/api/restart")
+def restart_server(request: Request):
+    """Restart the backend process. Responds immediately, then replaces the process."""
+    _check_origin(request)
+
+    def _do_restart() -> None:
+        _time.sleep(0.5)  # let the HTTP response flush
+        logger.info("Restarting backend process via os.execv...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_do_restart, daemon=True, name="restart").start()
+    return {"restarting": True}
 
 
 @app.post("/api/normalize", response_model=NormalizeResponse)

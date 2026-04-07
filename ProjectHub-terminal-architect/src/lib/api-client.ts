@@ -129,6 +129,10 @@ export const apiClient = {
     return response.json();
   },
 
+  async restart(): Promise<void> {
+    await fetch(`${API_BASE_URL}/api/restart`, { method: 'POST' }).catch(() => {});
+  },
+
   async normalizeQuery(text: string): Promise<{ normalized_query: string }> {
     const response = await fetch(`${API_BASE_URL}/api/normalize`, {
       method: 'POST',
