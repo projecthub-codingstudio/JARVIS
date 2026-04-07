@@ -49,25 +49,40 @@ const SHELL_NAV = [
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
 ];
 
-const DOCUMENT_REFERENCE_PATTERN = /(이\s*(문서|파일|코드|슬라이드|페이지|시트)|해당\s*(문서|파일|코드)|현재\s*(문서|파일|코드)|여기|this\s+(document|file|code)|current\s+(document|file|code)|here)/i;
+const DOCUMENT_REFERENCE_PATTERN = /(이\s*(문서|파일|코드|슬라이드|페이지|시트|클래스|함수|메서드|모듈|스크립트)|해당\s*(문서|파일|코드|클래스|함수|모듈)|현재\s*(문서|파일|코드|클래스)|여기|this\s+(document|file|code|class|function|method|module)|current\s+(document|file|code|class|module)|here)/i;
 const EXPLICIT_TARGET_PATTERN = /^\s*(.+?)\s*(?:에서|에\s*대해|관련(?:해서)?|기준으로)\b/i;
 const GENERIC_DOCUMENT_TARGETS = new Set([
   '이 문서',
   '이 파일',
   '이 코드',
+  '이 클래스',
+  '이 함수',
+  '이 메서드',
+  '이 모듈',
+  '이 스크립트',
   '해당 문서',
   '해당 파일',
   '해당 코드',
+  '해당 클래스',
+  '해당 함수',
+  '해당 모듈',
   '현재 문서',
   '현재 파일',
   '현재 코드',
+  '현재 클래스',
   '여기',
   'this document',
   'this file',
   'this code',
+  'this class',
+  'this function',
+  'this method',
+  'this module',
   'current document',
   'current file',
   'current code',
+  'current class',
+  'current module',
 ]);
 
 function getActiveShellKey(view: ViewState): ViewState {
@@ -410,9 +425,10 @@ export default function App() {
     const contextualQuery = shouldScopeArtifactPrompt(normalizedPrompt)
       ? `${artifactLabel}에서 ${normalizedPrompt}`
       : normalizedPrompt;
+    const docPath = artifact.full_path || artifact.path || '';
     setView('terminal');
     setTerminalFocusNonce((current) => current + 1);
-    await sendMessage(contextualQuery);
+    await sendMessage(contextualQuery, docPath ? { contextDocumentPath: docPath } : undefined);
   }, [sendMessage]);
 
   const handleNavigate = (target: ViewState) => {

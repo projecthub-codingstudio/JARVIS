@@ -116,7 +116,7 @@ _DIRECT_URL_RE = re.compile(
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FILE_LIKE_TOKEN_RE = re.compile(
-    r"^[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx)$",
+    r"^[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx|swift|kt|java|c|cpp|h|hpp|cs|rb|rs|go|php|sh|zsh|bash|r|m|mm|toml|ini|cfg|conf|env|log|xml|html|css|scss|less|vue|svelte|dart|lua|pl|ex|exs|zig|nim|v|d|f90|ipynb)$",
     re.IGNORECASE,
 )
 

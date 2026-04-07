@@ -227,6 +227,7 @@ def _auto_detect_new_files(health_data: dict) -> None:
 class AskRequest(BaseModel):
     text: str = Field(max_length=16000)
     session_id: str = Field(max_length=128)
+    context_document_path: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -303,11 +304,14 @@ def ask(request: AskRequest) -> AskResponse:
     and would freeze the entire event loop if called from an ``async``
     handler, making health-checks and other requests unresponsive.
     """
+    payload: dict[str, object] = {"text": request.text}
+    if request.context_document_path:
+        payload["context_document_path"] = request.context_document_path
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
         session_id=request.session_id,
         request_type="ask_text",
-        payload={"text": request.text},
+        payload=payload,
     )
     rpc_response: RpcResponse = _require_service().handle(rpc_request)
 
