@@ -319,43 +319,62 @@ def ask(request: AskRequest) -> AskResponse:
     return AskResponse(**rpc_response.payload)
 
 
+# ── Cached health data (updated in background) ─────────────
+_cached_health: dict[str, object] = {
+    "healthy": False,
+    "message": "Backend is starting up...",
+    "checks": {},
+    "details": {},
+    "status_level": "starting",
+    "chunk_count": 0,
+    "doc_count": 0,
+    "failed_doc_count": 0,
+    "total_size_bytes": 0,
+    "embedding_count": 0,
+}
+_health_refresh_lock = threading.Lock()
+
+
+def _refresh_health_cache() -> None:
+    """Refresh cached health data in background — never blocks the API thread."""
+    if not _health_refresh_lock.acquire(blocking=False):
+        return  # another refresh already running
+    try:
+        svc = _get_service()
+        if svc is None:
+            return
+        rpc_request = RpcRequest(
+            request_id=str(uuid.uuid4()),
+            session_id="health-check",
+            request_type="health",
+            payload={},
+        )
+        rpc_response: RpcResponse = svc.handle(rpc_request)
+        health_data = rpc_response.payload.get("health", {})
+        _cached_health.update(health_data)
+        _auto_detect_new_files(health_data)
+    except Exception as exc:
+        logger.warning("Health refresh failed: %s", exc)
+    finally:
+        _health_refresh_lock.release()
+
+
+def _start_health_refresh_loop() -> None:
+    """Periodically refresh health cache every 10s."""
+    while True:
+        _time.sleep(10)
+        _refresh_health_cache()
+
+
+threading.Thread(target=_start_health_refresh_loop, daemon=True, name="health-refresh").start()
+
+
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    """Check JARVIS backend health status. Responds even during service initialization."""
-    svc = _get_service()
-    if svc is None:
-        # Service still loading — return minimal health with startup status
-        health_data: dict[str, object] = {
-            "healthy": False,
-            "message": "Backend is starting up...",
-            "checks": {},
-            "details": {},
-            "status_level": "starting",
-            "chunk_count": 0,
-            "doc_count": 0,
-            "failed_doc_count": 0,
-            "total_size_bytes": 0,
-            "embedding_count": 0,
-            "indexing": _get_index_state(),
-        }
-        return HealthResponse(health=health_data)
-
-    rpc_request = RpcRequest(
-        request_id=str(uuid.uuid4()),
-        session_id="health-check",
-        request_type="health",
-        payload={},
-    )
-    rpc_response: RpcResponse = svc.handle(rpc_request)
-    health_data = rpc_response.payload.get("health", {})
-
-    # Auto-detect new files and trigger reindex if needed
-    _auto_detect_new_files(health_data)
-
-    # Inject indexing state into health response
-    health_data["indexing"] = _get_index_state()
-
-    return HealthResponse(health=health_data)
+    """Return cached health status — always responds instantly, never blocks."""
+    result = dict(_cached_health)
+    result["indexing"] = _get_index_state()
+    return HealthResponse(health=result)
 
 
 @app.post("/api/reindex")
