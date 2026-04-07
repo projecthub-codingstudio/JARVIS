@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { BookmarkCheck, Bookmark, Minus, PanelRightClose, PanelRightOpen, Plus, Search, Sparkles } from 'lucide-react';
+import { BookmarkCheck, Bookmark, MessageSquare, Minus, PanelRightClose, PanelRightOpen, Plus, Search, Sparkles } from 'lucide-react';
 import { apiClient } from '../../lib/api-client';
 import { cn } from '../../lib/utils';
 import { ViewerRouter, getZoomMode } from './ViewerRouter';
@@ -40,6 +40,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
   const [documentPrompt, setDocumentPrompt] = useState('');
   const [zoom, setZoom] = useState(1.0);
   const [showInspector, setShowInspector] = useState(!hideLibrary);
+  const [showPrompt, setShowPrompt] = useState(false);
   const filePath = artifact.full_path || artifact.path || '';
   const fileUrl = filePath ? apiClient.getFileUrl(filePath) : undefined;
   const zoomMode = getZoomMode(artifact);
@@ -143,6 +144,15 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
             )}
           </div>
           <div className="flex items-center gap-3">
+            {!isMobile && onAskArtifact && (
+              <button
+                onClick={() => setShowPrompt((v) => !v)}
+                className={cn('rounded p-1 transition', showPrompt ? 'text-primary' : 'text-outline hover:bg-surface-container-highest hover:text-primary')}
+                title={showPrompt ? 'Hide prompt' : 'Ask about this document'}
+              >
+                <MessageSquare size={14} />
+              </button>
+            )}
             <button
               onClick={() => setShowInspector((v) => !v)}
               className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary"
@@ -167,7 +177,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
           <ViewerRouter artifact={artifact} fileUrl={fileUrl} content={artifact.preview} scale={zoom} />
         </div>
 
-        {!isMobile && onAskArtifact && (
+        {!isMobile && onAskArtifact && showPrompt && (
           <div className="shrink-0 border-t border-white/5 bg-surface px-6 py-4">
             <form onSubmit={handleDocumentAsk} className="mx-auto flex w-full max-w-3xl items-center gap-3 rounded-xl border border-white/10 bg-surface-container-high px-3 py-2">
               <Sparkles size={16} className="text-tertiary" />
