@@ -92,7 +92,7 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
-  const [kbChunkCount, setKbChunkCount] = useState<number | null>(null);
+  const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null>(null);
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
@@ -217,7 +217,13 @@ export default function App() {
         setLastHealthLatency(elapsed);
         setLastHealthError(null);
         if (data?.health?.chunk_count != null) {
-          setKbChunkCount(data.health.chunk_count);
+          setKbStats({
+            chunks: data.health.chunk_count ?? 0,
+            docs: data.health.doc_count ?? 0,
+            failed: data.health.failed_doc_count ?? 0,
+            sizeBytes: data.health.total_size_bytes ?? 0,
+            embeddings: data.health.embedding_count ?? 0,
+          });
         }
         addLog({
           id: `${Date.now()}-health`,
@@ -509,7 +515,7 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
-                kbChunkCount={kbChunkCount}
+                kbStats={kbStats}
               />
             </motion.div>
           ) : null}
@@ -658,8 +664,10 @@ export default function App() {
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
         </div>
         <div className="hidden gap-4 text-outline md:flex">
-          {kbChunkCount !== null && <span>chunks:{kbChunkCount.toLocaleString()}</span>}
-          {assets.length > 0 && <span>docs:{assets.length}</span>}
+          {kbStats && <span>kb:{kbStats.docs.toLocaleString()} docs</span>}
+          {kbStats && <span>chunks:{kbStats.chunks.toLocaleString()}</span>}
+          {kbStats && kbStats.embeddings > 0 && <span>vectors:{kbStats.embeddings.toLocaleString()}</span>}
+          {assets.length > 0 && <span>loaded:{assets.length}</span>}
           {citations.length > 0 && <span>refs:{citations.length}</span>}
         </div>
       </footer>

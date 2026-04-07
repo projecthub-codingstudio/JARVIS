@@ -1420,7 +1420,10 @@ def _health_light() -> dict[str, object]:
     # Database check
     db = None
     chunk_count = 0
+    doc_count = 0
     failed_doc_count = 0
+    total_size_bytes = 0
+    embedding_count = 0
     try:
         db = init_database(config)
         db.execute("SELECT 1")
@@ -1428,8 +1431,14 @@ def _health_light() -> dict[str, object]:
         details["database"] = "OK"
         row = db.execute("SELECT COUNT(*) FROM chunks").fetchone()
         chunk_count = row[0] if row else 0
+        doc_row = db.execute("SELECT COUNT(*) FROM documents WHERE indexing_status = 'INDEXED'").fetchone()
+        doc_count = doc_row[0] if doc_row else 0
         failed_row = db.execute("SELECT COUNT(*) FROM documents WHERE indexing_status = 'FAILED'").fetchone()
         failed_doc_count = failed_row[0] if failed_row else 0
+        size_row = db.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM documents WHERE indexing_status = 'INDEXED'").fetchone()
+        total_size_bytes = size_row[0] if size_row else 0
+        emb_row = db.execute("SELECT COUNT(*) FROM chunks WHERE embedding_ref IS NOT NULL").fetchone()
+        embedding_count = emb_row[0] if emb_row else 0
     except Exception as exc:
         checks["database"] = False
         details["database"] = str(exc)
@@ -1524,6 +1533,10 @@ def _health_light() -> dict[str, object]:
         "failed_checks": failed_checks,
         "status_level": "healthy" if not failed_checks else ("warning" if len(failed_checks) <= 2 else "degraded"),
         "chunk_count": chunk_count,
+        "doc_count": doc_count,
+        "failed_doc_count": failed_doc_count,
+        "total_size_bytes": total_size_bytes,
+        "embedding_count": embedding_count,
         "knowledge_base_path": kb_path.name if kb_exists else "not configured",
         "bridge_mode": "one-shot",
     }

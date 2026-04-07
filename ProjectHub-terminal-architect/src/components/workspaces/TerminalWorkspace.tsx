@@ -36,7 +36,14 @@ interface TerminalWorkspaceProps {
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onImageSubmit?: (text: string, image: File) => void;
-  kbChunkCount?: number | null;
+  kbStats?: { chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function getArtifactIcon(artifact: Artifact) {
@@ -748,7 +755,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   sessionId,
   onSubmit,
   onImageSubmit,
-  kbChunkCount,
+  kbStats,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -892,7 +899,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 <h1 className="text-[30px] font-semibold tracking-tight text-on-surface">Operational Workspace</h1>
                 <p className="mt-2 text-sm text-on-surface-variant">
                   {backendStatus === 'online' ? 'JARVIS backend is connected.' : backendStatus === 'checking' ? 'Checking backend connectivity.' : 'JARVIS backend is offline.'}
-                  {' '}Session {sessionId.slice(0, 8)}{kbChunkCount != null ? ` · ${kbChunkCount.toLocaleString()} chunks indexed` : ''}{assets.length > 0 ? ` · ${assets.length} artifacts` : ''}{citations.length > 0 ? ` · ${citations.length} citations` : ''} · {logs.length} events
+                  {' '}Session {sessionId.slice(0, 8)}{kbStats ? ` · ${kbStats.docs.toLocaleString()} docs · ${kbStats.chunks.toLocaleString()} chunks · ${formatBytes(kbStats.sizeBytes)}` : ''} · {logs.length} events
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -902,35 +909,36 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               </div>
             </div>
 
-            <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-3">
+            <div className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Knowledge Base</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-mono text-on-surface">{kbChunkCount != null ? kbChunkCount.toLocaleString() : '--'} chunks</span>
-                  <span className="text-primary">{kbChunkCount != null ? 'indexed' : 'offline'}</span>
-                </div>
-                <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className={cn('h-full', kbChunkCount != null ? 'w-full bg-primary' : 'w-1/4 bg-outline')} />
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Documents</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.docs.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {kbStats ? `${formatBytes(kbStats.sizeBytes)} total` : 'offline'}
+                  {kbStats && kbStats.failed > 0 && <span className="text-[#ffb4ab]"> · {kbStats.failed} failed</span>}
                 </div>
               </div>
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Artifacts Loaded</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-mono text-on-surface">{assets.length} artifacts</span>
-                  <span className="text-secondary">{assets.length > 0 ? 'active' : 'idle'}</span>
-                </div>
-                <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-secondary" style={{ width: `${Math.min(100, Math.max(assets.length > 0 ? 20 : 0, assets.length * 20))}%` }} />
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Chunks</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.chunks.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">{kbStats ? 'indexed & searchable' : 'offline'}</div>
+              </div>
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Vectors</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.embeddings.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {kbStats
+                    ? kbStats.chunks > 0
+                      ? `${Math.round((kbStats.embeddings / kbStats.chunks) * 100)}% coverage`
+                      : 'no chunks'
+                    : 'offline'}
                 </div>
               </div>
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Evidence Links</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-mono text-on-surface">{citations.length} citations</span>
-                  <span className="text-tertiary">{citations.length > 0 ? 'active' : 'idle'}</span>
-                </div>
-                <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-tertiary" style={{ width: `${Math.min(100, Math.max(citations.length > 0 ? 20 : 0, citations.length * 18))}%` }} />
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Session</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{assets.length + citations.length}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {assets.length} artifacts · {citations.length} citations
                 </div>
               </div>
             </div>
@@ -1044,16 +1052,20 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <span className={statusTone}>{backendStatus}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">KB Chunks</span>
-                  <span className="text-primary">{kbChunkCount != null ? kbChunkCount.toLocaleString() : '--'}</span>
+                  <span className="text-on-surface-variant">Documents</span>
+                  <span className="text-primary">{kbStats ? kbStats.docs.toLocaleString() : '--'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">Artifacts</span>
-                  <span className="text-secondary">{assets.length}</span>
+                  <span className="text-on-surface-variant">Chunks</span>
+                  <span className="text-primary">{kbStats ? kbStats.chunks.toLocaleString() : '--'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">Citations</span>
-                  <span className="text-tertiary">{citations.length}</span>
+                  <span className="text-on-surface-variant">Vectors</span>
+                  <span className="text-secondary">{kbStats ? kbStats.embeddings.toLocaleString() : '--'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-on-surface-variant">KB Size</span>
+                  <span className="text-outline">{kbStats ? formatBytes(kbStats.sizeBytes) : '--'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-on-surface-variant">Guide</span>
