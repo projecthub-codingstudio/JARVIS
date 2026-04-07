@@ -410,20 +410,12 @@ export default function App() {
 
   const handleSendMessage = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const text = inputValue.trim();
-    if (!text) return;
+    if (!inputValue.trim()) return;
     if (view !== 'terminal') {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
     }
-    // Only attach document context for substantive follow-up questions,
-    // not casual replies like "고마워", "알겠어", "OK"
-    const isCasual = text.length < 15 && /^(알겠|알았|고마|감사|ㅇㅋ|ㅇㅇ|넵|네|응|ok|thanks|thx|got it|sure)/i.test(text);
-    if (isCasual && lastDocumentContext) {
-      setLastDocumentContext(null);
-    }
-    const docCtx = !isCasual && lastDocumentContext ? { contextDocumentPath: lastDocumentContext } : undefined;
-    await sendMessage(inputValue, docCtx);
+    await sendMessage(inputValue, lastDocumentContext ? { contextDocumentPath: lastDocumentContext } : undefined);
     setInputValue('');
   };
 

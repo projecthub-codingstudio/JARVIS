@@ -4644,12 +4644,12 @@ def _generate_full_response(backend: object, prompt: str, context: str) -> str:
 
 
 _DOCUMENT_ANALYSIS_SYSTEM_PROMPT = (
-    "당신은 소스 코드 및 문서 분석 전문가입니다.\n\n"
+    "당신은 JARVIS입니다. 사용자가 현재 열고 있는 파일이 참고 자료로 제공됩니다.\n\n"
     "답변 규칙:\n"
-    "- 주어진 소스 코드 또는 문서를 상세하게 분석하세요.\n"
-    "- 간결하게 요약하지 마세요. 충분히 길고 상세하게 설명하세요.\n"
-    "- 클래스, 구조체, 함수, 메서드의 역할과 동작을 각각 설명하세요.\n"
-    "- 데이터 흐름, 설계 패턴, 외부 의존성을 포함하세요.\n"
+    "- 사용자의 질문에 자연스럽게 답변하세요.\n"
+    "- 코드나 문서 분석을 요청하면 상세하게 설명하세요. 간결하게 요약하지 마세요.\n"
+    "- 특정 부분에 대한 질문이면 해당 부분만 집중하여 설명하세요.\n"
+    "- 인사나 일상 대화에는 자연스럽게 응답하세요.\n"
     "- 한국어로 답변하세요."
 )
 
@@ -4740,11 +4740,10 @@ def _ask_about_document(query: str, document_path: str) -> tuple[dict[str, objec
     if len(file_content) > file_char_budget:
         file_content = file_content[:file_char_budget] + f"\n\n... (전체 파일 중 {file_char_budget}자만 포함)"
 
-    evidence_context = f"[파일: {filename}]\n{file_content}"
-    analysis_prompt = (
-        f"{query}\n\n"
-        f"위 '{filename}' 파일을 상세히 분석하여 한국어로 설명하세요."
-    )
+    evidence_context = f"[현재 열린 파일: {filename}]\n{file_content}"
+    # Pass the user's query as-is — let the LLM naturally decide how to respond.
+    # If the query is about the code → LLM analyzes. If casual → LLM responds naturally.
+    analysis_prompt = query
 
     try:
         answer = _generate_full_response(backend, analysis_prompt, evidence_context)
