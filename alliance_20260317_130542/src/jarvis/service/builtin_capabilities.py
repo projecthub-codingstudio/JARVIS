@@ -923,14 +923,13 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
 
         artifacts.append(_artifact(
             artifact_id=f"doc_find_{i}",
-            type_name="document",
+            type_name=viewer,
             title=name,
             subtitle=f"{match_label} · {doc['chunk_count']} chunks{status_label}",
             path=doc["path"],
             full_path=doc["full_path"],
             preview=doc["path"],
             source_type="document",
-            viewer_kind=viewer,
         ))
 
     path_count = sum(1 for r in results[:15] if r["match_type"] == "path")
