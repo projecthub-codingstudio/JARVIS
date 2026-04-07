@@ -17,7 +17,7 @@ import {
 import { cn } from './lib/utils';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
-import { apiClient } from './lib/api-client';
+import { apiClient, type IndexingState } from './lib/api-client';
 import { ExplorerWorkspace } from './components/explorer/ExplorerWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
@@ -93,6 +93,7 @@ export default function App() {
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null>(null);
+  const [indexingState, setIndexingState] = useState<IndexingState>({ status: 'idle', processed: 0, total: 0, last_completed: null, error: null });
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
@@ -225,6 +226,9 @@ export default function App() {
             embeddings: data.health.embedding_count ?? 0,
           });
         }
+        if (data?.health?.indexing) {
+          setIndexingState(data.health.indexing);
+        }
         addLog({
           id: `${Date.now()}-health`,
           timestamp: new Date().toISOString(),
@@ -243,9 +247,21 @@ export default function App() {
     };
 
     void checkBackend();
-    const interval = window.setInterval(checkBackend, 30000);
+    // Poll faster during indexing for progress updates
+    const intervalMs = indexingState.status === 'scanning' || indexingState.status === 'indexing' ? 3000 : 30000;
+    const interval = window.setInterval(checkBackend, intervalMs);
     return () => window.clearInterval(interval);
-  }, [addLog, setLastHealthLatency]);
+  }, [addLog, setLastHealthLatency, indexingState.status]);
+
+  const handleReindex = useCallback(async () => {
+    try {
+      const result = await apiClient.reindex();
+      if (result.indexing) setIndexingState(result.indexing);
+      addLog({ id: `${Date.now()}-reindex`, timestamp: new Date().toISOString(), type: 'info', message: result.started ? 'Reindex started.' : 'Reindex already in progress.' });
+    } catch (err) {
+      addLog({ id: `${Date.now()}-reindex-err`, timestamp: new Date().toISOString(), type: 'error', message: `Reindex failed: ${err instanceof Error ? err.message : 'unknown'}` });
+    }
+  }, [addLog]);
 
   const selectArtifact = useCallback((artifact: Artifact) => {
     setSelectedArtifact((current) => {
@@ -516,6 +532,8 @@ export default function App() {
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
                 kbStats={kbStats}
+                indexingState={indexingState}
+                onReindex={handleReindex}
               />
             </motion.div>
           ) : null}
@@ -664,6 +682,11 @@ export default function App() {
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
         </div>
         <div className="hidden gap-4 text-outline md:flex">
+          {(indexingState.status === 'scanning' || indexingState.status === 'indexing') && (
+            <span className="text-primary animate-pulse">
+              indexing:{indexingState.processed}/{indexingState.total}
+            </span>
+          )}
           {kbStats && <span>kb:{kbStats.docs.toLocaleString()} docs</span>}
           {kbStats && <span>chunks:{kbStats.chunks.toLocaleString()}</span>}
           {kbStats && kbStats.embeddings > 0 && <span>vectors:{kbStats.embeddings.toLocaleString()}</span>}

@@ -10,10 +10,12 @@ import {
   ImagePlus,
   Link2,
   LoaderCircle,
+  RefreshCw,
   ShieldAlert,
   Sparkles,
   X,
 } from 'lucide-react';
+import type { IndexingState } from '../../lib/api-client';
 import { normalizeResponseText } from '../../lib/response-text';
 import { cn } from '../../lib/utils';
 import type { Artifact, Citation, GuideDirective, Message, SystemLog } from '../../types';
@@ -37,6 +39,8 @@ interface TerminalWorkspaceProps {
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onImageSubmit?: (text: string, image: File) => void;
   kbStats?: { chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null;
+  indexingState?: IndexingState;
+  onReindex?: () => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -756,6 +760,8 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   onSubmit,
   onImageSubmit,
   kbStats,
+  indexingState,
+  onReindex,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -909,9 +915,39 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               </div>
             </div>
 
+            {indexingState && (indexingState.status === 'scanning' || indexingState.status === 'indexing') && (
+              <div className="mb-4 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3">
+                <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-semibold text-primary">
+                    {indexingState.status === 'scanning' ? '파일 스캔 중...' : `인덱싱 중 — ${indexingState.processed} / ${indexingState.total} files`}
+                  </div>
+                  {indexingState.status === 'indexing' && indexingState.total > 0 && (
+                    <div className="mt-2 h-1.5 rounded-full bg-surface-container-highest overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-500"
+                        style={{ width: `${Math.round((indexingState.processed / indexingState.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Documents</div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Documents</span>
+                  {onReindex && backendStatus === 'online' && (
+                    <button
+                      onClick={onReindex}
+                      disabled={indexingState?.status === 'scanning' || indexingState?.status === 'indexing'}
+                      className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="지식베이스 리인덱스"
+                    >
+                      <RefreshCw size={12} className={indexingState?.status === 'indexing' ? 'animate-spin' : ''} />
+                    </button>
+                  )}
+                </div>
                 <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.docs.toLocaleString() : '--'}</div>
                 <div className="mt-1 text-[10px] text-outline">
                   {kbStats ? `${formatBytes(kbStats.sizeBytes)} total` : 'offline'}

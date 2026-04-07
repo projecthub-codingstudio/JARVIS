@@ -66,12 +66,21 @@ export interface AskResponse {
   guide: GuideDirective;
 }
 
+export interface IndexingState {
+  status: 'idle' | 'scanning' | 'indexing' | 'done' | 'error';
+  processed: number;
+  total: number;
+  last_completed: string | null;
+  error: string | null;
+}
+
 export interface HealthResponse {
   health: {
     status: string;
     model_loaded: boolean;
     memory_usage: number;
     index_status: string;
+    indexing?: IndexingState;
   };
 }
 
@@ -108,6 +117,14 @@ export const apiClient = {
     const response = await fetch(`${API_BASE_URL}/api/health`);
     if (!response.ok) {
       throw new Error(`Health check failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async reindex(): Promise<{ started: boolean; indexing: IndexingState }> {
+    const response = await fetch(`${API_BASE_URL}/api/reindex`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Reindex failed: ${response.statusText}`);
     }
     return response.json();
   },

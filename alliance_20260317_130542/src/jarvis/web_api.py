@@ -18,6 +18,10 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from pydantic import BaseModel, Field
 
+import logging
+import threading
+import time as _time
+
 from jarvis.service.application import JarvisApplicationService
 from jarvis.service.intent_skill_store import (
     build_skill_catalog,
@@ -29,6 +33,7 @@ from jarvis.service.intent_skill_store import (
 )
 from jarvis.service.protocol import RpcRequest, RpcResponse
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="JARVIS Web API",
@@ -75,6 +80,113 @@ def _check_origin(request: Request) -> None:
 
 
 service = JarvisApplicationService()
+
+
+# ── Indexing state tracker ──────────────────────────────────
+_index_lock = threading.Lock()
+_index_state: dict[str, object] = {
+    "status": "idle",       # idle | scanning | indexing | done | error
+    "processed": 0,
+    "total": 0,
+    "last_completed": None,  # ISO timestamp
+    "error": None,
+}
+
+
+def _get_index_state() -> dict[str, object]:
+    """Return a snapshot of the current indexing state."""
+    with _index_lock:
+        return dict(_index_state)
+
+
+def _trigger_reindex(*, auto: bool = False) -> bool:
+    """Start background indexing if not already running. Returns True if started."""
+    if not _index_lock.acquire(blocking=False):
+        return False
+
+    # Check if already running (lock acquired but status is active)
+    if _index_state["status"] in ("scanning", "indexing"):
+        _index_lock.release()
+        return False
+
+    def _run() -> None:
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable, run_indexing
+        from jarvis.cli.menu_bridge import resolve_menubar_data_dir
+
+        db = None
+        try:
+            _index_state["status"] = "scanning"
+            _index_state["processed"] = 0
+            _index_state["total"] = 0
+            _index_state["error"] = None
+
+            kb_path = resolve_knowledge_base_path()
+            data_dir = resolve_menubar_data_dir()
+            config = JarvisConfig(
+                data_dir=data_dir,
+                watched_folders=[kb_path] if kb_path.exists() else [],
+            )
+            db = init_database(config)
+
+            # Count indexable files
+            files = [f for f in kb_path.rglob("*") if f.is_file() and is_indexable(f)]
+            _index_state["total"] = len(files)
+            _index_state["status"] = "indexing"
+
+            # Use a reporter to track progress
+            progress = {"count": 0}
+
+            def _reporter(msg: str) -> None:
+                if "Indexing " in msg and "/" in msg:
+                    progress["count"] += 1
+                    _index_state["processed"] = progress["count"]
+
+            run_indexing(
+                db,
+                kb_path,
+                data_dir=data_dir,
+                start_background_backfill=True,
+                reporter=_reporter,
+            )
+
+            _index_state["status"] = "done"
+            _index_state["last_completed"] = _time.strftime("%Y-%m-%dT%H:%M:%S")
+            logger.info("Reindex complete: %d files processed (%s)", _index_state["total"], "auto" if auto else "manual")
+        except Exception as exc:
+            _index_state["status"] = "error"
+            _index_state["error"] = str(exc)
+            logger.error("Reindex failed: %s", exc)
+        finally:
+            if db is not None:
+                db.close()
+            _index_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="reindex-worker").start()
+    return True
+
+
+def _auto_detect_new_files(health_data: dict) -> None:
+    """Compare KB file count vs indexed doc count; auto-trigger reindex if mismatch."""
+    if _index_state["status"] in ("scanning", "indexing"):
+        return  # already running
+
+    try:
+        from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
+
+        kb_path = resolve_knowledge_base_path()
+        if not kb_path.exists():
+            return
+
+        file_count = sum(1 for f in kb_path.rglob("*") if f.is_file() and is_indexable(f))
+        indexed_count = health_data.get("doc_count", 0) + health_data.get("failed_doc_count", 0)
+
+        if file_count > indexed_count:
+            logger.info("Auto-reindex: %d files on disk vs %d indexed, triggering reindex", file_count, indexed_count)
+            _trigger_reindex(auto=True)
+    except Exception:
+        pass  # don't break health check
 
 
 # Request/Response models
@@ -176,7 +288,26 @@ def health() -> HealthResponse:
         payload={},
     )
     rpc_response: RpcResponse = service.handle(rpc_request)
-    return HealthResponse(**rpc_response.payload)
+    health_data = rpc_response.payload.get("health", {})
+
+    # Auto-detect new files and trigger reindex if needed
+    _auto_detect_new_files(health_data)
+
+    # Inject indexing state into health response
+    health_data["indexing"] = _get_index_state()
+
+    return HealthResponse(health=health_data)
+
+
+@app.post("/api/reindex")
+def reindex(request: Request):
+    """Trigger a knowledge base reindex."""
+    _check_origin(request)
+    started = _trigger_reindex(auto=False)
+    return {
+        "started": started,
+        "indexing": _get_index_state(),
+    }
 
 
 @app.post("/api/normalize", response_model=NormalizeResponse)
