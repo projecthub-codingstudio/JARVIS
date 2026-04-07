@@ -38,7 +38,7 @@ interface TerminalWorkspaceProps {
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onImageSubmit?: (text: string, image: File) => void;
-  kbStats?: { chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null;
+  kbStats?: { chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null;
   indexingState?: IndexingState;
   onReindex?: () => void;
 }
@@ -765,6 +765,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [showFailedDocs, setShowFailedDocs] = useState(false);
   const imagePreviewUrl = useMemo(() => (
     selectedImage ? URL.createObjectURL(selectedImage) : null
   ), [selectedImage]);
@@ -951,7 +952,14 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.docs.toLocaleString() : '--'}</div>
                 <div className="mt-1 text-[10px] text-outline">
                   {kbStats ? `${formatBytes(kbStats.sizeBytes)} total` : 'offline'}
-                  {kbStats && kbStats.failed > 0 && <span className="text-[#ffb4ab]"> · {kbStats.failed} failed</span>}
+                  {kbStats && kbStats.failed > 0 && (
+                    <button
+                      onClick={() => setShowFailedDocs((v) => !v)}
+                      className="text-[#ffb4ab] hover:underline ml-1"
+                    >
+                      · {kbStats.failed} failed {showFailedDocs ? '▾' : '▸'}
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
@@ -978,6 +986,29 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 </div>
               </div>
             </div>
+
+            {showFailedDocs && kbStats && kbStats.failedPaths.length > 0 && (
+              <div className="mb-6 rounded-lg border border-[#ffb4ab]/20 bg-[#ffb4ab]/5 px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#ffb4ab]">
+                  인덱싱 실패 문서 ({kbStats.failedPaths.length})
+                </div>
+                <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                  {kbStats.failedPaths.map((p) => {
+                    const kbIdx = p.indexOf('knowledge_base/');
+                    const display = kbIdx >= 0 ? p.slice(kbIdx + 'knowledge_base/'.length) : p.split('/').pop() || p;
+                    return (
+                      <div key={p} className="flex items-center gap-2 text-[11px] font-mono text-on-surface-variant">
+                        <span className="shrink-0 text-[#ffb4ab]">✕</span>
+                        <span className="truncate" title={p}>{display}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 text-[10px] text-outline">
+                  파싱 불가능한 PDF, 빈 파일, 또는 지원하지 않는 인코딩일 수 있습니다.
+                </div>
+              </div>
+            )}
 
             <div className="mb-6">
               <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">

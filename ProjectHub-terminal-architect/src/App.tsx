@@ -92,7 +92,7 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
-  const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; sizeBytes: number; embeddings: number } | null>(null);
+  const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null>(null);
   const [indexingState, setIndexingState] = useState<IndexingState>({ status: 'idle', processed: 0, total: 0, last_completed: null, error: null });
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
@@ -223,6 +223,7 @@ export default function App() {
             chunks: data.health.chunk_count ?? 0,
             docs: data.health.doc_count ?? 0,
             failed: data.health.failed_doc_count ?? 0,
+            failedPaths: data.health.failed_doc_paths ?? [],
             sizeBytes: data.health.total_size_bytes ?? 0,
             embeddings: data.health.embedding_count ?? 0,
           });

@@ -1439,7 +1439,10 @@ def _health_light() -> dict[str, object]:
         total_size_bytes = size_row[0] if size_row else 0
         emb_row = db.execute("SELECT COUNT(*) FROM chunks WHERE embedding_ref IS NOT NULL").fetchone()
         embedding_count = emb_row[0] if emb_row else 0
+        failed_paths_rows = db.execute("SELECT path FROM documents WHERE indexing_status = 'FAILED' ORDER BY path").fetchall()
+        failed_paths = [r[0] for r in failed_paths_rows]
     except Exception as exc:
+        failed_paths = []
         checks["database"] = False
         details["database"] = str(exc)
         failed_checks.append("database")
@@ -1535,6 +1538,7 @@ def _health_light() -> dict[str, object]:
         "chunk_count": chunk_count,
         "doc_count": doc_count,
         "failed_doc_count": failed_doc_count,
+        "failed_doc_paths": failed_paths,
         "total_size_bytes": total_size_bytes,
         "embedding_count": embedding_count,
         "knowledge_base_path": kb_path.name if kb_exists else "not configured",
