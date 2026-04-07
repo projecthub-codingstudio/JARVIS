@@ -92,6 +92,7 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [kbChunkCount, setKbChunkCount] = useState<number | null>(null);
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
@@ -211,9 +212,13 @@ export default function App() {
           return;
         }
         const elapsed = Math.round(performance.now() - start);
+        const data = await response.json().catch(() => null);
         setBackendStatus('online');
         setLastHealthLatency(elapsed);
         setLastHealthError(null);
+        if (data?.health?.chunk_count != null) {
+          setKbChunkCount(data.health.chunk_count);
+        }
         addLog({
           id: `${Date.now()}-health`,
           timestamp: new Date().toISOString(),
@@ -504,6 +509,7 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
+                kbChunkCount={kbChunkCount}
               />
             </motion.div>
           ) : null}
@@ -652,8 +658,9 @@ export default function App() {
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
         </div>
         <div className="hidden gap-4 text-outline md:flex">
-          <span>docs:{assets.length}</span>
-          <span>refs:{citations.length}</span>
+          {kbChunkCount !== null && <span>chunks:{kbChunkCount.toLocaleString()}</span>}
+          {assets.length > 0 && <span>docs:{assets.length}</span>}
+          {citations.length > 0 && <span>refs:{citations.length}</span>}
         </div>
       </footer>
 

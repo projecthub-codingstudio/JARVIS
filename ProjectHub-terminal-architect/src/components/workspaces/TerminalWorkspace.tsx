@@ -36,6 +36,7 @@ interface TerminalWorkspaceProps {
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onImageSubmit?: (text: string, image: File) => void;
+  kbChunkCount?: number | null;
 }
 
 function getArtifactIcon(artifact: Artifact) {
@@ -747,6 +748,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   sessionId,
   onSubmit,
   onImageSubmit,
+  kbChunkCount,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -890,7 +892,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 <h1 className="text-[30px] font-semibold tracking-tight text-on-surface">Operational Workspace</h1>
                 <p className="mt-2 text-sm text-on-surface-variant">
                   {backendStatus === 'online' ? 'JARVIS backend is connected.' : backendStatus === 'checking' ? 'Checking backend connectivity.' : 'JARVIS backend is offline.'}
-                  {' '}Session {sessionId.slice(0, 8)} · artifacts {assets.length} · citations {citations.length} · events {logs.length}
+                  {' '}Session {sessionId.slice(0, 8)}{kbChunkCount != null ? ` · ${kbChunkCount.toLocaleString()} chunks indexed` : ''}{assets.length > 0 ? ` · ${assets.length} artifacts` : ''}{citations.length > 0 ? ` · ${citations.length} citations` : ''} · {logs.length} events
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -900,25 +902,35 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               </div>
             </div>
 
-            <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Knowledge Base</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-mono text-on-surface">{kbChunkCount != null ? kbChunkCount.toLocaleString() : '--'} chunks</span>
+                  <span className="text-primary">{kbChunkCount != null ? 'indexed' : 'offline'}</span>
+                </div>
+                <div className="mt-3 h-1 bg-surface-container-highest">
+                  <div className={cn('h-full', kbChunkCount != null ? 'w-full bg-primary' : 'w-1/4 bg-outline')} />
+                </div>
+              </div>
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Artifacts Loaded</div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-mono text-on-surface">{assets.length} artifacts</span>
-                  <span className="text-primary">{Math.min(100, assets.length * 20 || 0)}%</span>
+                  <span className="text-secondary">{assets.length > 0 ? 'active' : 'idle'}</span>
                 </div>
                 <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-primary" style={{ width: `${Math.min(100, Math.max(8, assets.length * 20 || 8))}%` }} />
+                  <div className="h-full bg-secondary" style={{ width: `${Math.min(100, Math.max(assets.length > 0 ? 20 : 0, assets.length * 20))}%` }} />
                 </div>
               </div>
               <div className="border border-white/5 bg-surface-container-low px-4 py-3">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Evidence Links</div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-mono text-on-surface">{citations.length} citations</span>
-                  <span className="text-secondary">{Math.min(100, citations.length * 18 || 0)}%</span>
+                  <span className="text-tertiary">{citations.length > 0 ? 'active' : 'idle'}</span>
                 </div>
                 <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-secondary" style={{ width: `${Math.min(100, Math.max(8, citations.length * 18 || 8))}%` }} />
+                  <div className="h-full bg-tertiary" style={{ width: `${Math.min(100, Math.max(citations.length > 0 ? 20 : 0, citations.length * 18))}%` }} />
                 </div>
               </div>
             </div>
@@ -1032,16 +1044,20 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <span className={statusTone}>{backendStatus}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
+                  <span className="text-on-surface-variant">KB Chunks</span>
+                  <span className="text-primary">{kbChunkCount != null ? kbChunkCount.toLocaleString() : '--'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
                   <span className="text-on-surface-variant">Artifacts</span>
-                  <span className="text-primary">{assets.length}</span>
+                  <span className="text-secondary">{assets.length}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-on-surface-variant">Citations</span>
-                  <span className="text-secondary">{citations.length}</span>
+                  <span className="text-tertiary">{citations.length}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-on-surface-variant">Guide</span>
-                  <span className="text-tertiary">{guideState}</span>
+                  <span className="text-outline">{guideState}</span>
                 </div>
               </div>
             </div>
