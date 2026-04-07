@@ -865,9 +865,10 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                 "score": hits,
             })
 
-        # 2) FTS content match
-        fts_query = " AND ".join(f'"{t}"' for t in terms if len(t) >= 2)
-        if fts_query:
+        # 2) FTS content match — skip for short/common terms or when path results are sufficient
+        long_terms = [t for t in terms if len(t) >= 3]
+        fts_query = " AND ".join(f'"{t}"' for t in long_terms) if long_terms else ""
+        if fts_query and len(results) < 5:
             try:
                 matched_ids = {r["full_path"] for r in results}
                 fts_rows = db.execute(

@@ -781,8 +781,8 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   const activityLogs = logs.slice(-4).reverse();
 
   const terminalBlocks = useMemo(() => buildMessageBlocks(messages), [messages]);
-  const [showAllAssets, setShowAllAssets] = useState(false);
-  const visibleAssets = showAllAssets ? assets : assets.slice(0, 6);
+  const [collapseAssets, setCollapseAssets] = useState(false);
+  const visibleAssets = collapseAssets ? assets.slice(0, 6) : assets;
   const currentCitations = citations.slice(0, 3);
   const sourceMapEntries = useMemo(() => buildSourceMapEntries(citations, assets), [citations, assets]);
   const latestArchitect = [...messages].reverse().find((message) => message.role === 'architect');
@@ -1047,10 +1047,10 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   </div>
                   {assets.length > 6 && (
                     <button
-                      onClick={() => setShowAllAssets((v) => !v)}
+                      onClick={() => setCollapseAssets((v) => !v)}
                       className="mt-2 w-full py-2 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high"
                     >
-                      {showAllAssets ? `접기 (${assets.length}개 중 6개만 보기)` : `전체 보기 (${assets.length}개)`}
+                      {collapseAssets ? `전체 보기 (${assets.length}개)` : `접기 (6개만 보기)`}
                     </button>
                   )}
                 </>
@@ -1348,7 +1348,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <div className="text-[11px] font-mono text-outline">{assets.length} available</div>
                 </div>
                 <div className="grid gap-2 lg:grid-cols-3">
-                  {(showAllAssets ? assets : assets.slice(0, 3)).map((artifact) => (
+                  {(collapseAssets ? assets.slice(0, 3) : assets).map((artifact) => (
                     <button
                       key={artifact.id}
                       onClick={() => onOpenArtifact(artifact)}
@@ -1366,10 +1366,10 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 </div>
                 {assets.length > 3 && (
                   <button
-                    onClick={() => setShowAllAssets((v) => !v)}
+                    onClick={() => setCollapseAssets((v) => !v)}
                     className="mt-2 w-full py-1.5 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high rounded"
                   >
-                    {showAllAssets ? '접기' : `전체 ${assets.length}개 보기`}
+                    {collapseAssets ? `전체 ${assets.length}개 보기` : '접기'}
                   </button>
                 )}
               </div>
