@@ -31,7 +31,7 @@ _WEATHER_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _WEB_QUERY_RE = re.compile(
-    r"(웹사이트|홈페이지|사이트|웹에서|웹\s*검색|사이트\s*찾|검색해|찾아줘|homepage|website|web\s+search|search)",
+    r"(웹사이트|홈페이지|사이트|웹에서|웹\s*검색|사이트\s*찾|검색해\s*줘|homepage|website|web\s+search|search\s+the\s+web)",
     re.IGNORECASE,
 )
 _CALC_HINT_RE = re.compile(

@@ -284,13 +284,18 @@ export default function App() {
   }, []);
 
   const openArtifact = useCallback((artifact: Artifact) => {
+    const filePath = artifact.full_path || artifact.path;
+    // Web artifacts → open in new tab
+    if (filePath?.startsWith('http://') || filePath?.startsWith('https://')) {
+      window.open(filePath, '_blank', 'noopener,noreferrer');
+      return;
+    }
     setSelectedArtifact((current) => {
       if (!current) return artifact;
       const currentPath = current.full_path || current.path;
       const nextPath = artifact.full_path || artifact.path;
       return currentPath === nextPath ? current : artifact;
     });
-    const filePath = artifact.full_path || artifact.path;
     if (filePath) {
       navigateToFile(filePath);
     }
