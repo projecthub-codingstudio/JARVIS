@@ -10,6 +10,7 @@ import math
 import operator
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
