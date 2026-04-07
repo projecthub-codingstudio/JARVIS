@@ -15,8 +15,18 @@ export function getDefaultWindowSize(artifact: Artifact): { width: number; heigh
   const maxH = typeof window !== 'undefined' ? window.innerHeight - 80 : 900;
   const maxW = typeof window !== 'undefined' ? window.innerWidth - 200 : 1000;
 
-  if (ext === 'pptx' || ext === 'ppt') return { width: Math.min(800, maxW), height: Math.min(500, maxH) };
-  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return { width: Math.min(850, maxW), height: Math.min(550, maxH) };
+  // PPT: 16:9 ratio, fill viewport width
+  if (ext === 'pptx' || ext === 'ppt') {
+    const w = Math.min(maxW, 1100);
+    const h = Math.min(Math.round(w * 9 / 16) + 80, maxH); // +80 for toolbar/bottom bar
+    return { width: w, height: h };
+  }
+  // Spreadsheet: wide landscape, fill viewport
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
+    const w = Math.min(maxW, 1200);
+    const h = Math.min(Math.round(w * 0.6), maxH);
+    return { width: w, height: h };
+  }
   if (kind === 'image') return { width: Math.min(700, maxW), height: Math.min(600, maxH) };
   if (kind === 'code' || kind === 'text') return { width: Math.min(650, maxW), height: Math.min(750, maxH) };
 
