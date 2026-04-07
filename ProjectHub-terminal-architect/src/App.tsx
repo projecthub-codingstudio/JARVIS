@@ -113,6 +113,7 @@ export default function App() {
   const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null>(null);
   const [indexingState, setIndexingState] = useState<IndexingState>({ status: 'idle', processed: 0, total: 0, last_completed: null, error: null });
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
+  const [lastDocumentContext, setLastDocumentContext] = useState<string | null>(null);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
   const [skillCatalogError, setSkillCatalogError] = useState<string | null>(null);
@@ -414,7 +415,7 @@ export default function App() {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
     }
-    await sendMessage(inputValue);
+    await sendMessage(inputValue, lastDocumentContext ? { contextDocumentPath: lastDocumentContext } : undefined);
     setInputValue('');
   };
 
@@ -426,6 +427,7 @@ export default function App() {
       ? `${artifactLabel}에서 ${normalizedPrompt}`
       : normalizedPrompt;
     const docPath = artifact.full_path || artifact.path || '';
+    if (docPath) setLastDocumentContext(docPath);
     setView('terminal');
     setTerminalFocusNonce((current) => current + 1);
     await sendMessage(contextualQuery, docPath ? { contextDocumentPath: docPath } : undefined);
@@ -436,6 +438,10 @@ export default function App() {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
       return;
+    }
+    // Clear document context when navigating away from terminal
+    if (target !== 'documents') {
+      setLastDocumentContext(null);
     }
     setView(target);
   };
