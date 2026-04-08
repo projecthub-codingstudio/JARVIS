@@ -5,6 +5,7 @@
 A privacy-first, local AI assistant for Apple Silicon — inspired by Iron Man's JARVIS.
 
 [![Built with ProjectHub](https://img.shields.io/badge/Built_with-ProjectHub-0EA5E9)](https://projecthub.co.kr)
+[![Designed with Stitch](https://img.shields.io/badge/Designed_with-Google_Stitch-4285F4?logo=google&logoColor=white)](https://stitch.withgoogle.com/)
 [![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 [![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
 [![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -406,6 +407,7 @@ At startup, `HF_HUB_OFFLINE=1` is set by default to prevent silent HuggingFace n
 ## Built With
 
 - **[ProjectHub](https://projecthub.co.kr)** — AI-powered project management and build orchestration platform
+- **[Google Stitch](https://stitch.withgoogle.com/)** — Web UI design and prototyping
 - **[Colligi](https://colligi.ai)** — Collective intelligence analysis for architecture and technical decisions
 
 ## License
@@ -455,6 +457,7 @@ Gemma 4's April 2026 release moved from custom Gemma Terms of Use to **Apache 2.
 아이언맨의 자비스(JARVIS)에서 영감을 받은, Apple Silicon 전용 개인정보 보호 우선 로컬 AI 비서.
 
 [![Built with ProjectHub](https://img.shields.io/badge/Built_with-ProjectHub-0EA5E9)](https://projecthub.co.kr)
+[![Designed with Stitch](https://img.shields.io/badge/Designed_with-Google_Stitch-4285F4?logo=google&logoColor=white)](https://stitch.withgoogle.com/)
 [![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 [![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
 [![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -605,6 +608,7 @@ JARVIS는 **로컬 우선, 오프라인 가능** 시스템입니다. 모든 LLM 
 ## 사용 도구
 
 - **[ProjectHub](https://projecthub.co.kr)** — AI 기반 프로젝트 관리 및 빌드 오케스트레이션 플랫폼
+- **[Google Stitch](https://stitch.withgoogle.com/)** — 웹 UI 디자인 및 프로토타이핑
 - **[Colligi](https://colligi.ai)** — 아키텍처 설계와 기술 의사결정 집단지성 분석 시스템
 
 ## 라이선스
