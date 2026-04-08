@@ -307,7 +307,7 @@ export interface ActionMapCreateInput extends ActionMapInput {
 }
 
 // ── View ──────────────────────────────────────
-export type ViewState = 'home' | 'terminal' | 'explorer' | 'documents' | 'skills' | 'admin';
+export type ViewState = 'home' | 'terminal' | 'explorer' | 'documents' | 'skills' | 'admin' | 'settings';
 
 /* ── Repository file tree ── */
 

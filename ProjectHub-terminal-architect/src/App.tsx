@@ -12,6 +12,7 @@ import {
   FolderSearch,
   LayoutDashboard,
   Search,
+  Settings,
   TerminalSquare,
   Workflow,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ import { ExplorerWorkspace } from './components/explorer/ExplorerWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
 import { SkillsWorkspace } from './components/workspaces/SkillsWorkspace';
+import { SettingsWorkspace } from './components/workspaces/SettingsWorkspace';
 import { CommandPalette } from './components/shell/CommandPalette';
 import { NotificationBell } from './components/shell/NotificationBell';
 import { SettingsPopover } from './components/shell/SettingsPopover';
@@ -47,6 +49,7 @@ const SHELL_NAV = [
   { key: 'documents' as ViewState, label: 'Documents', icon: FileSearch2 },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
+  { key: 'settings' as ViewState, label: 'Settings', icon: Settings },
 ];
 
 const DOCUMENT_REFERENCE_PATTERN = /(이\s*(문서|파일|코드|슬라이드|페이지|시트|클래스|함수|메서드|모듈|스크립트)|해당\s*(문서|파일|코드|클래스|함수|모듈)|현재\s*(문서|파일|코드|클래스)|여기|this\s+(document|file|code|class|function|method|module)|current\s+(document|file|code|class|module)|here)/i;
@@ -696,6 +699,22 @@ export default function App() {
                 onRefreshSkills={loadSkillCatalog}
                 onSaveActionMap={handleSaveActionMap}
                 onSaveSkill={handleSaveSkillProfile}
+              />
+            </motion.div>
+          ) : null}
+          {view === 'settings' ? (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              className="h-full"
+            >
+              <SettingsWorkspace
+                backendStatus={backendStatus}
+                indexingState={indexingState}
+                onIndexingStateChange={setIndexingState}
+                addLog={addLog}
               />
             </motion.div>
           ) : null}
