@@ -516,8 +516,6 @@ def reindex(request: Request):
 @app.get("/api/kb/status", response_model=KbStatusResponse)
 def kb_status() -> KbStatusResponse:
     """Return current knowledge base directory status."""
-    from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
-
     kb_path = _resolve_kb_root()
     path_str = str(kb_path) if kb_path else ""
     exists = kb_path is not None and kb_path.exists()
@@ -653,18 +651,16 @@ def kb_change(http_request: Request, request: KbChangeRequest) -> KbChangeRespon
     if not _index_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="인덱싱이 진행 중입니다. 완료 후 다시 시도해주세요.")
 
-    if _index_state["status"] in ("scanning", "indexing"):
-        _index_lock.release()
-        raise HTTPException(status_code=409, detail="인덱싱이 진행 중입니다. 완료 후 다시 시도해주세요.")
-
     threading.Thread(target=_purge_and_reindex, daemon=True, name="kb-change-worker").start()
 
+    # Return snapshot without calling _get_index_state() (which would deadlock
+    # because we already hold _index_lock and threading.Lock is not reentrant).
     return KbChangeResponse(
         started=True,
         previous_path=previous_path,
         new_path=str(new_path),
-        indexing=_get_index_state(),
-        message=f"지식기반 디렉토리가 변경되었습니다. 재인덱싱을 시작합니다.",
+        indexing=dict(_index_state),
+        message="지식기반 디렉토리가 변경되었습니다. 재인덱싱을 시작합니다.",
     )
 
 
