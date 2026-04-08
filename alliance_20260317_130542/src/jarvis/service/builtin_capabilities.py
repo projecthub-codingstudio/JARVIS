@@ -870,10 +870,10 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                 "score": hits,
             })
 
-        # 2) FTS content match — skip for short/common terms or when path results are sufficient
+        # 2) FTS content match — always run to complement path matching
         long_terms = [t for t in terms if len(t) >= 3]
-        fts_query = " AND ".join(f'"{t}"' for t in long_terms) if long_terms else ""
-        if fts_query and len(results) < 5:
+        fts_query = " OR ".join(f'"{t}"' for t in long_terms) if long_terms else ""
+        if fts_query:
             try:
                 matched_ids = {r["full_path"] for r in results}
                 fts_rows = db.execute(
@@ -882,7 +882,7 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                     "WHERE chunks_fts MATCH ? GROUP BY c.document_id ORDER BY hits DESC LIMIT 10",
                     (fts_query,),
                 ).fetchall()
-                for doc_id, hits in fts_rows:
+                for doc_id, fts_hits in fts_rows:
                     doc_row = db.execute(
                         "SELECT path, size_bytes, indexing_status FROM documents WHERE document_id = ?",
                         (doc_id,),
@@ -891,17 +891,17 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                         continue
                     rel = doc_row[0]
                     try:
-                        rel = str(Path(doc_row[0]).relative_to(kb_path.resolve()))
+                        rel = str(Path(doc_row[0]).relative_to(kb_resolved))
                     except (ValueError, Exception):
                         pass
                     results.append({
                         "name": Path(doc_row[0]).name,
                         "path": rel,
                         "full_path": doc_row[0],
-                        "chunk_count": hits,
+                        "chunk_count": fts_hits,
                         "status": doc_row[2],
                         "match_type": "content",
-                        "score": 0,
+                        "score": fts_hits,
                     })
             except Exception:
                 pass
