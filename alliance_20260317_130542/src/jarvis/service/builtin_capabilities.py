@@ -811,7 +811,8 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
                    "모두", "모든", "관련", "전부", "있는", "보여", "알려", "목록", "리스트",
                    "들을", "들이", "들의", "들은", "들도", "들",
                    "을", "를", "의", "에", "은", "는", "이", "가", "로", "으로", "에서",
-                   "언어", "프로그래밍", "관한", "대한", "해서", "하는", "된", "있나", "있어"):
+                   "언어", "프로그래밍", "관한", "대한", "해서", "하는", "된", "있나", "있어",
+                   "소스", "소스코드", "코드", "스크립트", "원본", "구현", "구현체"):
         search_term = search_term.replace(filler, " ")
     # Clean up punctuation and single-char residue
     search_term = re.sub(r'[.,!?·…~]', ' ', search_term)
@@ -845,7 +846,8 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
         for doc_id, doc_path, size_bytes, status in all_docs:
             path_lower = doc_path.lower()
             hits = sum(1 for t in terms if t in path_lower)
-            if hits == 0:
+            # ALL terms must match when multiple keywords are given
+            if hits == 0 or (len(terms) > 1 and hits < len(terms)):
                 continue
             rel = doc_path
             try:
