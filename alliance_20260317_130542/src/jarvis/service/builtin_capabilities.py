@@ -36,9 +36,14 @@ _WEB_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _DOC_FIND_RE = re.compile(
-    r"(문서.*찾|파일.*찾|책.*찾|자료.*찾|문서.*검색|파일.*검색|책.*검색|자료.*검색"
-    r"|관련\s*문서|관련\s*책|관련\s*자료|문서.*목록|문서.*리스트|문서.*있"
-    r"|찾아\s*줘|find\s+doc|list\s+doc|search\s+doc|find\s+file|find\s+book)",
+    r"(문서.*찾|파일.*찾|책.*찾|자료.*찾|소스.*찾"
+    r"|문서.*검색|파일.*검색|책.*검색|자료.*검색"
+    r"|문서.*보여|파일.*보여|자료.*보여|소스.*보여"
+    r"|문서.*알려|파일.*알려|자료.*알려"
+    r"|관련\s*문서|관련\s*파일|관련\s*책|관련\s*자료|관련\s*소스"
+    r"|문서.*목록|문서.*리스트|문서.*있"
+    r"|찾아\s*줘|find\s+doc|list\s+doc|search\s+doc|find\s+file|find\s+book"
+    r"|show\s+doc|show\s+file)",
     re.IGNORECASE,
 )
 _CALC_HINT_RE = re.compile(
