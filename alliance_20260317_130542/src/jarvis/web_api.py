@@ -184,7 +184,7 @@ def _trigger_reindex(*, auto: bool = False) -> bool:
     return True
 
 
-_auto_detect_last_check = 0.0  # throttle to once per 60s
+_auto_detect_last_check = _time.time()  # skip first 60s after startup to let server become responsive
 
 
 def _auto_detect_new_files(health_data: dict) -> None:
