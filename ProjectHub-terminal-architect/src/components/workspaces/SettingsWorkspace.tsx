@@ -28,6 +28,7 @@ interface SettingsWorkspaceProps {
   onIndexingStateChange: (state: IndexingState) => void;
   addLog: (log: SystemLog) => void;
   onProfileSwitch: (targetName: string | null) => void;
+  profileSwitching: string | null;
 }
 
 // ── Helpers ──────────────────────────────────────
@@ -77,6 +78,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   onIndexingStateChange,
   addLog,
   onProfileSwitch,
+  profileSwitching,
 }) => {
   // Profile state
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
@@ -152,6 +154,17 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       void loadStatus();
     }
   }, [backendStatus, loadProfiles, loadStatus]);
+
+  // Reload when profile switch completes (profileSwitching goes null)
+  const prevSwitching = useRef(profileSwitching);
+  useEffect(() => {
+    if (prevSwitching.current && !profileSwitching) {
+      // Switch just completed — force reload
+      void loadProfiles();
+      void loadStatus();
+    }
+    prevSwitching.current = profileSwitching;
+  }, [profileSwitching, loadProfiles, loadStatus]);
 
   // Refresh status when indexing completes
   useEffect(() => {

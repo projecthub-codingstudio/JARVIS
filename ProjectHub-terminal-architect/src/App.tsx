@@ -728,6 +728,7 @@ export default function App() {
                 onIndexingStateChange={setIndexingState}
                 addLog={addLog}
                 onProfileSwitch={setProfileSwitching}
+                profileSwitching={profileSwitching}
               />
             </motion.div>
           ) : null}
