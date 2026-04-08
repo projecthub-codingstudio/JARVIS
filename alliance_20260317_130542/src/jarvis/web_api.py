@@ -293,6 +293,8 @@ class KbStatusResponse(BaseModel):
     embedding_count: int
     total_size_bytes: int
     last_indexed: str | None
+    profile_id: str | None = None
+    profile_name: str | None = None
 
 
 class KbValidateRequest(BaseModel):
@@ -318,6 +320,33 @@ class KbChangeResponse(BaseModel):
     new_path: str
     indexing: dict[str, object]
     message: str
+
+
+class ProfileResponse(BaseModel):
+    id: str
+    name: str
+    kb_path: str
+    created_at: str
+    is_active: bool
+    doc_count: int
+    chunk_count: int
+    has_index: bool
+
+
+class ProfileListResponse(BaseModel):
+    profiles: list[ProfileResponse]
+    active: str
+
+
+class ProfileCreateRequest(BaseModel):
+    name: str = Field(max_length=100)
+    kb_path: str = Field(max_length=4096)
+
+
+class ProfileCreateResponse(BaseModel):
+    profile: ProfileResponse
+    profiles: list[ProfileResponse]
+    active: str
 
 
 def _require_service():
@@ -521,6 +550,17 @@ def kb_status() -> KbStatusResponse:
     exists = kb_path is not None and kb_path.exists()
 
     health = dict(_cached_health)
+
+    profile_id = None
+    profile_name = None
+    try:
+        from jarvis.app.profile_manager import get_active_profile
+        active = get_active_profile()
+        profile_id = active.id
+        profile_name = active.name
+    except Exception:
+        pass
+
     return KbStatusResponse(
         path=path_str,
         exists=exists,
@@ -529,6 +569,8 @@ def kb_status() -> KbStatusResponse:
         embedding_count=int(health.get("embedding_count", 0)),
         total_size_bytes=int(health.get("total_size_bytes", 0)),
         last_indexed=_index_state.get("last_completed"),
+        profile_id=profile_id,
+        profile_name=profile_name,
     )
 
 
@@ -662,6 +704,96 @@ def kb_change(http_request: Request, request: KbChangeRequest) -> KbChangeRespon
         indexing=dict(_index_state),
         message="지식기반 디렉토리가 변경되었습니다. 재인덱싱을 시작합니다.",
     )
+
+
+@app.get("/api/profiles", response_model=ProfileListResponse)
+def list_profiles() -> ProfileListResponse:
+    """List all KB profiles with stats."""
+    from jarvis.app.profile_manager import list_profiles_with_stats, load_profiles
+
+    profiles = list_profiles_with_stats()
+    config = load_profiles()
+    return ProfileListResponse(
+        profiles=[ProfileResponse(**p) for p in profiles],
+        active=config.active,
+    )
+
+
+@app.post("/api/profiles", response_model=ProfileCreateResponse)
+def create_profile_endpoint(http_request: Request, request: ProfileCreateRequest) -> ProfileCreateResponse:
+    """Create a new KB profile."""
+    _check_origin(http_request)
+
+    from jarvis.app.profile_manager import create_profile, list_profiles_with_stats, load_profiles
+
+    try:
+        profile = create_profile(request.name, request.kb_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    profiles = list_profiles_with_stats()
+    config = load_profiles()
+    profile_resp = next(p for p in profiles if p["id"] == profile.id)
+    return ProfileCreateResponse(
+        profile=ProfileResponse(**profile_resp),
+        profiles=[ProfileResponse(**p) for p in profiles],
+        active=config.active,
+    )
+
+
+@app.delete("/api/profiles/{profile_id}")
+def delete_profile_endpoint(profile_id: str, http_request: Request):
+    """Delete a KB profile and its data."""
+    _check_origin(http_request)
+
+    from jarvis.app.profile_manager import delete_profile, list_profiles_with_stats, load_profiles
+
+    try:
+        delete_profile(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    profiles = list_profiles_with_stats()
+    config = load_profiles()
+    return {
+        "deleted": True,
+        "profiles": [ProfileResponse(**p).model_dump() for p in profiles],
+        "active": config.active,
+    }
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+def activate_profile(profile_id: str, http_request: Request):
+    """Switch to a different profile. Restarts the backend."""
+    _check_origin(http_request)
+
+    from jarvis.app.profile_manager import set_active_profile
+
+    if _index_state["status"] in ("scanning", "indexing"):
+        raise HTTPException(status_code=409, detail="인덱싱 진행 중입니다. 완료 후 전환해주세요.")
+
+    try:
+        profile = set_active_profile(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Set env var for the restarted process
+    os.environ["JARVIS_KNOWLEDGE_BASE"] = profile.kb_path
+
+    def _do_restart() -> None:
+        _time.sleep(0.5)
+        logger.info("Restarting for profile switch: %s", profile_id)
+        pid_file = Path(__file__).resolve().parent.parent.parent.parent / "ProjectHub-terminal-architect" / ".pids" / "backend.pid"
+        if pid_file.exists():
+            try:
+                pid_file.write_text(str(os.getpid()))
+            except Exception:
+                pass
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_do_restart, daemon=True, name="profile-switch").start()
+
+    return {"switching": True, "profile_id": profile_id, "profile_name": profile.name}
 
 
 @app.post("/api/restart")
