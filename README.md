@@ -4,6 +4,7 @@
 
 A privacy-first, local AI assistant for Apple Silicon — inspired by Iron Man's JARVIS.
 
+[![Built with ProjectHub](https://img.shields.io/badge/Built_with-ProjectHub-0EA5E9)](https://projecthub.co.kr)
 [![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 [![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
 [![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -453,6 +454,7 @@ Gemma 4's April 2026 release moved from custom Gemma Terms of Use to **Apache 2.
 
 아이언맨의 자비스(JARVIS)에서 영감을 받은, Apple Silicon 전용 개인정보 보호 우선 로컬 AI 비서.
 
+[![Built with ProjectHub](https://img.shields.io/badge/Built_with-ProjectHub-0EA5E9)](https://projecthub.co.kr)
 [![Built with Claude](https://img.shields.io/badge/Built_with-Claude-D97706?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 [![Analyzed with Codex](https://img.shields.io/badge/Analyzed_with-OpenAI_Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
 [![Evaluated with Gemini](https://img.shields.io/badge/Evaluated_with-Gemini-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
