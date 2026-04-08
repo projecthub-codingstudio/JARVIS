@@ -285,6 +285,41 @@ class ActionMapCreateRequest(ActionMapPayload):
     map_id: str
 
 
+class KbStatusResponse(BaseModel):
+    path: str
+    exists: bool
+    doc_count: int
+    chunk_count: int
+    embedding_count: int
+    total_size_bytes: int
+    last_indexed: str | None
+
+
+class KbValidateRequest(BaseModel):
+    path: str = Field(max_length=4096)
+
+
+class KbValidateResponse(BaseModel):
+    path: str
+    exists: bool
+    is_directory: bool
+    readable: bool
+    file_count: int
+    error: str | None = None
+
+
+class KbChangeRequest(BaseModel):
+    path: str = Field(max_length=4096)
+
+
+class KbChangeResponse(BaseModel):
+    started: bool
+    previous_path: str
+    new_path: str
+    indexing: dict[str, object]
+    message: str
+
+
 def _require_service():
     """Get service or raise 503 if not yet initialized."""
     svc = _get_service()
@@ -476,6 +511,161 @@ def reindex(request: Request):
         "started": started,
         "indexing": _get_index_state(),
     }
+
+
+@app.get("/api/kb/status", response_model=KbStatusResponse)
+def kb_status() -> KbStatusResponse:
+    """Return current knowledge base directory status."""
+    from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
+
+    kb_path = _resolve_kb_root()
+    path_str = str(kb_path) if kb_path else ""
+    exists = kb_path is not None and kb_path.exists()
+
+    health = dict(_cached_health)
+    return KbStatusResponse(
+        path=path_str,
+        exists=exists,
+        doc_count=int(health.get("doc_count", 0)),
+        chunk_count=int(health.get("chunk_count", 0)),
+        embedding_count=int(health.get("embedding_count", 0)),
+        total_size_bytes=int(health.get("total_size_bytes", 0)),
+        last_indexed=_index_state.get("last_completed"),
+    )
+
+
+@app.post("/api/kb/validate", response_model=KbValidateResponse)
+def kb_validate(request: KbValidateRequest) -> KbValidateResponse:
+    """Validate a candidate knowledge base path before committing."""
+    from jarvis.app.runtime_context import is_indexable
+
+    raw_path = request.path.strip()
+    if not raw_path:
+        return KbValidateResponse(
+            path=raw_path, exists=False, is_directory=False,
+            readable=False, file_count=0, error="경로가 비어 있습니다.",
+        )
+
+    p = Path(raw_path).expanduser().resolve()
+    if not p.exists():
+        return KbValidateResponse(
+            path=str(p), exists=False, is_directory=False,
+            readable=False, file_count=0, error="경로가 존재하지 않습니다.",
+        )
+    if not p.is_dir():
+        return KbValidateResponse(
+            path=str(p), exists=True, is_directory=False,
+            readable=False, file_count=0, error="디렉토리가 아닙니다.",
+        )
+    if not os.access(p, os.R_OK):
+        return KbValidateResponse(
+            path=str(p), exists=True, is_directory=True,
+            readable=False, file_count=0, error="읽기 권한이 없습니다.",
+        )
+
+    file_count = sum(1 for f in p.rglob("*") if f.is_file() and is_indexable(f))
+    return KbValidateResponse(
+        path=str(p), exists=True, is_directory=True,
+        readable=True, file_count=file_count, error=None,
+    )
+
+
+@app.post("/api/kb/change", response_model=KbChangeResponse)
+def kb_change(http_request: Request, request: KbChangeRequest) -> KbChangeResponse:
+    """Change the knowledge base directory. Purges old index and triggers re-indexing."""
+    _check_origin(http_request)
+
+    from jarvis.app.runtime_context import is_indexable
+
+    new_path = Path(request.path.strip()).expanduser().resolve()
+
+    # Validate
+    if not new_path.is_dir():
+        raise HTTPException(status_code=400, detail="유효한 디렉토리가 아닙니다.")
+    if not os.access(new_path, os.R_OK):
+        raise HTTPException(status_code=400, detail="읽기 권한이 없습니다.")
+
+    previous_path = str(_resolve_kb_root() or "")
+
+    # Set environment variable so all subsequent resolves use the new path
+    os.environ["JARVIS_KNOWLEDGE_BASE"] = str(new_path)
+
+    # Purge old indexed data and trigger full reindex
+    def _purge_and_reindex() -> None:
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.app.runtime_context import (
+            purge_documents_outside_knowledge_base,
+            run_indexing,
+        )
+        from jarvis.cli.menu_bridge import resolve_menubar_data_dir
+
+        db = None
+        try:
+            _index_state["status"] = "scanning"
+            _index_state["processed"] = 0
+            _index_state["total"] = 0
+            _index_state["error"] = None
+
+            data_dir = resolve_menubar_data_dir()
+            config = JarvisConfig(
+                data_dir=data_dir,
+                watched_folders=[new_path],
+            )
+            db = init_database(config)
+
+            # Purge documents from previous KB path
+            purge_documents_outside_knowledge_base(db, new_path)
+
+            # Count indexable files
+            files = [f for f in new_path.rglob("*") if f.is_file() and is_indexable(f)]
+            _index_state["total"] = len(files)
+            _index_state["status"] = "indexing"
+
+            progress = {"count": 0}
+
+            def _reporter(msg: str) -> None:
+                if "Indexing " in msg and "/" in msg:
+                    progress["count"] += 1
+                    _index_state["processed"] = progress["count"]
+
+            run_indexing(
+                db,
+                new_path,
+                data_dir=data_dir,
+                start_background_backfill=True,
+                reporter=_reporter,
+            )
+
+            _index_state["status"] = "done"
+            _index_state["last_completed"] = _time.strftime("%Y-%m-%dT%H:%M:%S")
+            logger.info("KB change reindex complete: %s -> %s", previous_path, new_path)
+        except Exception as exc:
+            _index_state["status"] = "error"
+            _index_state["error"] = str(exc)
+            logger.error("KB change reindex failed: %s", exc)
+        finally:
+            if db is not None:
+                db.close()
+            _index_lock.release()
+
+    # Acquire the index lock — fail if already indexing
+    if not _index_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="인덱싱이 진행 중입니다. 완료 후 다시 시도해주세요.")
+
+    if _index_state["status"] in ("scanning", "indexing"):
+        _index_lock.release()
+        raise HTTPException(status_code=409, detail="인덱싱이 진행 중입니다. 완료 후 다시 시도해주세요.")
+
+    threading.Thread(target=_purge_and_reindex, daemon=True, name="kb-change-worker").start()
+
+    return KbChangeResponse(
+        started=True,
+        previous_path=previous_path,
+        new_path=str(new_path),
+        indexing=_get_index_state(),
+        message=f"지식기반 디렉토리가 변경되었습니다. 재인덱싱을 시작합니다.",
+    )
 
 
 @app.post("/api/restart")
