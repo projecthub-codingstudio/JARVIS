@@ -62,7 +62,22 @@ alliance_20260317_130542/macos/JarvisMenuBar/.swiftpm/
 firebase*.json
 firebase*.ts
 
+# Security audit reports (may contain sensitive findings)
+SECURITY_AUDIT*.md
+
+# Runtime database files (contain user data)
+.jarvis-menubar/jarvis.db
+.jarvis-menubar/jarvis.db-shm
+.jarvis-menubar/jarvis.db-wal
+*.db-shm
+*.db-wal
+
 # Legacy/archive directories
 terminal-architect/
 stitch/
 *.zip
+
+# Runtime/debug data directories (should never be committed)
+.jarvis-menubar/
+.playwright-mcp/
+.superpowers/

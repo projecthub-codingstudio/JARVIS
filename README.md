@@ -18,11 +18,15 @@ JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It 
 ### Core Features
 
 - **Personal RAG** — Document-grounded Q&A over PDF, DOCX, XLSX, HWP, PPTX, Markdown, and code files with evidence-backed citations
-- **Web Interface** — React/TypeScript SPA with Terminal (chat), Repository (file browser + viewer), Skills, and Admin workspaces
-- **Repository Viewer** — 12 specialized renderers (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video) with syntax highlighting, GFM markdown, encoding detection, WRAP/NOWRAP toggle
+- **Web Interface** — React/TypeScript SPA with Terminal (chat), Documents (search results), Explorer (file browser + viewer), Skills, and Admin workspaces
+- **Documents View** — Search results displayed as cascade floating windows with left sidebar list, auto-layout (free/cascade/tile), and bulk open/close
+- **Document Q&A** — Ask questions about open documents directly; Gemma 4 E4B reads the actual file (bypassing RAG) with multi-document context, conversation continuity, and context badge with hover popup
+- **Explorer Viewer** — 12 specialized renderers (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video) with syntax highlighting, GFM markdown, encoding detection, WRAP/NOWRAP toggle
 - **Vision Q&A** — Upload images to the Terminal for Gemma 4 E4B multimodal analysis (128K context)
+- **Feedback Learning** — Thumbs up/down on each AI response; positive feedback trains query-document affinity scores that automatically boost relevant documents in future searches
 - **Session Query Learning** — 3-layer system that captures failure→success query reformulations, learns entity hints, injects them into future similar queries — independent of the generation LLM
-- **Hybrid Retrieval** — SQLite FTS5 (morpheme-expanded Korean) + LanceDB vector search + RRF fusion + cross-encoder reranking
+- **Hybrid Retrieval** — SQLite FTS5 (morpheme-expanded Korean) + LanceDB vector search + RRF fusion + cross-encoder reranking (sigmoid-normalized)
+- **Smart Response Format** — LLM auto-selects response format based on query type: direct values, numbered lists, markdown tables, step-by-step procedures, structured narrative, or code blocks
 - **Citation-backed Answers** — Factual answers require retrieved source evidence with relevance scores
 - **Answerability Gate** — Pre-generation decision layer protects against hallucination on weak/ambiguous evidence
 - **Real-time Indexing** — File watcher auto-indexes new/modified documents in the knowledge base
@@ -35,6 +39,7 @@ JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It 
 |-------|-----------|
 | **Generation LLM (Fast/Balanced)** | EXAONE-3.5-7.8B-Instruct-4bit (MLX) — 1.5s, primary |
 | **Generation LLM (Deep)** | EXAONE-4.0-32B-4bit (128K context) |
+| **Document Analysis LLM** | Gemma 4 E4B (128K context, direct file reading, via mlx-vlm) |
 | **Vision LLM** | Gemma 4 E4B (multimodal, 128K context, via mlx-vlm) |
 | **Alternative LLMs** | Qwen3.5:9B, EXAONE-Deep (reasoning), Gemma 4 E2B (routing) |
 | **Embeddings** | BGE-M3 (multilingual, CPU) |
@@ -57,28 +62,30 @@ JARVIS is a fully local AI assistant that runs on MacBook Pro M1 Max (64GB). It 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Web Interface (React SPA, localhost:3000)                  │
-│  Terminal · Repository · Skills · Admin · Viewers           │
+│  Terminal · Documents · Explorer · Skills · Admin           │
+│  + Document Context Badge · 👍/👎 Feedback · Source Map     │
 └────────────────────────────┬────────────────────────────────┘
                              │ HTTP + WebSocket
 ┌────────────────────────────▼────────────────────────────────┐
 │  FastAPI Backend (localhost:8000, alliance/src/jarvis/)     │
-│  /api/ask · /api/ask/vision · /api/browse · /api/file       │
-│  /api/learned-patterns · /api/skills · /ws/{session_id}     │
+│  /api/ask · /api/ask/vision · /api/feedback · /api/browse   │
+│  /api/file · /api/learned-patterns · /api/skills            │
 ├─────────────────────────────────────────────────────────────┤
-│  Orchestrator                                                │
-│    → Planner (HintInjector)  ← Session Query Learning       │
-│    → Retrieval (FTS + Vector + RRF + Reranker)              │
-│    → Answerability Gate                                      │
-│    → LLM Generation (MLX / GemmaVlm / LlamaCpp)             │
-│    → Post-generation Guard                                   │
+│  3 Routing Paths:                                            │
+│    A. Document Context → Gemma 4 E4B direct (bypass RAG)    │
+│    B. Builtin Capability → doc_find, calc, time, weather    │
+│    C. RAG Pipeline:                                          │
+│       Planner (95-pair bilingual expansion)                  │
+│       → Retrieval (FTS + Vector + RRF + Reranker)           │
+│       → Answerability Gate                                   │
+│       → LLM Generation (EXAONE / Gemma)                     │
 ├─────────────────────────────────────────────────────────────┤
-│  Learning Layer (decoupled from LLM)                         │
-│    SessionEventCapture → ReformulationDetector →            │
-│    PatternExtractor → PatternStore → PatternMatcher →       │
-│    HintInjector                                              │
+│  Learning Layer                                              │
+│    Session Learning: EventCapture → ReformulationDetector   │
+│    Feedback Learning: 👍/👎 → Query-Document Affinity       │
 ├─────────────────────────────────────────────────────────────┤
 │  Indexing Pipeline                                           │
-│    Parsers → Chunking → BGE-M3 Embedding → FTS5 + LanceDB   │
+│    12 Parsers → 3 Chunk Strategies → BGE-M3 → FTS5+LanceDB │
 └─────────────────────────────────────────────────────────────┘
                              │
                   ~/.jarvis-menubar/jarvis.db
@@ -258,8 +265,9 @@ JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,exaone3.5:7.8b,stub" ./scripts/start.sh
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/ask` | Query with RAG, returns answer + citations + guide |
+| POST | `/api/ask` | Query with RAG (or direct LLM with `context_document_paths`) |
 | POST | `/api/ask/vision` | Multimodal Q&A (multipart: text + image) → Gemma 4 |
+| POST | `/api/feedback` | Submit answer feedback (positive/negative) for search learning |
 | POST | `/api/normalize` | Normalize Korean query text |
 | GET | `/api/health` | Service health + runtime state |
 | GET | `/api/runtime-state` | Current LLM runtime info |
@@ -286,10 +294,11 @@ JARVIS_MENU_BAR_MODEL_CHAIN="gemma4:e4b,exaone3.5:7.8b,stub" ./scripts/start.sh
 ## Web Interface Tabs
 
 1. **Home** — Dashboard with quick-access Terminal + recent activity
-2. **Terminal** — Chat interface with AI; image attachment (Gemma 4 vision); citation clicks navigate to Repository
-3. **Repository** — File tree browser (`knowledge_base/`) + multi-renderer viewer with 12 format-specific renderers
-4. **Skills** — Skill registry management + workflow action maps
-5. **Admin** — System health, active workers, event logs, Learned Patterns panel (view/delete)
+2. **Terminal** — Chat interface with AI; image attachment (Gemma 4 vision); document context badge (hover for list, click to navigate); 👍/👎 feedback buttons; citation clicks navigate to Explorer
+3. **Documents** — Search results displayed as cascade floating windows with left sidebar list; Free/Cascade/Tile layout toggle; bulk open/close
+4. **Explorer** — File tree browser (`knowledge_base/`) + multi-renderer viewer with 12 format-specific renderers; floating windows with drag/resize/maximize
+5. **Skills** — Skill registry management + workflow action maps
+6. **Admin** — System health with restart progress indicator, KB stats, reindex controls, event logs, Learned Patterns panel, Source Map (radial graph)
 
 ## Session Query Learning System
 
@@ -323,12 +332,15 @@ The learning layer uses BGE-M3 embeddings (not the generation LLM), so EXAONE �
 - [x] Colligi2 collective intelligence analysis
 - [x] Alliance-based code generation
 - [x] LLM backend integration (MLX primary, llamacpp fallback)
-- [x] **Gemma 4 vision backend** (GemmaVlmBackend via mlx-vlm)
+- [x] **Gemma 4 vision + document analysis backend** (GemmaVlmBackend via mlx-vlm, 128K context)
 - [x] Document parsers (PDF, DOCX, XLSX, PPTX, HWP, HWPX, code files)
 - [x] FTS5 search + Kiwi morphological analysis
 - [x] LanceDB vector search + BGE-M3 embeddings (22,692+ chunks indexed)
-- [x] Cross-encoder reranker (multilingual)
-- [x] Hybrid planner + per-task retrieval strategies
+- [x] Cross-encoder reranker (multilingual, sigmoid-normalized)
+- [x] Hybrid planner + per-task retrieval strategies + 95-pair bilingual expansion
+- [x] **Feedback-based search learning** (query-document affinity auto-boost)
+- [x] **Smart response format** (auto-select: value/list/table/steps/narrative/code)
+- [x] **Direct document Q&A** (RAG bypass, multi-file context, auto-continuation)
 - [x] Answerability gate (pre-generation safety)
 - [x] Governor (8 threshold rules: memory, swap, thermal, battery)
 - [x] Token-based semantic chunking (table-row / code-function / paragraph)
@@ -339,14 +351,19 @@ The learning layer uses BGE-M3 embeddings (not the generation LLM), so EXAONE �
 
 ### Frontend
 - [x] React 19 + TypeScript + Vite SPA
-- [x] 5-tab workspace layout (Home, Terminal, Repository, Skills, Admin)
-- [x] **Repository file tree browser** with lazy loading
+- [x] 6-tab workspace layout (Home, Terminal, Documents, Explorer, Skills, Admin)
+- [x] **Documents view** — cascade floating windows for search results with sidebar list
+- [x] **Explorer file tree browser** with lazy loading + floating viewer windows
 - [x] **12 specialized viewers** (PDF, DOCX, PPTX, XLSX, HWP, code, markdown, text, HTML, image, video, web)
+- [x] **Document Q&A** — multi-document context with terminal badge (hover/click/dismiss)
+- [x] **Feedback UI** — 👍/👎 buttons on each AI response for search quality learning
 - [x] **Image attach in Terminal** for Gemma 4 vision Q&A
+- [x] **Source Map** — radial graph visualization of answer sources (up to 8 + overflow list)
+- [x] **Restart progress** — spinner with elapsed time during backend restart
 - [x] Syntax highlighting (react-syntax-highlighter)
 - [x] GitHub Flavored Markdown (remark-gfm)
 - [x] WRAP/NOWRAP toggle + encoding detection headers
-- [x] Terminal citation → Repository navigation
+- [x] Terminal citation → Explorer navigation
 - [x] **Learned Patterns admin UI** (view, delete)
 - [x] Streaming response support
 
@@ -377,6 +394,10 @@ At startup, `HF_HUB_OFFLINE=1` is set by default to prevent silent HuggingFace n
 
 ## Documentation
 
+- [`docs/JARVIS_Query_Pipeline_Architecture.md`](docs/JARVIS_Query_Pipeline_Architecture.md) — Full query-to-answer pipeline (3 routing paths, 8-step RAG, database schemas, feedback loop)
+- [`docs/JARVIS_Indexing_Pipeline_Detail.md`](docs/JARVIS_Indexing_Pipeline_Detail.md) — How files are indexed (12 parsers, 3 chunking strategies, vector backfill)
+- [`docs/superpowers/specs/2026-04-08-search-improvement-research.md`](docs/superpowers/specs/2026-04-08-search-improvement-research.md) — Search quality research (8 bottlenecks, auto-upgrade design)
+- [`docs/superpowers/specs/2026-04-08-response-format-intelligence.md`](docs/superpowers/specs/2026-04-08-response-format-intelligence.md) — Response format intelligence design
 - [`docs/JARVIS_Authoritative_Decision.md`](alliance_20260317_130542/docs/JARVIS_Authoritative_Decision.md) — Single source of truth
 - [`docs/superpowers/specs/`](ProjectHub-terminal-architect/docs/superpowers/specs/) — Design specifications
 - [`docs/superpowers/plans/`](ProjectHub-terminal-architect/docs/superpowers/plans/) — Implementation plans
