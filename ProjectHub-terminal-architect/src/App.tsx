@@ -219,8 +219,8 @@ export default function App() {
 
     if (preferredView === 'documents') {
       if (assets.length > 0) {
-        setView('documents');
-        // Set all search result paths as document context for follow-up Q&A
+        // Stay in terminal — set document context for follow-up Q&A
+        // User can navigate to Documents view via nav if they want the cascade view
         const paths = assets.map((a) => a.full_path || a.path).filter(Boolean);
         if (paths.length > 0) setDocumentContextPaths(paths);
       }
