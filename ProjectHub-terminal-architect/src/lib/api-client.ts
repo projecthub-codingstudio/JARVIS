@@ -85,6 +85,33 @@ export interface HealthResponse {
   };
 }
 
+export interface KbStatusResponse {
+  path: string;
+  exists: boolean;
+  doc_count: number;
+  chunk_count: number;
+  embedding_count: number;
+  total_size_bytes: number;
+  last_indexed: string | null;
+}
+
+export interface KbValidateResponse {
+  path: string;
+  exists: boolean;
+  is_directory: boolean;
+  readable: boolean;
+  file_count: number;
+  error: string | null;
+}
+
+export interface KbChangeResponse {
+  started: boolean;
+  previous_path: string;
+  new_path: string;
+  indexing: IndexingState;
+  message: string;
+}
+
 export interface SkillCatalogResponse {
   catalog: SkillCatalog;
 }
@@ -128,6 +155,35 @@ export const apiClient = {
       throw new Error(`Reindex failed: ${response.statusText}`);
     }
     return response.json();
+  },
+
+  async kbStatus(): Promise<KbStatusResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/kb/status`);
+    if (!res.ok) throw new Error(`KB status failed: ${res.statusText}`);
+    return res.json();
+  },
+
+  async kbValidate(path: string): Promise<KbValidateResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/kb/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!res.ok) throw new Error(`KB validate failed: ${res.statusText}`);
+    return res.json();
+  },
+
+  async kbChange(path: string): Promise<KbChangeResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/kb/change`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `KB change failed: ${res.statusText}`);
+    }
+    return res.json();
   },
 
   async restart(): Promise<void> {
