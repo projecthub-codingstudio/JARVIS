@@ -395,13 +395,13 @@ At startup, `HF_HUB_OFFLINE=1` is set by default to prevent silent HuggingFace n
 
 ## Documentation
 
-- [`docs/JARVIS_Query_Pipeline_Architecture.md`](docs/JARVIS_Query_Pipeline_Architecture.md) — Full query-to-answer pipeline (3 routing paths, 8-step RAG, database schemas, feedback loop)
-- [`docs/JARVIS_Indexing_Pipeline_Detail.md`](docs/JARVIS_Indexing_Pipeline_Detail.md) — How files are indexed (12 parsers, 3 chunking strategies, vector backfill)
-- [`docs/superpowers/specs/2026-04-08-search-improvement-research.md`](docs/superpowers/specs/2026-04-08-search-improvement-research.md) — Search quality research (8 bottlenecks, auto-upgrade design)
-- [`docs/superpowers/specs/2026-04-08-response-format-intelligence.md`](docs/superpowers/specs/2026-04-08-response-format-intelligence.md) — Response format intelligence design
-- [`docs/JARVIS_Authoritative_Decision.md`](alliance_20260317_130542/docs/JARVIS_Authoritative_Decision.md) — Single source of truth
-- [`docs/superpowers/specs/`](ProjectHub-terminal-architect/docs/superpowers/specs/) — Design specifications
-- [`docs/superpowers/plans/`](ProjectHub-terminal-architect/docs/superpowers/plans/) — Implementation plans
+- **[Installation Guide](docs/JARVIS_Installation_Guide.md)** — 설치부터 실행까지 전체 가이드 (시스템 요구사항, 의존성, 모델 다운로드, 트러블슈팅)
+- [Query Pipeline Architecture](docs/JARVIS_Query_Pipeline_Architecture.md) — 질의-응답 파이프라인 전체 흐름 (3 routing paths, 8-step RAG, DB 스키마, 피드백 루프)
+- [Indexing Pipeline Detail](docs/JARVIS_Indexing_Pipeline_Detail.md) — 인덱싱 파이프라인 상세 (12 파서, 3 청킹 전략, 벡터 백필)
+- [Search Improvement Research](docs/superpowers/specs/2026-04-08-search-improvement-research.md) — 검색 품질 향상 연구 (8개 병목, 자동 업그레이드 설계)
+- [Response Format Intelligence](docs/superpowers/specs/2026-04-08-response-format-intelligence.md) — 응답 포맷 지능화 설계
+- [Authoritative Decision](alliance_20260317_130542/docs/JARVIS_Authoritative_Decision.md) — 기술 의사결정 원본
+- [Design Specs](ProjectHub-terminal-architect/docs/superpowers/specs/) / [Implementation Plans](ProjectHub-terminal-architect/docs/superpowers/plans/)
 
 ## Built With
 
