@@ -55,7 +55,8 @@ def resolve_knowledge_base_path(candidate: Path | None = None) -> Path:
     Priority:
       1. Explicit function argument
       2. JARVIS_KNOWLEDGE_BASE env var
-      3. ./knowledge_base under the current working directory
+      3. Active profile's kb_path from profiles.json
+      4. ./knowledge_base under the current working directory
     """
     if candidate is not None:
         return candidate.expanduser().resolve()
@@ -63,6 +64,14 @@ def resolve_knowledge_base_path(candidate: Path | None = None) -> Path:
     env_value = os.getenv("JARVIS_KNOWLEDGE_BASE", "").strip()
     if env_value:
         return Path(env_value).expanduser().resolve()
+
+    try:
+        from jarvis.app.profile_manager import get_active_profile
+        profile_path = Path(get_active_profile().kb_path).expanduser().resolve()
+        if profile_path.is_dir():
+            return profile_path
+    except Exception:
+        pass
 
     cwd = Path.cwd().resolve()
     search_roots = [cwd, *list(cwd.parents)[:4]]
