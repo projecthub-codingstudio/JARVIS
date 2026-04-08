@@ -619,6 +619,7 @@ export default function App() {
                 focusInputNonce={terminalFocusNonce}
                 documentContext={documentContextPaths}
                 onClearDocumentContext={() => setDocumentContextPaths([])}
+                onNavigateToDocuments={() => setView('documents')}
               />
             </motion.div>
           ) : null}

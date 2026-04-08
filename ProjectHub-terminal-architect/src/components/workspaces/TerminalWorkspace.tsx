@@ -46,6 +46,7 @@ interface TerminalWorkspaceProps {
   onRestart?: () => void;
   documentContext?: string[];
   onClearDocumentContext?: () => void;
+  onNavigateToDocuments?: () => void;
 }
 
 function FeedbackButtons({ messageId, queryText, citationPaths, sessionId }: {
@@ -831,6 +832,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   onRestart,
   documentContext,
   onClearDocumentContext,
+  onNavigateToDocuments,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -1485,16 +1487,23 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               className="flex flex-col gap-2 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
             >
               {documentContext && documentContext.length > 0 && onClearDocumentContext && (
-                <div className="flex items-center gap-2 border-b border-white/10 pb-2">
-                  <FileText size={12} className="shrink-0 text-secondary" />
-                  <span className="truncate text-[11px] text-secondary">
-                    {documentContext.length === 1
-                      ? documentContext[0].split('/').pop()
-                      : `${documentContext[0].split('/').pop()} 외 ${documentContext.length - 1}개 문서`}
-                  </span>
-                  <span className="shrink-0 rounded-full bg-secondary/15 px-1.5 text-[9px] font-bold text-secondary">
-                    {documentContext.length}
-                  </span>
+                <div className="group relative flex items-center gap-2 border-b border-white/10 pb-2">
+                  <button
+                    type="button"
+                    onClick={onNavigateToDocuments}
+                    className="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 transition hover:bg-secondary/10"
+                    title="Documents 뷰로 이동"
+                  >
+                    <FileText size={12} className="shrink-0 text-secondary" />
+                    <span className="truncate text-[11px] text-secondary">
+                      {documentContext.length === 1
+                        ? documentContext[0].split('/').pop()
+                        : `${documentContext[0].split('/').pop()} 외 ${documentContext.length - 1}개 문서`}
+                    </span>
+                    <span className="shrink-0 rounded-full bg-secondary/15 px-1.5 text-[9px] font-bold text-secondary">
+                      {documentContext.length}
+                    </span>
+                  </button>
                   <button
                     type="button"
                     onClick={onClearDocumentContext}
@@ -1503,6 +1512,22 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   >
                     <X size={12} />
                   </button>
+                  {/* Hover popup: document list */}
+                  {documentContext.length > 1 && (
+                    <div className="pointer-events-none absolute bottom-full left-0 z-50 mb-1 hidden w-72 rounded-lg border border-white/10 bg-surface-container-high p-2 shadow-xl group-hover:pointer-events-auto group-hover:block">
+                      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-outline">
+                        참조 문서 ({documentContext.length})
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {documentContext.map((path, i) => (
+                          <div key={i} className="flex items-center gap-2 rounded px-2 py-1 text-[11px] text-on-surface-variant hover:bg-white/5">
+                            <FileText size={10} className="shrink-0 text-secondary/60" />
+                            <span className="truncate">{path.split('/').pop()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {imagePreviewUrl && (
