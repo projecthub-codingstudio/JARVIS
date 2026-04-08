@@ -125,6 +125,7 @@ export default function App() {
   const [actionMapsError, setActionMapsError] = useState<string | null>(null);
   const [repositoryInitialPath, setRepositoryInitialPath] = useState<string | null>(null);
   const [activeProfileName, setActiveProfileName] = useState<string | null>(null);
+  const [profileSwitching, setProfileSwitching] = useState<string | null>(null); // target profile name while switching
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const {
@@ -265,7 +266,14 @@ export default function App() {
           setIndexingState(data.health.indexing);
         }
         if (data?.health?.profile_name) {
-          setActiveProfileName(data.health.profile_name);
+          setActiveProfileName((prev) => {
+            const next = data.health.profile_name as string;
+            if (prev !== next) {
+              // Profile actually changed on backend — clear switching overlay
+              setProfileSwitching(null);
+            }
+            return next;
+          });
         }
         addLog({
           id: `${Date.now()}-health`,
@@ -719,6 +727,7 @@ export default function App() {
                 indexingState={indexingState}
                 onIndexingStateChange={setIndexingState}
                 addLog={addLog}
+                onProfileSwitch={setProfileSwitching}
               />
             </motion.div>
           ) : null}
@@ -799,6 +808,35 @@ export default function App() {
             onSendMessage={handleCommandPaletteSend}
             onNavigateToFile={(path) => { navigateToFile(path); setCommandPaletteOpen(false); }}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Profile switching overlay — blocks all interaction */}
+      <AnimatePresence>
+        {profileSwitching && (
+          <motion.div
+            className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-surface/95"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <div className="flex flex-col items-center gap-6">
+              <div className="relative flex h-16 w-16 items-center justify-center">
+                <div className="absolute inset-0 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+                <img src="/projecthub-icon.png" alt="" className="h-8 w-8 rounded" />
+              </div>
+              <div className="text-center">
+                <div className="text-sm font-semibold text-on-surface">Switching Profile</div>
+                <div className="mt-1 text-[12px] text-outline">
+                  {profileSwitching}
+                </div>
+                <div className="mt-3 text-[11px] text-on-surface-variant animate-pulse">
+                  Backend restarting...
+                </div>
+              </div>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

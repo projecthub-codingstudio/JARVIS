@@ -27,6 +27,7 @@ interface SettingsWorkspaceProps {
   indexingState: IndexingState;
   onIndexingStateChange: (state: IndexingState) => void;
   addLog: (log: SystemLog) => void;
+  onProfileSwitch: (targetName: string | null) => void;
 }
 
 // ── Helpers ──────────────────────────────────────
@@ -75,6 +76,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   indexingState,
   onIndexingStateChange,
   addLog,
+  onProfileSwitch,
 }) => {
   // Profile state
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
@@ -98,7 +100,6 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   // Switch dialog
   const [switchTarget, setSwitchTarget] = useState<ProfileItem | null>(null);
   const [switching, setSwitching] = useState(false);
-  const [switchingInProgress, setSwitchingInProgress] = useState(false);
 
   // Delete dialog
   const [deleteTarget, setDeleteTarget] = useState<ProfileItem | null>(null);
@@ -151,15 +152,6 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       void loadStatus();
     }
   }, [backendStatus, loadProfiles, loadStatus]);
-
-  // Reload after profile switch — backend restarts, so wait for reconnect
-  useEffect(() => {
-    if (switchingInProgress && backendStatus === 'online') {
-      void loadProfiles();
-      void loadStatus();
-      setSwitchingInProgress(false);
-    }
-  }, [switchingInProgress, backendStatus, loadProfiles, loadStatus]);
 
   // Refresh status when indexing completes
   useEffect(() => {
@@ -252,8 +244,8 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
         message: `Switching to profile: ${switchTarget.name}`,
       });
       setSwitchTarget(null);
-      setSwitchingInProgress(true);
-      // Backend will restart — reload will happen when backendStatus cycles
+      // Trigger full-screen overlay in App.tsx — clears when health returns new profile name
+      onProfileSwitch(switchTarget.name);
     } catch (err) {
       addLog({
         id: `${Date.now()}-profile-switch-err`,
@@ -357,20 +349,6 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 Add Profile
               </button>
             </div>
-
-            {switchingInProgress && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="mb-3 flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3"
-              >
-                <RefreshCw size={16} className="shrink-0 animate-spin text-primary" />
-                <div>
-                  <div className="text-[12px] font-semibold text-primary">Switching Profile...</div>
-                  <div className="text-[11px] text-outline">Backend is restarting. Please wait.</div>
-                </div>
-              </motion.div>
-            )}
 
             {profilesLoading ? (
               <div className="flex items-center gap-2 text-outline">
