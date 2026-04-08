@@ -528,6 +528,13 @@ def health() -> HealthResponse:
     """Return cached health status — always responds instantly, never blocks."""
     result = dict(_cached_health)
     result["indexing"] = _get_index_state()
+    try:
+        from jarvis.app.profile_manager import get_active_profile
+        active = get_active_profile()
+        result["profile_id"] = active.id
+        result["profile_name"] = active.name
+    except Exception:
+        pass
     return HealthResponse(health=result)
 
 

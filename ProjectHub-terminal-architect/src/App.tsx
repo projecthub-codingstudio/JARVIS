@@ -124,6 +124,7 @@ export default function App() {
   const [actionMapsLoading, setActionMapsLoading] = useState(false);
   const [actionMapsError, setActionMapsError] = useState<string | null>(null);
   const [repositoryInitialPath, setRepositoryInitialPath] = useState<string | null>(null);
+  const [activeProfileName, setActiveProfileName] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const {
@@ -262,6 +263,9 @@ export default function App() {
         }
         if (data?.health?.indexing) {
           setIndexingState(data.health.indexing);
+        }
+        if (data?.health?.profile_name) {
+          setActiveProfileName(data.health.profile_name);
         }
         addLog({
           id: `${Date.now()}-health`,
@@ -767,6 +771,7 @@ export default function App() {
         </span>
         <div className="flex flex-1 items-center gap-6 text-outline">
           <span>backend:{backendStatus}</span>
+          {activeProfileName && <span className="text-primary">profile:{activeProfileName}</span>}
           <span>latency:{lastHealthLatency !== null ? `${lastHealthLatency}ms` : '--'}</span>
           <span>session:{sessionId.slice(0, 8)}</span>
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
