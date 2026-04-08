@@ -93,6 +93,8 @@ export interface KbStatusResponse {
   embedding_count: number;
   total_size_bytes: number;
   last_indexed: string | null;
+  profile_id: string | null;
+  profile_name: string | null;
 }
 
 export interface KbValidateResponse {
@@ -110,6 +112,28 @@ export interface KbChangeResponse {
   new_path: string;
   indexing: IndexingState;
   message: string;
+}
+
+export interface ProfileItem {
+  id: string;
+  name: string;
+  kb_path: string;
+  created_at: string;
+  is_active: boolean;
+  doc_count: number;
+  chunk_count: number;
+  has_index: boolean;
+}
+
+export interface ProfileListResponse {
+  profiles: ProfileItem[];
+  active: string;
+}
+
+export interface ProfileCreateResponse {
+  profile: ProfileItem;
+  profiles: ProfileItem[];
+  active: string;
 }
 
 export interface SkillCatalogResponse {
@@ -182,6 +206,46 @@ export const apiClient = {
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       throw new Error(detail.detail || `KB change failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async listProfiles(): Promise<ProfileListResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/profiles`);
+    if (!res.ok) throw new Error(`List profiles failed: ${res.statusText}`);
+    return res.json();
+  },
+
+  async createProfile(name: string, kbPath: string): Promise<ProfileCreateResponse> {
+    const res = await fetch(`${API_BASE_URL}/api/profiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, kb_path: kbPath }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `Create profile failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async deleteProfile(profileId: string): Promise<void> {
+    const res = await fetch(`${API_BASE_URL}/api/profiles/${encodeURIComponent(profileId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `Delete profile failed: ${res.statusText}`);
+    }
+  },
+
+  async activateProfile(profileId: string): Promise<{ switching: boolean; profile_id: string; profile_name: string }> {
+    const res = await fetch(`${API_BASE_URL}/api/profiles/${encodeURIComponent(profileId)}/activate`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `Activate profile failed: ${res.statusText}`);
     }
     return res.json();
   },
