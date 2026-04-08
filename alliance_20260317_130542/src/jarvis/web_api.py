@@ -929,12 +929,25 @@ def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
 
 
 def _resolve_kb_root() -> Path | None:
-    """Resolve knowledge base root path."""
+    """Resolve knowledge base root path.
+
+    Priority:
+      1. JARVIS_KNOWLEDGE_BASE env var
+      2. Active profile's kb_path from profiles.json
+      3. resolve_knowledge_base_path() fallback (searches for knowledge_base/ dir)
+    """
     kb_env = os.environ.get("JARVIS_KNOWLEDGE_BASE")
     if kb_env:
         p = Path(kb_env)
         if p.is_dir():
             return p
+    try:
+        from jarvis.app.profile_manager import get_active_profile
+        profile_path = Path(get_active_profile().kb_path)
+        if profile_path.is_dir():
+            return profile_path
+    except Exception:
+        pass
     from jarvis.app.runtime_context import resolve_knowledge_base_path
     return resolve_knowledge_base_path()
 
