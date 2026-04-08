@@ -293,7 +293,92 @@ def _require_service():
     return svc
 
 
+class FeedbackRequest(BaseModel):
+    query_text: str
+    feedback_type: str  # 'positive', 'negative'
+    citation_paths: list[str] = []
+    session_id: str = ""
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    feedback_id: str = ""
+
+
 # HTTP Endpoints
+
+@app.post("/api/feedback", response_model=FeedbackResponse)
+def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
+    """Record user feedback (thumbs up/down) for search quality learning."""
+    import json
+    import uuid
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    feedback_id = str(uuid.uuid4())
+    try:
+        db = init_database(JarvisConfig(data_dir=resolve_menubar_data_dir()))
+        relevant = request.citation_paths if request.feedback_type == "positive" else []
+        irrelevant = request.citation_paths if request.feedback_type == "negative" else []
+        db.execute(
+            "INSERT INTO search_feedback "
+            "(feedback_id, query_text, feedback_type, relevant_paths, irrelevant_paths, citation_paths, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                feedback_id,
+                request.query_text,
+                request.feedback_type,
+                json.dumps(relevant),
+                json.dumps(irrelevant),
+                json.dumps(request.citation_paths),
+                request.session_id,
+            ),
+        )
+        db.commit()
+        db.close()
+    except Exception:
+        return FeedbackResponse(ok=False)
+
+    # Trigger affinity update for positive feedback
+    if request.feedback_type == "positive" and request.citation_paths:
+        try:
+            _update_query_document_affinity(request.query_text, request.citation_paths)
+        except Exception:
+            pass
+
+    return FeedbackResponse(ok=True, feedback_id=feedback_id)
+
+
+def _update_query_document_affinity(query_text: str, doc_paths: list[str]) -> None:
+    """Update query-document affinity scores based on positive feedback."""
+    import re
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    # Extract a normalized query pattern (lowercase, stripped of particles)
+    pattern = query_text.lower().strip()
+    pattern = re.sub(r'[.,!?·…~]', ' ', pattern)
+    pattern = ' '.join(w for w in pattern.split() if len(w) >= 2)
+    if not pattern:
+        return
+
+    db = init_database(JarvisConfig(data_dir=resolve_menubar_data_dir()))
+    for path in doc_paths:
+        db.execute(
+            "INSERT INTO query_document_affinity (query_pattern, document_path, affinity_score, hit_count) "
+            "VALUES (?, ?, 0.5, 1) "
+            "ON CONFLICT(query_pattern, document_path) DO UPDATE SET "
+            "affinity_score = min(1.0, affinity_score + 0.1), "
+            "hit_count = hit_count + 1, "
+            "last_updated = unixepoch()",
+            (pattern, path),
+        )
+    db.commit()
+    db.close()
+
+
 @app.post("/api/ask", response_model=AskResponse)
 def ask(request: AskRequest) -> AskResponse:
     """Process a text query and return JARVIS response.

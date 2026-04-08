@@ -13,9 +13,11 @@ import {
   RefreshCw,
   ShieldAlert,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from 'lucide-react';
-import type { IndexingState } from '../../lib/api-client';
+import { apiClient, type IndexingState } from '../../lib/api-client';
 import { normalizeResponseText } from '../../lib/response-text';
 import { cn } from '../../lib/utils';
 import type { Artifact, Citation, GuideDirective, Message, SystemLog } from '../../types';
@@ -44,6 +46,50 @@ interface TerminalWorkspaceProps {
   onRestart?: () => void;
   documentContext?: string[];
   onClearDocumentContext?: () => void;
+}
+
+function FeedbackButtons({ messageId, queryText, citationPaths, sessionId }: {
+  messageId: string;
+  queryText: string;
+  citationPaths: string[];
+  sessionId: string;
+}) {
+  const [sent, setSent] = useState<'positive' | 'negative' | null>(null);
+
+  if (!queryText) return null;
+
+  const handleFeedback = async (type: 'positive' | 'negative') => {
+    setSent(type);
+    await apiClient.submitFeedback(queryText, type, citationPaths, sessionId).catch(() => {});
+  };
+
+  if (sent) {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-outline">
+        {sent === 'positive' ? <ThumbsUp size={10} className="text-secondary" /> : <ThumbsDown size={10} className="text-[#ffb4ab]" />}
+        피드백 반영됨
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-1">
+      <button
+        onClick={() => handleFeedback('positive')}
+        className="rounded p-1 text-outline transition hover:bg-secondary/10 hover:text-secondary"
+        title="도움이 되었어요"
+      >
+        <ThumbsUp size={12} />
+      </button>
+      <button
+        onClick={() => handleFeedback('negative')}
+        className="rounded p-1 text-outline transition hover:bg-[#ffb4ab]/10 hover:text-[#ffb4ab]"
+        title="도움이 안 되었어요"
+      >
+        <ThumbsDown size={12} />
+      </button>
+    </div>
+  );
 }
 
 function RestartProgress() {
@@ -1352,6 +1398,18 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                           </div>
                         </div>
                       ) : null}
+
+                      {/* Feedback buttons */}
+                      <FeedbackButtons
+                        messageId={message.id}
+                        queryText={(() => {
+                          const idx = messages.findIndex((m) => m.id === message.id);
+                          const prev = idx > 0 ? messages[idx - 1] : null;
+                          return prev?.role === 'operator' ? prev.content : '';
+                        })()}
+                        citationPaths={message.citations?.map((c) => c.full_source_path || c.source_path) || []}
+                        sessionId={sessionId}
+                      />
                     </div>
                   )}
                 </div>
