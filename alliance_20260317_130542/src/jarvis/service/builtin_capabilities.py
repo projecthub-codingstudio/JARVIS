@@ -843,17 +843,20 @@ def _build_doc_find_response(query: str) -> dict[str, object] | None:
         ).fetchall()
 
         results: list[dict] = []
+        kb_resolved = kb_path.resolve()
         for doc_id, doc_path, size_bytes, status in all_docs:
-            path_lower = doc_path.lower()
-            hits = sum(1 for t in terms if t in path_lower)
+            # Match against KB-relative path (not absolute) to avoid
+            # parent directory names like __PROJECTHUB__ matching everything
+            rel = doc_path
+            try:
+                rel = str(Path(doc_path).relative_to(kb_resolved))
+            except (ValueError, Exception):
+                pass
+            rel_lower = rel.lower()
+            hits = sum(1 for t in terms if t in rel_lower)
             # ALL terms must match when multiple keywords are given
             if hits == 0 or (len(terms) > 1 and hits < len(terms)):
                 continue
-            rel = doc_path
-            try:
-                rel = str(Path(doc_path).relative_to(kb_path.resolve()))
-            except (ValueError, Exception):
-                pass
             chunk_count = db.execute(
                 "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
             ).fetchone()[0]
