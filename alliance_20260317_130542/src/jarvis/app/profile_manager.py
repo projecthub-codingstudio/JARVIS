@@ -84,28 +84,42 @@ def save_profiles(config: ProfileConfig) -> None:
 def _create_default_config() -> ProfileConfig:
     """Create a default profile, migrating existing data if present."""
     from jarvis.app.runtime_context import resolve_knowledge_base_path
+    from jarvis.runtime_paths import resolve_alliance_root
 
     kb_path = str(resolve_knowledge_base_path())
     profile = Profile(id="default", name="Default", kb_path=kb_path)
     config = ProfileConfig(active="default", profiles=[profile])
 
     # Migrate existing data into profiles/default/
-    legacy_dir = Path.home() / ".jarvis"
+    # Check legacy locations in priority order:
+    #   1. alliance_root/.jarvis-menubar (web API mode — most likely to have current data)
+    #   2. ~/.jarvis (CLI mode)
+    legacy_candidates = [
+        resolve_alliance_root() / ".jarvis-menubar",
+        Path.home() / ".jarvis",
+    ]
+    legacy_dir = None
+    for candidate in legacy_candidates:
+        if (candidate / "jarvis.db").exists():
+            legacy_dir = candidate
+            break
+
     profile_dir = _profiles_dir() / "default"
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    for filename in ("jarvis.db", "jarvis.db-wal", "jarvis.db-shm"):
-        src = legacy_dir / filename
-        dst = profile_dir / filename
-        if src.exists() and not dst.exists():
-            shutil.move(str(src), str(dst))
-            logger.info("Migrated %s -> %s", src, dst)
+    if legacy_dir is not None:
+        for filename in ("jarvis.db", "jarvis.db-wal", "jarvis.db-shm"):
+            src = legacy_dir / filename
+            dst = profile_dir / filename
+            if src.exists() and not dst.exists():
+                shutil.move(str(src), str(dst))
+                logger.info("Migrated %s -> %s", src, dst)
 
-    src_vectors = legacy_dir / "vectors.lance"
-    dst_vectors = profile_dir / "vectors.lance"
-    if src_vectors.exists() and not dst_vectors.exists():
-        shutil.move(str(src_vectors), str(dst_vectors))
-        logger.info("Migrated vectors.lance -> profiles/default/")
+        src_vectors = legacy_dir / "vectors.lance"
+        dst_vectors = profile_dir / "vectors.lance"
+        if src_vectors.exists() and not dst_vectors.exists():
+            shutil.move(str(src_vectors), str(dst_vectors))
+            logger.info("Migrated vectors.lance -> profiles/default/")
 
     save_profiles(config)
     return config
