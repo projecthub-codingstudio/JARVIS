@@ -76,3 +76,8 @@ SECURITY_AUDIT*.md
 terminal-architect/
 stitch/
 *.zip
+
+# Runtime/debug data directories (should never be committed)
+.jarvis-menubar/
+.playwright-mcp/
+.superpowers/
