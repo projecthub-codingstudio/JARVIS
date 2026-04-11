@@ -58,10 +58,6 @@ alliance_20260317_130542/.jarvis-menubar/
 alliance_20260317_130542/macos/JarvisMenuBar/.build/
 alliance_20260317_130542/macos/JarvisMenuBar/.swiftpm/
 
-# Firebase config (leaked API keys)
-firebase*.json
-firebase*.ts
-
 # Security audit reports (may contain sensitive findings)
 SECURITY_AUDIT*.md
 
@@ -73,7 +69,6 @@ SECURITY_AUDIT*.md
 *.db-wal
 
 # Legacy/archive directories
-terminal-architect/
 stitch/
 *.zip
 
