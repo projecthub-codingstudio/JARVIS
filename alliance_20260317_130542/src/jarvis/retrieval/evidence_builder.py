@@ -84,6 +84,40 @@ class EvidenceBuilder:
         self._freshness = FreshnessChecker()
         self._metrics = metrics
 
+    _affinity_cache: dict[str, float] | None = None
+    _affinity_cache_query: str = ""
+
+    def _get_affinity_boost(self, query_text: str, doc_path: str) -> float:
+        """Look up learned query-document affinity boost from feedback data."""
+        if self._db is None:
+            return 0.0
+
+        # Cache per query to avoid repeated DB lookups within the same build() call
+        if self._affinity_cache_query != query_text:
+            self._affinity_cache = {}
+            self._affinity_cache_query = query_text
+            try:
+                # Match query against stored patterns using keyword overlap
+                query_words = set(query_text.lower().split())
+                if len(query_words) < 2:
+                    return 0.0
+                rows = self._db.execute(
+                    "SELECT query_pattern, document_path, affinity_score FROM query_document_affinity "
+                    "WHERE affinity_score > 0.1"
+                ).fetchall()
+                for pattern, path, score in rows:
+                    pattern_words = set(pattern.split())
+                    overlap = len(query_words & pattern_words)
+                    if overlap >= max(1, len(pattern_words) * 0.5):
+                        self._affinity_cache[path] = max(
+                            self._affinity_cache.get(path, 0.0),
+                            score * 0.2,  # Scale affinity to boost range (max 0.2)
+                        )
+            except Exception:
+                pass
+
+        return self._affinity_cache.get(doc_path, 0.0) if self._affinity_cache else 0.0
+
     def build(
         self,
         results: Sequence[HybridSearchResult],
@@ -196,6 +230,10 @@ class EvidenceBuilder:
                     heading_path=chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else "",
                     chunk_text=chunk_text,
                 )
+
+            # Query-document affinity boost (learned from user feedback)
+            if doc.path:
+                boost += self._get_affinity_boost(query_text, doc.path)
 
             heading_path = chunk_row[1] if len(chunk_row) > 1 and chunk_row[1] else ""
 

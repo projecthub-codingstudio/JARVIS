@@ -10,10 +10,14 @@ import {
   ImagePlus,
   Link2,
   LoaderCircle,
+  RefreshCw,
   ShieldAlert,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from 'lucide-react';
+import { apiClient, type IndexingState } from '../../lib/api-client';
 import { normalizeResponseText } from '../../lib/response-text';
 import { cn } from '../../lib/utils';
 import type { Artifact, Citation, GuideDirective, Message, SystemLog } from '../../types';
@@ -36,6 +40,81 @@ interface TerminalWorkspaceProps {
   sessionId: string;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onImageSubmit?: (text: string, image: File) => void;
+  kbStats?: { chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null;
+  indexingState?: IndexingState;
+  onReindex?: () => void;
+  onRestart?: () => void;
+  documentContext?: string[];
+  onClearDocumentContext?: () => void;
+  onNavigateToDocuments?: () => void;
+}
+
+function FeedbackButtons({ messageId, queryText, citationPaths, sessionId }: {
+  messageId: string;
+  queryText: string;
+  citationPaths: string[];
+  sessionId: string;
+}) {
+  const [sent, setSent] = useState<'positive' | 'negative' | null>(null);
+
+  if (!queryText) return null;
+
+  const handleFeedback = async (type: 'positive' | 'negative') => {
+    setSent(type);
+    await apiClient.submitFeedback(queryText, type, citationPaths, sessionId).catch(() => {});
+  };
+
+  if (sent) {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-outline">
+        {sent === 'positive' ? <ThumbsUp size={10} className="text-secondary" /> : <ThumbsDown size={10} className="text-[#ffb4ab]" />}
+        피드백 반영됨
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-1">
+      <button
+        onClick={() => handleFeedback('positive')}
+        className="rounded p-1 text-outline transition hover:bg-secondary/10 hover:text-secondary"
+        title="도움이 되었어요"
+      >
+        <ThumbsUp size={12} />
+      </button>
+      <button
+        onClick={() => handleFeedback('negative')}
+        className="rounded p-1 text-outline transition hover:bg-[#ffb4ab]/10 hover:text-[#ffb4ab]"
+        title="도움이 안 되었어요"
+      >
+        <ThumbsDown size={12} />
+      </button>
+    </div>
+  );
+}
+
+function RestartProgress() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = window.setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <div className="flex items-center gap-2 rounded bg-primary/10 px-3 py-2">
+      <div className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-primary">
+        Restarting{elapsed > 0 ? ` · ${elapsed}s` : ''}
+      </span>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function getArtifactIcon(artifact: Artifact) {
@@ -136,15 +215,14 @@ function buildMessageBlocks(messages: Message[]) {
 }
 
 function buildSourceMapEntries(citations: Citation[], assets: Artifact[]) {
-  const entries: Array<{ id: string; label: string; kind: 'citation' | 'artifact' }> = [];
+  const entries: Array<{ id: string; label: string; kind: 'citation' | 'artifact'; score?: number }> = [];
   const seen = new Set<string>();
 
   for (const citation of citations) {
     const label = citation.source_path || citation.full_source_path;
     if (!label || seen.has(label)) continue;
     seen.add(label);
-    entries.push({ id: `citation-${label}`, label, kind: 'citation' });
-    if (entries.length >= 4) return entries;
+    entries.push({ id: `citation-${label}`, label, kind: 'citation', score: citation.relevance_score });
   }
 
   for (const artifact of assets) {
@@ -152,11 +230,12 @@ function buildSourceMapEntries(citations: Citation[], assets: Artifact[]) {
     if (!label || seen.has(label)) continue;
     seen.add(label);
     entries.push({ id: `artifact-${label}`, label, kind: 'artifact' });
-    if (entries.length >= 4) return entries;
   }
 
   return entries;
 }
+
+const GRAPH_MAX = 8;
 
 const markdownComponents: Components = {
   h1: ({ children }) => <h1 className="mb-3 text-[18px] font-semibold tracking-tight text-on-surface">{children}</h1>,
@@ -747,9 +826,17 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   sessionId,
   onSubmit,
   onImageSubmit,
+  kbStats,
+  indexingState,
+  onReindex,
+  onRestart,
+  documentContext,
+  onClearDocumentContext,
+  onNavigateToDocuments,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [showFailedDocs, setShowFailedDocs] = useState(false);
   const imagePreviewUrl = useMemo(() => (
     selectedImage ? URL.createObjectURL(selectedImage) : null
   ), [selectedImage]);
@@ -763,7 +850,8 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
   const activityLogs = logs.slice(-4).reverse();
 
   const terminalBlocks = useMemo(() => buildMessageBlocks(messages), [messages]);
-  const visibleAssets = assets.slice(0, 3);
+  const [collapseAssets, setCollapseAssets] = useState(false);
+  const visibleAssets = collapseAssets ? assets.slice(0, 6) : assets;
   const currentCitations = citations.slice(0, 3);
   const sourceMapEntries = useMemo(() => buildSourceMapEntries(citations, assets), [citations, assets]);
   const latestArchitect = [...messages].reverse().find((message) => message.role === 'architect');
@@ -890,60 +978,155 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 <h1 className="text-[30px] font-semibold tracking-tight text-on-surface">Operational Workspace</h1>
                 <p className="mt-2 text-sm text-on-surface-variant">
                   {backendStatus === 'online' ? 'JARVIS backend is connected.' : backendStatus === 'checking' ? 'Checking backend connectivity.' : 'JARVIS backend is offline.'}
-                  {' '}Session {sessionId.slice(0, 8)} · artifacts {assets.length} · citations {citations.length} · events {logs.length}
+                  {' '}Session {sessionId.slice(0, 8)}{kbStats ? ` · ${kbStats.docs.toLocaleString()} docs · ${kbStats.chunks.toLocaleString()} chunks · ${formatBytes(kbStats.sizeBytes)}` : ''} · {logs.length} events
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <div className={cn('bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]', statusTone)}>
-                  {backendStatus}
+                {onRestart && (
+                  <button
+                    onClick={onRestart}
+                    disabled={backendStatus === 'checking'}
+                    className="rounded bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-outline transition hover:text-primary hover:bg-surface-container-highest disabled:opacity-30"
+                    title="백엔드 재시작"
+                  >
+                  Restart
+                  </button>
+                )}
+                {backendStatus === 'checking' ? (
+                  <RestartProgress />
+                ) : (
+                  <div className={cn('bg-surface-container-high px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]', statusTone)}>
+                    {backendStatus}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {indexingState && (indexingState.status === 'scanning' || indexingState.status === 'indexing') && (
+              <div className="mb-4 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3">
+                <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-semibold text-primary">
+                    {indexingState.status === 'scanning' ? '파일 스캔 중...' : `인덱싱 중 — ${indexingState.processed} / ${indexingState.total} files`}
+                  </div>
+                  {indexingState.status === 'indexing' && indexingState.total > 0 && (
+                    <div className="mt-2 h-1.5 rounded-full bg-surface-container-highest overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-500"
+                        style={{ width: `${Math.round((indexingState.processed / indexingState.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Documents</span>
+                  {onReindex && backendStatus === 'online' && (
+                    <button
+                      onClick={onReindex}
+                      disabled={indexingState?.status === 'scanning' || indexingState?.status === 'indexing'}
+                      className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="지식베이스 리인덱스"
+                    >
+                      <RefreshCw size={12} className={indexingState?.status === 'indexing' ? 'animate-spin' : ''} />
+                    </button>
+                  )}
+                </div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.docs.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {kbStats ? `${formatBytes(kbStats.sizeBytes)} total` : 'offline'}
+                  {kbStats && kbStats.failed > 0 && (
+                    <button
+                      onClick={() => setShowFailedDocs((v) => !v)}
+                      className="text-[#ffb4ab] hover:underline ml-1"
+                    >
+                      · {kbStats.failed} failed {showFailedDocs ? '▾' : '▸'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Chunks</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.chunks.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">{kbStats ? 'indexed & searchable' : 'offline'}</div>
+              </div>
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Vectors</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{kbStats ? kbStats.embeddings.toLocaleString() : '--'}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {kbStats
+                    ? kbStats.chunks > 0
+                      ? `${Math.round((kbStats.embeddings / kbStats.chunks) * 100)}% coverage`
+                      : 'no chunks'
+                    : 'offline'}
+                </div>
+              </div>
+              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Session</div>
+                <div className="text-lg font-mono font-semibold text-on-surface">{assets.length + citations.length}</div>
+                <div className="mt-1 text-[10px] text-outline">
+                  {assets.length} artifacts · {citations.length} citations
                 </div>
               </div>
             </div>
 
-            <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Artifacts Loaded</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-mono text-on-surface">{assets.length} artifacts</span>
-                  <span className="text-primary">{Math.min(100, assets.length * 20 || 0)}%</span>
+            {showFailedDocs && kbStats && kbStats.failedPaths.length > 0 && (
+              <div className="mb-6 rounded-lg border border-[#ffb4ab]/20 bg-[#ffb4ab]/5 px-4 py-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#ffb4ab]">
+                  인덱싱 실패 문서 ({kbStats.failedPaths.length})
                 </div>
-                <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-primary" style={{ width: `${Math.min(100, Math.max(8, assets.length * 20 || 8))}%` }} />
+                <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                  {kbStats.failedPaths.map((p) => {
+                    const kbIdx = p.indexOf('knowledge_base/');
+                    const display = kbIdx >= 0 ? p.slice(kbIdx + 'knowledge_base/'.length) : p.split('/').pop() || p;
+                    return (
+                      <div key={p} className="flex items-center gap-2 text-[11px] font-mono text-on-surface-variant">
+                        <span className="shrink-0 text-[#ffb4ab]">✕</span>
+                        <span className="truncate" title={p}>{display}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 text-[10px] text-outline">
+                  파싱 불가능한 PDF, 빈 파일, 또는 지원하지 않는 인코딩일 수 있습니다.
                 </div>
               </div>
-              <div className="border border-white/5 bg-surface-container-low px-4 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Evidence Links</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-mono text-on-surface">{citations.length} citations</span>
-                  <span className="text-secondary">{Math.min(100, citations.length * 18 || 0)}%</span>
-                </div>
-                <div className="mt-3 h-1 bg-surface-container-highest">
-                  <div className="h-full bg-secondary" style={{ width: `${Math.min(100, Math.max(8, citations.length * 18 || 8))}%` }} />
-                </div>
-              </div>
-            </div>
+            )}
 
             <div className="mb-6">
               <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
                 Workspace Artifacts
               </div>
               {visibleAssets.length > 0 ? (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {visibleAssets.map((artifact) => (
-                    <button
-                      key={artifact.id}
-                      onClick={() => onOpenArtifact(artifact)}
-                      className="border border-white/5 bg-surface-container-lowest text-left transition hover:border-primary/30 hover:bg-surface-container"
-                    >
-                      <div className="flex h-28 items-end justify-between bg-gradient-to-br from-surface-container-highest via-surface-container-low to-surface-container-lowest p-3">
-                        <div className="min-w-0 rounded-sm bg-surface/80 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.12em] text-on-surface">
-                          <div className="truncate">{artifact.title}</div>
+                <>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    {visibleAssets.map((artifact) => (
+                      <button
+                        key={artifact.id}
+                        onClick={() => onOpenArtifact(artifact)}
+                        className="border border-white/5 bg-surface-container-lowest text-left transition hover:border-primary/30 hover:bg-surface-container"
+                      >
+                        <div className="flex h-28 items-end justify-between bg-gradient-to-br from-surface-container-highest via-surface-container-low to-surface-container-lowest p-3">
+                          <div className="min-w-0 rounded-sm bg-surface/80 px-2 py-1 text-[10px] font-mono uppercase tracking-[0.12em] text-on-surface">
+                            <div className="truncate">{artifact.title}</div>
+                          </div>
+                          {getArtifactIcon(artifact)}
                         </div>
-                        {getArtifactIcon(artifact)}
-                      </div>
+                      </button>
+                    ))}
+                  </div>
+                  {assets.length > 6 && (
+                    <button
+                      onClick={() => setCollapseAssets((v) => !v)}
+                      className="mt-2 w-full py-2 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high"
+                    >
+                      {collapseAssets ? `전체 보기 (${assets.length}개)` : `접기 (6개만 보기)`}
                     </button>
-                  ))}
-                </div>
+                  )}
+                </>
               ) : (
                 <div className="border border-white/5 bg-surface-container-low px-4 py-5 text-sm text-on-surface-variant">
                   아직 로드된 문서가 없습니다. 첫 질의를 보내면 관련 아티팩트가 이 영역에 표시됩니다.
@@ -1032,16 +1215,24 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <span className={statusTone}>{backendStatus}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">Artifacts</span>
-                  <span className="text-primary">{assets.length}</span>
+                  <span className="text-on-surface-variant">Documents</span>
+                  <span className="text-primary">{kbStats ? kbStats.docs.toLocaleString() : '--'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-on-surface-variant">Citations</span>
-                  <span className="text-secondary">{citations.length}</span>
+                  <span className="text-on-surface-variant">Chunks</span>
+                  <span className="text-primary">{kbStats ? kbStats.chunks.toLocaleString() : '--'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-on-surface-variant">Vectors</span>
+                  <span className="text-secondary">{kbStats ? kbStats.embeddings.toLocaleString() : '--'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-on-surface-variant">KB Size</span>
+                  <span className="text-outline">{kbStats ? formatBytes(kbStats.sizeBytes) : '--'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-on-surface-variant">Guide</span>
-                  <span className="text-tertiary">{guideState}</span>
+                  <span className="text-outline">{guideState}</span>
                 </div>
               </div>
             </div>
@@ -1209,6 +1400,18 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                           </div>
                         </div>
                       ) : null}
+
+                      {/* Feedback buttons */}
+                      <FeedbackButtons
+                        messageId={message.id}
+                        queryText={(() => {
+                          const idx = messages.findIndex((m) => m.id === message.id);
+                          const prev = idx > 0 ? messages[idx - 1] : null;
+                          return prev?.role === 'operator' ? prev.content : '';
+                        })()}
+                        citationPaths={message.citations?.map((c) => c.full_source_path || c.source_path) || []}
+                        sessionId={sessionId}
+                      />
                     </div>
                   )}
                 </div>
@@ -1230,7 +1433,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                   <div className="text-[11px] font-mono text-outline">{assets.length} available</div>
                 </div>
                 <div className="grid gap-2 lg:grid-cols-3">
-                  {assets.slice(0, 3).map((artifact) => (
+                  {(collapseAssets ? assets.slice(0, 3) : assets).map((artifact) => (
                     <button
                       key={artifact.id}
                       onClick={() => onOpenArtifact(artifact)}
@@ -1238,7 +1441,7 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                     >
                       <div className="min-w-0">
                         <div className="truncate text-[10px] uppercase tracking-[0.12em] text-outline">
-                          Evidence Artifact
+                          {artifact.subtitle || 'Evidence Artifact'}
                         </div>
                         <div className="mt-1 truncate text-sm font-medium text-on-surface">{artifact.title}</div>
                       </div>
@@ -1246,6 +1449,14 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                     </button>
                   ))}
                 </div>
+                {assets.length > 3 && (
+                  <button
+                    onClick={() => setCollapseAssets((v) => !v)}
+                    className="mt-2 w-full py-1.5 text-center text-[11px] font-mono text-primary transition hover:bg-surface-container-high rounded"
+                  >
+                    {collapseAssets ? `전체 ${assets.length}개 보기` : '접기'}
+                  </button>
+                )}
               </div>
             )}
 
@@ -1275,6 +1486,50 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
               }}
               className="flex flex-col gap-2 rounded-xl border border-white/10 bg-surface px-4 py-3 transition focus-within:border-primary/35 focus-within:ring-2 focus-within:ring-primary/15"
             >
+              {documentContext && documentContext.length > 0 && onClearDocumentContext && (
+                <div className="group relative flex items-center gap-2 border-b border-white/10 pb-2">
+                  <button
+                    type="button"
+                    onClick={onNavigateToDocuments}
+                    className="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 transition hover:bg-secondary/10"
+                    title="Documents 뷰로 이동"
+                  >
+                    <FileText size={12} className="shrink-0 text-secondary" />
+                    <span className="truncate text-[11px] text-secondary">
+                      {documentContext.length === 1
+                        ? documentContext[0].split('/').pop()
+                        : `${documentContext[0].split('/').pop()} 외 ${documentContext.length - 1}개 문서`}
+                    </span>
+                    <span className="shrink-0 rounded-full bg-secondary/15 px-1.5 text-[9px] font-bold text-secondary">
+                      {documentContext.length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onClearDocumentContext}
+                    className="ml-auto shrink-0 rounded p-0.5 text-outline transition hover:bg-white/5 hover:text-on-surface"
+                    title="문서 컨텍스트 해제"
+                  >
+                    <X size={12} />
+                  </button>
+                  {/* Hover popup: document list */}
+                  {documentContext.length > 1 && (
+                    <div className="pointer-events-none absolute bottom-full left-0 z-50 mb-1 hidden w-72 rounded-lg border border-white/10 bg-surface-container-high p-2 shadow-xl group-hover:pointer-events-auto group-hover:block">
+                      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-outline">
+                        참조 문서 ({documentContext.length})
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {documentContext.map((path, i) => (
+                          <div key={i} className="flex items-center gap-2 rounded px-2 py-1 text-[11px] text-on-surface-variant hover:bg-white/5">
+                            <FileText size={10} className="shrink-0 text-secondary/60" />
+                            <span className="truncate">{path.split('/').pop()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {imagePreviewUrl && (
                 <div className="flex items-center gap-3 border-b border-white/10 pb-2">
                   <img src={imagePreviewUrl} alt="첨부" className="h-12 w-12 rounded object-cover border border-white/10" />
@@ -1374,40 +1629,70 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
           </div>
 
           <div>
-            <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
-              Source Map
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
+                Source Map
+              </span>
+              {sourceMapEntries.length > 0 && (
+                <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">
+                  {sourceMapEntries.length}
+                </span>
+              )}
             </div>
             <div className="relative aspect-square overflow-hidden rounded-xl border border-white/8 bg-surface-container-lowest">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(150,204,255,0.12),transparent_45%)]" />
               <div className="absolute inset-0 bg-[linear-gradient(transparent_24px,rgba(255,255,255,0.03)_25px),linear-gradient(90deg,transparent_24px,rgba(255,255,255,0.03)_25px)] bg-[length:25px_25px]" />
               {sourceMapEntries.length > 0 ? (
                 <>
+                  {/* Radial lines from center to each node */}
                   <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {[{ x: 20, y: 20 }, { x: 80, y: 24 }, { x: 24, y: 78 }, { x: 78, y: 80 }].slice(0, sourceMapEntries.length).map((point, index) => (
-                      <line
-                        key={`line-${sourceMapEntries[index].id}`}
-                        x1="50"
-                        y1="50"
-                        x2={point.x}
-                        y2={point.y}
-                        stroke="rgba(255,255,255,0.16)"
-                        strokeWidth="1"
-                      />
-                    ))}
+                    {sourceMapEntries.slice(0, GRAPH_MAX).map((entry, i) => {
+                      const count = Math.min(sourceMapEntries.length, GRAPH_MAX);
+                      const angle = (2 * Math.PI / count) * i - Math.PI / 2;
+                      const r = 34;
+                      const px = 50 + r * Math.cos(angle);
+                      const py = 50 + r * Math.sin(angle);
+                      return (
+                        <line
+                          key={`line-${entry.id}`}
+                          x1="50" y1="50" x2={px} y2={py}
+                          stroke={entry.kind === 'citation' ? 'rgba(150,204,255,0.25)' : 'rgba(200,170,255,0.20)'}
+                          strokeWidth="0.8"
+                        />
+                      );
+                    })}
                   </svg>
-                  <div className="absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-tertiary/20 text-[10px] font-semibold uppercase tracking-[0.12em] text-tertiary shadow-[0_0_16px_rgba(201,191,255,0.25)]">
+                  {/* Center node */}
+                  <div className="absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-tertiary/20 text-[9px] font-semibold uppercase tracking-[0.12em] text-tertiary shadow-[0_0_16px_rgba(201,191,255,0.25)]">
                     Answer
                   </div>
-                  {[{ x: 'left-4 top-4', tone: 'bg-secondary text-secondary' }, { x: 'right-4 top-4', tone: 'bg-primary text-primary' }, { x: 'left-4 bottom-4', tone: 'bg-primary text-primary' }, { x: 'right-4 bottom-4', tone: 'bg-secondary text-secondary' }].slice(0, sourceMapEntries.length).map((slot, index) => (
-                    <div key={sourceMapEntries[index].id} className={cn('absolute w-24', slot.x)}>
-                      <div className="flex items-center gap-2">
-                        <span className={cn('h-2.5 w-2.5 rounded-full shadow-[0_0_14px_rgba(150,204,255,0.35)]', sourceMapEntries[index].kind === 'citation' ? 'bg-secondary' : 'bg-primary')} />
-                        <span className="line-clamp-2 text-[10px] leading-relaxed text-on-surface-variant">
-                          {sourceMapEntries[index].label}
+                  {/* Radial source nodes */}
+                  {sourceMapEntries.slice(0, GRAPH_MAX).map((entry, i) => {
+                    const count = Math.min(sourceMapEntries.length, GRAPH_MAX);
+                    const angle = (2 * Math.PI / count) * i - Math.PI / 2;
+                    const r = 38;
+                    const left = 50 + r * Math.cos(angle);
+                    const top = 50 + r * Math.sin(angle);
+                    const dotColor = entry.kind === 'citation' ? 'bg-secondary' : 'bg-primary';
+                    return (
+                      <div
+                        key={entry.id}
+                        className="absolute flex items-center gap-1"
+                        style={{
+                          left: `${left}%`,
+                          top: `${top}%`,
+                          transform: 'translate(-50%, -50%)',
+                          maxWidth: '42%',
+                        }}
+                        title={entry.label}
+                      >
+                        <span className={cn('h-2 w-2 shrink-0 rounded-full shadow-[0_0_10px_rgba(150,204,255,0.3)]', dotColor)} />
+                        <span className="truncate text-[8px] leading-tight text-on-surface-variant">
+                          {entry.label.split('/').pop() || entry.label}
                         </span>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </>
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs leading-relaxed text-on-surface-variant">
@@ -1415,6 +1700,20 @@ export const TerminalWorkspace: React.FC<TerminalWorkspaceProps> = ({
                 </div>
               )}
             </div>
+            {/* Overflow list for remaining sources */}
+            {sourceMapEntries.length > GRAPH_MAX && (
+              <div className="mt-2 space-y-1">
+                {sourceMapEntries.slice(GRAPH_MAX).map((entry) => (
+                  <div key={entry.id} className="flex items-center gap-1.5">
+                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', entry.kind === 'citation' ? 'bg-secondary/60' : 'bg-primary/60')} />
+                    <span className="truncate text-[10px] text-outline">{entry.label.split('/').pop() || entry.label}</span>
+                    {entry.score != null && (
+                      <span className="ml-auto shrink-0 text-[9px] font-mono text-outline">{(entry.score * 100).toFixed(0)}%</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="mt-2 text-[11px] leading-relaxed text-on-surface-variant">
               현재 응답과 연결된 근거 문서 및 결과 문서를 표시합니다.
             </div>

@@ -10,6 +10,7 @@ import math
 import operator
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
@@ -31,7 +32,18 @@ _WEATHER_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _WEB_QUERY_RE = re.compile(
-    r"(웹사이트|홈페이지|사이트|웹에서|웹\s*검색|사이트\s*찾|검색해|찾아줘|homepage|website|web\s+search|search)",
+    r"(웹사이트|홈페이지|사이트|웹에서|웹\s*검색|사이트\s*찾|검색해\s*줘|homepage|website|web\s+search|search\s+the\s+web)",
+    re.IGNORECASE,
+)
+_DOC_FIND_RE = re.compile(
+    r"(문서.*찾|파일.*찾|책.*찾|자료.*찾|소스.*찾"
+    r"|문서.*검색|파일.*검색|책.*검색|자료.*검색"
+    r"|문서.*보여|파일.*보여|자료.*보여|소스.*보여"
+    r"|문서.*알려|파일.*알려|자료.*알려"
+    r"|관련\s*문서|관련\s*파일|관련\s*책|관련\s*자료|관련\s*소스"
+    r"|문서.*목록|문서.*리스트|문서.*있"
+    r"|찾아\s*줘|find\s+doc|list\s+doc|search\s+doc|find\s+file|find\s+book"
+    r"|show\s+doc|show\s+file)",
     re.IGNORECASE,
 )
 _CALC_HINT_RE = re.compile(
@@ -109,7 +121,7 @@ _DIRECT_URL_RE = re.compile(
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FILE_LIKE_TOKEN_RE = re.compile(
-    r"^[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx)$",
+    r"^[\w.-]+\.(?:py|ts|tsx|js|jsx|sql|md|txt|json|yaml|yml|csv|docx|pptx|xlsx|pdf|hwp|hwpx|swift|kt|java|c|cpp|h|hpp|cs|rb|rs|go|php|sh|zsh|bash|r|m|mm|toml|ini|cfg|conf|env|log|xml|html|css|scss|less|vue|svelte|dart|lua|pl|ex|exs|zig|nim|v|d|f90|ipynb)$",
     re.IGNORECASE,
 )
 
@@ -361,6 +373,7 @@ def resolve_builtin_capability(
         "capability_help": lambda: _build_help_response(normalized) if _HELP_QUERY_RE.search(normalized) else None,
         "runtime_status": _handle_runtime_status,
         "open_website": lambda: _build_direct_website_response(normalized, direct_url) if direct_url is not None else None,
+        "doc_find": lambda: _build_doc_find_response(normalized) if _DOC_FIND_RE.search(normalized) else None,
         "web_search": lambda: _build_web_search_response(normalized) if _WEB_QUERY_RE.search(normalized) else None,
         "open_document": _handle_open_document,
         "recent_context": _handle_recent_context,
@@ -790,6 +803,179 @@ def _build_weather_response(query: str) -> dict[str, object]:
                 detail_title="날씨 상세",
                 artifact_ids=[artifact["id"] for artifact in artifacts],
                 include_evidence=True,
+            ),
+        ),
+    )
+
+
+def _build_doc_find_response(query: str) -> dict[str, object] | None:
+    """Search local knowledge base documents by filename/path keywords (direct DB query)."""
+    # Extract search terms
+    search_term = query
+    for filler in ("문서", "파일", "책", "자료", "찾아", "줘", "검색", "해줘", "해주", "주세요",
+                   "모두", "모든", "관련", "전부", "있는", "보여", "알려", "목록", "리스트",
+                   "들을", "들이", "들의", "들은", "들도", "들",
+                   "을", "를", "의", "에", "은", "는", "이", "가", "로", "으로", "에서",
+                   "언어", "프로그래밍", "관한", "대한", "해서", "하는", "된", "있나", "있어",
+                   "소스", "소스코드", "코드", "스크립트", "원본", "구현", "구현체"):
+        search_term = search_term.replace(filler, " ")
+    # Clean up punctuation and single-char residue
+    search_term = re.sub(r'[.,!?·…~]', ' ', search_term)
+    search_term = " ".join(w for w in search_term.split() if len(w) >= 2 or w.isascii())
+    search_term = search_term.strip()
+    if not search_term:
+        return None
+
+    try:
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.app.runtime_context import resolve_knowledge_base_path
+        from jarvis.runtime_paths import resolve_menubar_data_dir
+
+        data_dir = resolve_menubar_data_dir()
+        kb_path = resolve_knowledge_base_path()
+        db = init_database(JarvisConfig(data_dir=data_dir))
+    except Exception:
+        return None
+
+    try:
+        terms = search_term.lower().split()
+
+        # 1) Path/filename match (ANY term)
+        all_docs = db.execute(
+            "SELECT document_id, path, size_bytes, indexing_status FROM documents "
+            "WHERE indexing_status IN ('INDEXED', 'FAILED') ORDER BY path"
+        ).fetchall()
+
+        results: list[dict] = []
+        kb_resolved = kb_path.resolve()
+        for doc_id, doc_path, size_bytes, status in all_docs:
+            # Match against KB-relative path (not absolute) to avoid
+            # parent directory names like __PROJECTHUB__ matching everything
+            rel = doc_path
+            try:
+                rel = str(Path(doc_path).relative_to(kb_resolved))
+            except (ValueError, Exception):
+                pass
+            rel_lower = rel.lower()
+            hits = sum(1 for t in terms if t in rel_lower)
+            # ALL terms must match when multiple keywords are given
+            if hits == 0 or (len(terms) > 1 and hits < len(terms)):
+                continue
+            chunk_count = db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchone()[0]
+            results.append({
+                "name": Path(doc_path).name,
+                "path": rel,
+                "full_path": doc_path,
+                "chunk_count": chunk_count,
+                "status": status,
+                "match_type": "path",
+                "score": hits,
+            })
+
+        # 2) FTS content match — always run to complement path matching
+        long_terms = [t for t in terms if len(t) >= 3]
+        fts_query = " OR ".join(f'"{t}"' for t in long_terms) if long_terms else ""
+        if fts_query:
+            try:
+                matched_ids = {r["full_path"] for r in results}
+                fts_rows = db.execute(
+                    "SELECT c.document_id, COUNT(*) as hits "
+                    "FROM chunks_fts fts JOIN chunks c ON c.rowid = fts.rowid "
+                    "WHERE chunks_fts MATCH ? GROUP BY c.document_id ORDER BY hits DESC LIMIT 10",
+                    (fts_query,),
+                ).fetchall()
+                for doc_id, fts_hits in fts_rows:
+                    doc_row = db.execute(
+                        "SELECT path, size_bytes, indexing_status FROM documents WHERE document_id = ?",
+                        (doc_id,),
+                    ).fetchone()
+                    if not doc_row or doc_row[0] in matched_ids:
+                        continue
+                    rel = doc_row[0]
+                    try:
+                        rel = str(Path(doc_row[0]).relative_to(kb_resolved))
+                    except (ValueError, Exception):
+                        pass
+                    results.append({
+                        "name": Path(doc_row[0]).name,
+                        "path": rel,
+                        "full_path": doc_row[0],
+                        "chunk_count": fts_hits,
+                        "status": doc_row[2],
+                        "match_type": "content",
+                        "score": fts_hits,
+                    })
+            except Exception:
+                pass
+
+        results.sort(key=lambda m: (-m["score"], m["path"]))
+
+        if not results:
+            return None
+    finally:
+        db.close()
+
+    # Build artifacts
+    artifacts = []
+    for i, doc in enumerate(results[:15]):
+        name = doc["name"]
+        ext = Path(name).suffix.lower() if name else ""
+        if ext in (".pdf", ".xlsx", ".xls", ".csv", ".pptx", ".docx", ".hwp", ".hwpx"):
+            viewer = "document"
+        elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".xml", ".html"):
+            viewer = "text"
+        elif ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"):
+            viewer = "image"
+        else:
+            viewer = "code"
+
+        status_label = "" if doc["status"] == "INDEXED" else " [인덱싱 실패]"
+        match_label = "경로 일치" if doc["match_type"] == "path" else "내용 일치"
+
+        artifacts.append(_artifact(
+            artifact_id=f"doc_find_{i}",
+            type_name=viewer,
+            title=name,
+            subtitle=f"{match_label} · {doc['chunk_count']} chunks{status_label}",
+            path=doc["path"],
+            full_path=doc["full_path"],
+            preview=doc["path"],
+            source_type="document",
+        ))
+
+    path_count = sum(1 for r in results[:15] if r["match_type"] == "path")
+    content_count = len(artifacts) - path_count
+    parts = []
+    if path_count:
+        parts.append(f"파일명/경로 일치 {path_count}개")
+    if content_count:
+        parts.append(f"내용 일치 {content_count}개")
+
+    response_text = f"\"{search_term}\" 관련 문서 {len(artifacts)}개를 지식베이스에서 찾았습니다 ({', '.join(parts)})."
+
+    return _response_payload(
+        query=query,
+        response_text=response_text,
+        spoken_text=response_text,
+        intent="doc_find",
+        skill="builtin_doc_find",
+        source_profile="knowledge_base",
+        primary_source_type="document",
+        artifacts=artifacts,
+        ui_hints={"preferred_view": "documents"},
+        presentation=_presentation(
+            layout="master_detail",
+            title="Document Search",
+            subtitle=f"{len(artifacts)}개 결과",
+            selected_artifact_id=artifacts[0]["id"] if artifacts else "",
+            blocks=_blocks_for_answer_list_detail(
+                answer_title="검색 결과",
+                list_title="문서 목록",
+                detail_title="문서 미리보기",
+                artifact_ids=[a["id"] for a in artifacts],
             ),
         ),
     )

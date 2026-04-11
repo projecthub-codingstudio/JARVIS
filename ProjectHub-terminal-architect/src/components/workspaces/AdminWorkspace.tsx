@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Brain, ChevronDown, ChevronRight, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { Artifact, Citation, Message, SystemLog } from '../../types';
 import { LearnedPatternsPanel } from '../admin/LearnedPatternsPanel';
@@ -7,6 +7,7 @@ import { LearnedPatternsPanel } from '../admin/LearnedPatternsPanel';
 interface AdminWorkspaceProps {
   assets: Artifact[];
   backendStatus: 'checking' | 'online' | 'offline';
+  lastHealthError: string | null;
   citations: Citation[];
   logs: SystemLog[];
   messages: Message[];
@@ -21,6 +22,7 @@ const DEFAULT_LOGS: SystemLog[] = [
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
   assets,
   backendStatus,
+  lastHealthError,
   citations,
   logs,
   messages,
@@ -39,6 +41,8 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
     { name: 'ph-arch-04', pid: '4415', cpu: '--', state: securitySummary.errorCount > 0 ? 'Error' : 'Standby', tone: securitySummary.errorCount > 0 ? 'error' : 'muted' },
   ];
 
+  const [patternsExpanded, setPatternsExpanded] = useState(false);
+
   const runtimeLabel = backendStatus === 'online' ? 'ONLINE' : backendStatus === 'checking' ? 'CHECKING' : 'OFFLINE';
 
   return (
@@ -53,22 +57,22 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
           </h1>
           <div className="hidden h-4 w-px bg-white/10 md:block" />
           <div className="hidden gap-4 font-mono text-[11px] text-on-surface-variant md:flex">
-            <span>REGION: AP-NORTHEAST-2</span>
-            <span>UPTIME: 342:12:04</span>
-            <span>LOAD: 0.12 0.08 0.05</span>
+            <span>Events: {logs.length}</span>
+            <span>Docs: {assets.length}</span>
+            <span>Refs: {citations.length}</span>
+            {lastHealthError && <span className="text-[#ffb4ab]">{lastHealthError}</span>}
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button className="bg-surface-container-highest px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface transition hover:ring-1 hover:ring-primary/20">
-            Reboot Node
-          </button>
-          <button className="bg-secondary px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#003909] transition hover:opacity-90">
-            Export Dump
-          </button>
+          {backendStatus === 'offline' && (
+            <span className="px-3 py-2 text-[11px] font-mono text-[#ffb4ab]">
+              Backend is offline
+            </span>
+          )}
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto bg-surface p-4 custom-scrollbar xl:grid-cols-[280px_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)_320px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto bg-surface p-4 custom-scrollbar xl:grid-cols-[280px_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)_auto]">
         <section className="space-y-2">
           <div className="border border-white/5 bg-surface-container-low p-4">
             <div className="mb-4 flex items-center justify-between">
@@ -131,7 +135,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
           </div>
         </section>
 
-        <section className="grid min-h-0 grid-cols-1 gap-2 xl:grid-rows-[minmax(0,1fr)_210px]">
+        <section className="grid min-h-0 grid-cols-1 gap-2 xl:grid-rows-[minmax(0,1fr)_auto]">
           <div className="flex min-h-0 flex-col border border-white/5 bg-surface-container-lowest">
             <div className="flex h-10 shrink-0 items-center justify-between bg-surface-container-high px-4">
               <div className="flex items-center gap-3">
@@ -226,9 +230,23 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
           </div>
         </section>
 
-        {/* Learned Patterns — spans full width on xl */}
-        <section className="xl:col-span-2 border border-white/5 bg-surface-container-lowest min-h-[280px]">
-          <LearnedPatternsPanel />
+        {/* Learned Patterns — collapsible, spans full width on xl */}
+        <section className="xl:col-span-2 border border-white/5 bg-surface-container-lowest">
+          <button
+            onClick={() => setPatternsExpanded((prev) => !prev)}
+            className="flex w-full items-center gap-2 bg-surface-container-high px-4 py-2.5 text-left transition hover:bg-surface-container"
+          >
+            {patternsExpanded ? <ChevronDown size={14} className="text-outline" /> : <ChevronRight size={14} className="text-outline" />}
+            <Brain size={14} className="text-tertiary" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
+              Learned Patterns
+            </span>
+          </button>
+          {patternsExpanded && (
+            <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
+              <LearnedPatternsPanel />
+            </div>
+          )}
         </section>
       </div>
     </div>

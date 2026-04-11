@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { renderAsync } from 'docx-preview';
 import type { RendererProps } from './TextRenderer';
 
-const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
+const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, scale }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -60,13 +60,28 @@ const DocxRenderer: React.FC<RendererProps> = ({ artifact, fileUrl }) => {
   }
 
   return (
-    <div className="h-full overflow-auto custom-scrollbar bg-white">
+    <div className="h-full overflow-auto custom-scrollbar bg-white docx-viewer-wrapper">
+      <style>{`
+        .docx-viewer-wrapper .docx-preview *:not(table):not(tr):not(td):not(th) {
+          color: #1a1a1a !important;
+        }
+        .docx-viewer-wrapper .docx-preview table,
+        .docx-viewer-wrapper .docx-preview td,
+        .docx-viewer-wrapper .docx-preview th {
+          color: #1a1a1a !important;
+          border-color: #d1d5db !important;
+        }
+      `}</style>
       {loading && (
         <div className="flex items-center justify-center h-64">
           <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         </div>
       )}
-      <div ref={containerRef} className={loading ? 'hidden' : ''} />
+      <div
+        ref={containerRef}
+        className={loading ? 'hidden' : ''}
+        style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top center', transition: 'transform 0.2s' } : undefined}
+      />
     </div>
   );
 };

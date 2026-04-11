@@ -6,6 +6,7 @@ export interface RendererProps {
   artifact: Artifact;
   fileUrl?: string;
   content?: string;
+  scale?: number;
 }
 
 const INITIAL_LINE_LIMIT = 5000;  // show all lines up to this, then paginate
@@ -17,7 +18,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
+const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content, scale }) => {
+  const fontSize = 14 * (scale || 1);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [encoding, setEncoding] = useState<string | null>(null);
@@ -67,7 +69,7 @@ const TextRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
   }
 
   return (
-    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-4 font-mono text-sm">
+    <div className="h-full overflow-auto custom-scrollbar bg-surface-lowest p-4 font-mono" style={{ fontSize: `${fontSize}px` }}>
       <div className="mx-auto max-w-[1400px] rounded-xl border border-white/8 bg-surface px-6 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.18)]">
       <div className="mb-3 flex items-center gap-3 border-b border-outline/10 pb-2 text-[10px] font-mono uppercase tracking-wider text-outline">
         {encoding && <span>ENC: <span className="text-secondary">{encoding}</span></span>}

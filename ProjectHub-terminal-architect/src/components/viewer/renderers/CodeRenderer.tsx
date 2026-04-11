@@ -26,7 +26,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
+const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content, scale }) => {
+  const fontSize = 13 * (scale || 1);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [encoding, setEncoding] = useState<string | null>(null);
@@ -104,7 +105,7 @@ const CodeRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
           margin: 0,
           padding: '1.5rem',
           background: 'transparent',
-          fontSize: '0.8125rem',
+          fontSize: `${fontSize}px`,
         }}
       >
         {visibleCode}

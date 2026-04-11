@@ -126,11 +126,14 @@ class Reranker:
         import math
         reranked: list[tuple[float, HybridSearchResult]] = []
         for result, ce_score in zip(results, scores):
-            ce_norm = float(ce_score)
-            if math.isnan(ce_norm) or math.isinf(ce_norm):
-                ce_norm = 0.0
+            ce_raw = float(ce_score)
+            if math.isnan(ce_raw) or math.isinf(ce_raw):
+                ce_raw = 0.0
+            # Sigmoid normalization: map unbounded logit → [0, 1]
+            # Prevents negative CE scores from dragging valid results below threshold
+            ce_norm = 1.0 / (1.0 + math.exp(-ce_raw))
             # Combined score: weight cross-encoder heavily (0.7) + RRF (0.3)
-            combined = 0.7 * ce_norm + 0.3 * (result.rrf_score * 60)  # Scale RRF
+            combined = 0.7 * ce_norm + 0.3 * min(1.0, result.rrf_score * 60)
             reranked.append((combined, result))
 
         reranked.sort(key=lambda x: x[0], reverse=True)

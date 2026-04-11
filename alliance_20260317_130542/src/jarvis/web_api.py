@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
+import sys
 import uuid
 import argparse
 from pathlib import Path
@@ -17,17 +19,13 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from pydantic import BaseModel, Field
 
-from jarvis.service.application import JarvisApplicationService
-from jarvis.service.intent_skill_store import (
-    build_skill_catalog,
-    create_action_map,
-    create_skill_profile,
-    list_action_maps,
-    upsert_action_map,
-    upsert_skill_profile,
-)
+import logging
+import threading
+import time as _time
+
 from jarvis.service.protocol import RpcRequest, RpcResponse
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="JARVIS Web API",
@@ -73,13 +71,163 @@ def _check_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Cross-origin request denied")
 
 
-service = JarvisApplicationService()
+# Lazy-loaded service — heavy imports (MLX, Whisper, TTS) happen in background
+_service_instance = None
+_service_lock = threading.Lock()
+_service_ready = threading.Event()
+
+
+def _init_service_background() -> None:
+    """Load JarvisApplicationService in a background thread."""
+    global _service_instance
+    try:
+        from jarvis.service.application import JarvisApplicationService
+        _service_instance = JarvisApplicationService()
+        _service_ready.set()
+        logger.info("JarvisApplicationService initialized")
+    except Exception as exc:
+        logger.error("Failed to initialize service: %s", exc)
+        _service_ready.set()  # unblock waiters even on failure
+
+
+def _get_service():
+    """Get the service instance, returning None if not yet ready."""
+    return _service_instance
+
+
+# Start background init on module load — server starts immediately
+threading.Thread(target=_init_service_background, daemon=True, name="service-init").start()
+
+
+# ── Indexing state tracker ──────────────────────────────────
+_index_lock = threading.Lock()
+_index_state: dict[str, object] = {
+    "status": "idle",       # idle | scanning | indexing | done | error
+    "processed": 0,
+    "total": 0,
+    "last_completed": None,  # ISO timestamp
+    "error": None,
+}
+
+
+def _get_index_state() -> dict[str, object]:
+    """Return a snapshot of the current indexing state."""
+    with _index_lock:
+        return dict(_index_state)
+
+
+def _trigger_reindex(*, auto: bool = False) -> bool:
+    """Start background indexing if not already running. Returns True if started."""
+    if not _index_lock.acquire(blocking=False):
+        return False
+
+    # Check if already running (lock acquired but status is active)
+    if _index_state["status"] in ("scanning", "indexing"):
+        _index_lock.release()
+        return False
+
+    def _run() -> None:
+        from jarvis.app.bootstrap import init_database
+        from jarvis.app.config import JarvisConfig
+        from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable, run_indexing
+        from jarvis.cli.menu_bridge import resolve_menubar_data_dir
+
+        db = None
+        try:
+            _index_state["status"] = "scanning"
+            _index_state["processed"] = 0
+            _index_state["total"] = 0
+            _index_state["error"] = None
+
+            kb_path = resolve_knowledge_base_path()
+            data_dir = resolve_menubar_data_dir()
+            config = JarvisConfig(
+                data_dir=data_dir,
+                watched_folders=[kb_path] if kb_path.exists() else [],
+            )
+            db = init_database(config)
+
+            # Count indexable files
+            files = [f for f in kb_path.rglob("*") if f.is_file() and is_indexable(f)]
+            _index_state["total"] = len(files)
+            _index_state["status"] = "indexing"
+
+            # Use a reporter to track progress
+            progress = {"count": 0}
+
+            def _reporter(msg: str) -> None:
+                if "Indexing " in msg and "/" in msg:
+                    progress["count"] += 1
+                    _index_state["processed"] = progress["count"]
+
+            run_indexing(
+                db,
+                kb_path,
+                data_dir=data_dir,
+                start_background_backfill=True,
+                reporter=_reporter,
+            )
+
+            _index_state["status"] = "done"
+            _index_state["last_completed"] = _time.strftime("%Y-%m-%dT%H:%M:%S")
+            logger.info("Reindex complete: %d files processed (%s)", _index_state["total"], "auto" if auto else "manual")
+        except Exception as exc:
+            _index_state["status"] = "error"
+            _index_state["error"] = str(exc)
+            logger.error("Reindex failed: %s", exc)
+        finally:
+            if db is not None:
+                db.close()
+            _index_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="reindex-worker").start()
+    return True
+
+
+_auto_detect_last_check = 0.0  # throttle to once per 60s
+
+
+def _auto_detect_new_files(health_data: dict) -> None:
+    """Compare KB file count vs indexed doc count; auto-trigger reindex if mismatch.
+    Runs file scan in a background thread to avoid blocking health endpoint."""
+    global _auto_detect_last_check
+
+    if _index_state["status"] in ("scanning", "indexing"):
+        return
+
+    now = _time.time()
+    if now - _auto_detect_last_check < 60:
+        return
+    _auto_detect_last_check = now
+
+    doc_count = health_data.get("doc_count", 0)
+    failed_count = health_data.get("failed_doc_count", 0)
+    indexed_count = doc_count + failed_count
+
+    def _check_and_trigger() -> None:
+        try:
+            from jarvis.app.runtime_context import resolve_knowledge_base_path, is_indexable
+
+            kb_path = resolve_knowledge_base_path()
+            if not kb_path.exists():
+                return
+
+            file_count = sum(1 for f in kb_path.rglob("*") if f.is_file() and is_indexable(f))
+
+            if file_count > indexed_count:
+                logger.info("Auto-reindex: %d files on disk vs %d indexed", file_count, indexed_count)
+                _trigger_reindex(auto=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=_check_and_trigger, daemon=True, name="auto-detect").start()
 
 
 # Request/Response models
 class AskRequest(BaseModel):
     text: str = Field(max_length=16000)
     session_id: str = Field(max_length=128)
+    context_document_paths: list[str] | None = None
 
 
 class AskResponse(BaseModel):
@@ -137,42 +285,222 @@ class ActionMapCreateRequest(ActionMapPayload):
     map_id: str
 
 
+def _require_service():
+    """Get service or raise 503 if not yet initialized."""
+    svc = _get_service()
+    if svc is None:
+        raise HTTPException(status_code=503, detail="Backend is starting up, please wait...")
+    return svc
+
+
+class FeedbackRequest(BaseModel):
+    query_text: str
+    feedback_type: str  # 'positive', 'negative'
+    citation_paths: list[str] = []
+    session_id: str = ""
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    feedback_id: str = ""
+
+
 # HTTP Endpoints
+
+@app.post("/api/feedback", response_model=FeedbackResponse)
+def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
+    """Record user feedback (thumbs up/down) for search quality learning."""
+    import json
+    import uuid
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    feedback_id = str(uuid.uuid4())
+    try:
+        db = init_database(JarvisConfig(data_dir=resolve_menubar_data_dir()))
+        relevant = request.citation_paths if request.feedback_type == "positive" else []
+        irrelevant = request.citation_paths if request.feedback_type == "negative" else []
+        db.execute(
+            "INSERT INTO search_feedback "
+            "(feedback_id, query_text, feedback_type, relevant_paths, irrelevant_paths, citation_paths, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                feedback_id,
+                request.query_text,
+                request.feedback_type,
+                json.dumps(relevant),
+                json.dumps(irrelevant),
+                json.dumps(request.citation_paths),
+                request.session_id,
+            ),
+        )
+        db.commit()
+        db.close()
+    except Exception:
+        return FeedbackResponse(ok=False)
+
+    # Trigger affinity update for positive feedback
+    if request.feedback_type == "positive" and request.citation_paths:
+        try:
+            _update_query_document_affinity(request.query_text, request.citation_paths)
+        except Exception:
+            pass
+
+    return FeedbackResponse(ok=True, feedback_id=feedback_id)
+
+
+def _update_query_document_affinity(query_text: str, doc_paths: list[str]) -> None:
+    """Update query-document affinity scores based on positive feedback."""
+    import re
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    # Extract a normalized query pattern (lowercase, stripped of particles)
+    pattern = query_text.lower().strip()
+    pattern = re.sub(r'[.,!?·…~]', ' ', pattern)
+    pattern = ' '.join(w for w in pattern.split() if len(w) >= 2)
+    if not pattern:
+        return
+
+    db = init_database(JarvisConfig(data_dir=resolve_menubar_data_dir()))
+    for path in doc_paths:
+        db.execute(
+            "INSERT INTO query_document_affinity (query_pattern, document_path, affinity_score, hit_count) "
+            "VALUES (?, ?, 0.5, 1) "
+            "ON CONFLICT(query_pattern, document_path) DO UPDATE SET "
+            "affinity_score = min(1.0, affinity_score + 0.1), "
+            "hit_count = hit_count + 1, "
+            "last_updated = unixepoch()",
+            (pattern, path),
+        )
+    db.commit()
+    db.close()
+
+
 @app.post("/api/ask", response_model=AskResponse)
-async def ask(request: AskRequest) -> AskResponse:
-    """Process a text query and return JARVIS response."""
+def ask(request: AskRequest) -> AskResponse:
+    """Process a text query and return JARVIS response.
+
+    NOTE: This is a sync ``def`` endpoint (not ``async def``) so that
+    FastAPI runs it in a thread-pool worker.  The underlying
+    ``service.handle()`` call is blocking (LLM inference can take 30-40 s)
+    and would freeze the entire event loop if called from an ``async``
+    handler, making health-checks and other requests unresponsive.
+    """
+    payload: dict[str, object] = {"text": request.text}
+    if request.context_document_paths:
+        payload["context_document_paths"] = request.context_document_paths
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
         session_id=request.session_id,
         request_type="ask_text",
-        payload={"text": request.text},
+        payload=payload,
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
-    
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return AskResponse(**rpc_response.payload)
 
 
+# ── Cached health data (updated in background) ─────────────
+_cached_health: dict[str, object] = {
+    "healthy": False,
+    "message": "Backend is starting up...",
+    "checks": {},
+    "details": {},
+    "status_level": "starting",
+    "chunk_count": 0,
+    "doc_count": 0,
+    "failed_doc_count": 0,
+    "total_size_bytes": 0,
+    "embedding_count": 0,
+}
+_health_refresh_lock = threading.Lock()
+
+
+def _refresh_health_cache() -> None:
+    """Refresh cached health data in background — never blocks the API thread."""
+    if not _health_refresh_lock.acquire(blocking=False):
+        return  # another refresh already running
+    try:
+        svc = _get_service()
+        if svc is None:
+            return
+        rpc_request = RpcRequest(
+            request_id=str(uuid.uuid4()),
+            session_id="health-check",
+            request_type="health",
+            payload={},
+        )
+        rpc_response: RpcResponse = svc.handle(rpc_request)
+        health_data = rpc_response.payload.get("health", {})
+        _cached_health.update(health_data)
+        _auto_detect_new_files(health_data)
+    except Exception as exc:
+        logger.warning("Health refresh failed: %s", exc)
+    finally:
+        _health_refresh_lock.release()
+
+
+def _start_health_refresh_loop() -> None:
+    """Periodically refresh health cache every 10s."""
+    while True:
+        _time.sleep(10)
+        _refresh_health_cache()
+
+
+threading.Thread(target=_start_health_refresh_loop, daemon=True, name="health-refresh").start()
+
+
 @app.get("/api/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    """Check JARVIS backend health status."""
-    rpc_request = RpcRequest(
-        request_id=str(uuid.uuid4()),
-        session_id="health-check",
-        request_type="health",
-        payload={},
-    )
-    rpc_response: RpcResponse = service.handle(rpc_request)
-    return HealthResponse(**rpc_response.payload)
+def health() -> HealthResponse:
+    """Return cached health status — always responds instantly, never blocks."""
+    result = dict(_cached_health)
+    result["indexing"] = _get_index_state()
+    return HealthResponse(health=result)
+
+
+@app.post("/api/reindex")
+def reindex(request: Request):
+    """Trigger a knowledge base reindex."""
+    _check_origin(request)
+    started = _trigger_reindex(auto=False)
+    return {
+        "started": started,
+        "indexing": _get_index_state(),
+    }
+
+
+@app.post("/api/restart")
+def restart_server(request: Request):
+    """Restart the backend process. Responds immediately, then replaces the process."""
+    _check_origin(request)
+
+    def _do_restart() -> None:
+        _time.sleep(0.5)  # let the HTTP response flush
+        logger.info("Restarting backend process via os.execv...")
+        # Update PID file if it exists (start.sh writes .pids/backend.pid)
+        pid_file = Path(__file__).resolve().parent.parent.parent.parent / "ProjectHub-terminal-architect" / ".pids" / "backend.pid"
+        if pid_file.exists():
+            try:
+                pid_file.write_text(str(os.getpid()))
+            except Exception:
+                pass
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_do_restart, daemon=True, name="restart").start()
+    return {"restarting": True}
 
 
 @app.post("/api/normalize", response_model=NormalizeResponse)
-async def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
+def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
     """Normalize a Korean query."""
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
@@ -180,19 +508,19 @@ async def normalize_query(request: NormalizeRequest) -> NormalizeResponse:
         request_type="normalize_query",
         payload={"text": request.text},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
-    
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return NormalizeResponse(**rpc_response.payload)
 
 
 @app.get("/api/runtime-state")
-async def runtime_state():
+def runtime_state():
     """Get full runtime state."""
     rpc_request = RpcRequest(
         request_id=str(uuid.uuid4()),
@@ -200,61 +528,79 @@ async def runtime_state():
         request_type="runtime_state",
         payload={},
     )
-    rpc_response: RpcResponse = service.handle(rpc_request)
-    
+    rpc_response: RpcResponse = _require_service().handle(rpc_request)
+
     if not rpc_response.ok:
         raise HTTPException(
             status_code=400,
             detail=rpc_response.error.message if rpc_response.error else "Unknown error",
         )
-    
+
     return rpc_response.payload
 
 
+def _skill_store():
+    from jarvis.service.intent_skill_store import (
+        build_skill_catalog,
+        create_action_map,
+        create_skill_profile,
+        list_action_maps,
+        upsert_action_map,
+        upsert_skill_profile,
+    )
+    return build_skill_catalog, create_skill_profile, upsert_skill_profile, list_action_maps, create_action_map, upsert_action_map
+
+
 @app.get("/api/skills")
-async def skills_catalog() -> dict[str, Any]:
+def skills_catalog() -> dict[str, Any]:
+    build_skill_catalog, *_ = _skill_store()
     return {"catalog": build_skill_catalog()}
 
 
 @app.post("/api/skills")
-async def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
+def create_skill(request: SkillProfileCreateRequest) -> dict[str, Any]:
+    build_skill_catalog, create_skill_profile_fn, *_ = _skill_store()
     try:
-        profile = create_skill_profile(request.model_dump())
+        profile = create_skill_profile_fn(request.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile, "catalog": build_skill_catalog()}
 
 
 @app.put("/api/skills/{skill_id}")
-async def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
+def update_skill(skill_id: str, request: SkillProfilePayload) -> dict[str, Any]:
+    build_skill_catalog, _, upsert_skill_profile_fn, *_ = _skill_store()
     try:
-        profile = upsert_skill_profile(skill_id, request.model_dump(exclude_none=False))
+        profile = upsert_skill_profile_fn(skill_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile, "catalog": build_skill_catalog()}
 
 
 @app.get("/api/action-maps")
-async def action_maps() -> dict[str, Any]:
-    return {"maps": list_action_maps()}
+def action_maps() -> dict[str, Any]:
+    *_, list_action_maps_fn, _, _ = _skill_store()
+    return {"maps": list_action_maps_fn()}
 
 
 @app.post("/api/action-maps")
-async def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
+def create_map(request: ActionMapCreateRequest) -> dict[str, Any]:
+    *_, list_action_maps_fn, create_action_map_fn, _ = _skill_store()
     try:
-        action_map = create_action_map(request.model_dump())
+        action_map = create_action_map_fn(request.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"action_map": action_map, "maps": list_action_maps()}
+    return {"action_map": action_map, "maps": list_action_maps_fn()}
 
 
 @app.put("/api/action-maps/{map_id}")
-async def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
+def update_map(map_id: str, request: ActionMapPayload) -> dict[str, Any]:
+    *_, list_action_maps_fn, _, upsert_action_map_fn = _skill_store()
     try:
-        action_map = upsert_action_map(map_id, request.model_dump(exclude_none=False))
+        action_map = upsert_action_map_fn(map_id, request.model_dump(exclude_none=False))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"action_map": action_map, "maps": list_action_maps()}
+    return {"action_map": action_map, "maps": list_action_maps_fn()}
 
 
 def _resolve_kb_root() -> Path | None:
@@ -282,7 +628,7 @@ class BrowseResponse(BaseModel):
 
 
 @app.get("/api/browse", response_model=BrowseResponse)
-async def browse_directory(path: str = ""):
+def browse_directory(path: str = ""):
     """List directory contents within the knowledge base."""
     kb_root = _resolve_kb_root()
     if kb_root is None:
@@ -322,6 +668,104 @@ async def browse_directory(path: str = ""):
     return BrowseResponse(path=path, entries=entries)
 
 
+@app.get("/api/search-docs")
+def search_documents(q: str = Query(..., min_length=1, max_length=200)):
+    """Search indexed documents by filename, path, or content keywords."""
+    kb_root = _resolve_kb_root()
+    from jarvis.app.bootstrap import init_database
+    from jarvis.app.config import JarvisConfig
+    from jarvis.runtime_paths import resolve_menubar_data_dir
+
+    data_dir = resolve_menubar_data_dir()
+    db = init_database(JarvisConfig(data_dir=data_dir))
+
+    try:
+        terms = q.lower().split()
+
+        # 1) Path/filename match
+        all_docs = db.execute(
+            "SELECT document_id, path, size_bytes, indexing_status FROM documents "
+            "WHERE indexing_status IN ('INDEXED', 'FAILED') ORDER BY path"
+        ).fetchall()
+
+        path_matches = []
+        for doc_id, doc_path, size_bytes, status in all_docs:
+            path_lower = doc_path.lower()
+            hits = sum(1 for t in terms if t in path_lower)
+            if hits == 0:
+                continue
+            rel = doc_path
+            if kb_root:
+                try:
+                    rel = str(Path(doc_path).relative_to(kb_root.resolve()))
+                except ValueError:
+                    pass
+            chunk_count = db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchone()[0]
+            path_matches.append({
+                "document_id": doc_id,
+                "path": rel,
+                "full_path": doc_path,
+                "name": Path(doc_path).name,
+                "size_bytes": size_bytes,
+                "chunk_count": chunk_count,
+                "status": status,
+                "match_type": "path",
+                "_score": hits,
+            })
+        path_matches.sort(key=lambda m: (-m["_score"], m["path"]))
+        for m in path_matches:
+            del m["_score"]
+
+        # 2) FTS content match (top 10 documents by chunk hits)
+        fts_query = " AND ".join(f'"{t}"' for t in terms if len(t) >= 2)
+        content_matches = []
+        if fts_query:
+            try:
+                fts_rows = db.execute(
+                    "SELECT c.document_id, COUNT(*) as hits "
+                    "FROM chunks_fts fts "
+                    "JOIN chunks c ON c.rowid = fts.rowid "
+                    "WHERE chunks_fts MATCH ? "
+                    "GROUP BY c.document_id ORDER BY hits DESC LIMIT 10",
+                    (fts_query,),
+                ).fetchall()
+                matched_doc_ids = {m["document_id"] for m in path_matches}
+                for doc_id, hits in fts_rows:
+                    if doc_id in matched_doc_ids:
+                        continue
+                    doc_row = db.execute(
+                        "SELECT path, size_bytes, indexing_status FROM documents WHERE document_id = ?",
+                        (doc_id,),
+                    ).fetchone()
+                    if not doc_row:
+                        continue
+                    doc_path, size_bytes, status = doc_row
+                    rel = doc_path
+                    if kb_root:
+                        try:
+                            rel = str(Path(doc_path).relative_to(kb_root.resolve()))
+                        except ValueError:
+                            pass
+                    content_matches.append({
+                        "document_id": doc_id,
+                        "path": rel,
+                        "full_path": doc_path,
+                        "name": Path(doc_path).name,
+                        "size_bytes": size_bytes,
+                        "chunk_count": hits,
+                        "status": status,
+                        "match_type": "content",
+                    })
+            except Exception:
+                pass  # FTS match syntax error — skip
+
+        return {"query": q, "results": path_matches + content_matches}
+    finally:
+        db.close()
+
+
 # ---- Learned Patterns Management ----
 
 class LearnedPatternSummary(BaseModel):
@@ -356,7 +800,7 @@ def _learning_db_connection():
 
 
 @app.get("/api/learned-patterns", response_model=LearnedPatternsResponse)
-async def list_learned_patterns(retrieval_task: str | None = None):
+def list_learned_patterns(retrieval_task: str | None = None):
     """List all learned patterns, optionally filtered by retrieval_task."""
     import json
     conn = _learning_db_connection()
@@ -468,7 +912,7 @@ async def ask_vision(
     if model not in _ALLOWED_VISION_MODELS:
         raise HTTPException(status_code=400, detail=f"Unsupported vision model: {model}")
 
-    try:
+    def _run_vision_sync():
         backend = _get_vision_backend(model)
         t0 = _time.perf_counter()
         answer = backend.generate_with_image(prompt=text, image_path=tmp_path)
@@ -478,6 +922,9 @@ async def ask_vision(
             model_id=backend.model_id,
             elapsed_ms=elapsed_ms,
         )
+
+    try:
+        return await asyncio.to_thread(_run_vision_sync)
     finally:
         try:
             Path(tmp_path).unlink()
@@ -499,7 +946,7 @@ class ExtractedTextResponse(BaseModel):
 
 
 @app.get("/api/file/extracted", response_model=ExtractedTextResponse)
-async def get_extracted_text(path: str, limit: int = Query(default=200, ge=1, le=1000)):
+def get_extracted_text(path: str, limit: int = Query(default=200, ge=1, le=1000)):
     """Return indexed/extracted text chunks for binary documents (HWP, DOCX, PDF, etc.)."""
     kb_root = _resolve_kb_root()
     if kb_root is None:
@@ -578,7 +1025,7 @@ class ForgetPatternRequest(BaseModel):
 
 
 @app.post("/api/learned-patterns/forget")
-async def forget_learned_patterns(http_request: Request, request: ForgetPatternRequest):
+def forget_learned_patterns(http_request: Request, request: ForgetPatternRequest):
     """Delete a specific learned pattern, or all patterns if pattern_id is None."""
     _check_origin(http_request)
     conn = _learning_db_connection()
@@ -604,7 +1051,7 @@ class ForgetDataRequest(BaseModel):
 
 
 @app.post("/api/data/forget")
-async def forget_user_data(http_request: Request, request: ForgetDataRequest):
+def forget_user_data(http_request: Request, request: ForgetDataRequest):
     """Delete user data: conversations, session events, task logs, or all."""
     _check_origin(http_request)
     conn = _learning_db_connection()
@@ -631,7 +1078,7 @@ async def forget_user_data(http_request: Request, request: ForgetDataRequest):
 
 
 @app.get("/api/file")
-async def serve_file(path: str):
+def serve_file(path: str):
     """Serve a file from allowed directories.
 
     Validates that the requested path is within the knowledge_base
@@ -736,7 +1183,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                 )
                 
                 # Handle request
-                rpc_response: RpcResponse = service.handle(rpc_request)
+                rpc_response: RpcResponse = _require_service().handle(rpc_request)
                 
                 # Send response
                 if rpc_response.ok:

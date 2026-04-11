@@ -11,7 +11,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) => {
+const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content, scale }) => {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [encoding, setEncoding] = useState<string | null>(null);
@@ -86,12 +86,15 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
         </div>
       </div>
       {mode === 'rendered' ? (
-        <iframe
-          srcDoc={sanitizedHtml}
-          sandbox=""
-          title={artifact.title}
-          className="flex-1 w-full border-0 bg-white"
-        />
+        <div className="flex-1 overflow-auto custom-scrollbar" style={scale && scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left', transition: 'transform 0.2s' } : undefined}>
+          <iframe
+            srcDoc={sanitizedHtml}
+            sandbox=""
+            title={artifact.title}
+            className="w-full border-0 bg-white"
+            style={{ height: `${100 / (scale || 1)}%`, width: `${100 / (scale || 1)}%` }}
+          />
+        </div>
       ) : (
         <div className="flex-1 overflow-auto custom-scrollbar">
           <SyntaxHighlighter
@@ -103,7 +106,7 @@ const HtmlRenderer: React.FC<RendererProps> = ({ artifact, fileUrl, content }) =
               margin: 0,
               padding: '1.5rem',
               background: 'transparent',
-              fontSize: '0.8125rem',
+              fontSize: `${13 * (scale || 1)}px`,
             }}
           >
             {html || '내용 없음'}

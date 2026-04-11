@@ -107,6 +107,19 @@
       "example_queries": ["openai.com 열어줘", "https://platform.openai.com 보여줘"]
     },
     {
+      "intent_id": "doc_find",
+      "skill_id": "builtin_doc_find",
+      "category": "knowledge_query",
+      "executor": "builtin_capabilities._build_doc_find_response",
+      "response_kind": "retrieval_result",
+      "requires_retrieval": false,
+      "requires_live_data": false,
+      "stores_context": [],
+      "automation_ready": false,
+      "implementation_status": "implemented",
+      "example_queries": ["go 언어 문서 찾아줘", "python 관련 책 모두 찾아줘", "파일 검색해줘"]
+    },
+    {
       "intent_id": "web_search",
       "skill_id": "builtin_web_search",
       "category": "web_task",
@@ -117,7 +130,7 @@
       "stores_context": [],
       "automation_ready": false,
       "implementation_status": "implemented",
-      "example_queries": ["ProjectHub 검색해줘", "OpenAI 홈페이지 찾아줘"]
+      "example_queries": ["ProjectHub 웹 검색해줘", "OpenAI 홈페이지 찾아줘"]
     },
     {
       "intent_id": "recent_context",

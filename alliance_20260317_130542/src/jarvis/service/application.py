@@ -4485,6 +4485,350 @@ def _prefetch_query_tts_async(query: str) -> dict[str, object]:
     return {"started": True, "predicted_text": predicted_text}
 
 
+def _inject_document_context(query: str, document_path: str) -> str:
+    """Read the specified document and prepend its content as context to the query.
+
+    This allows the LLM to answer questions about a specific open document
+    instead of relying on RAG keyword search which may return unrelated results.
+    """
+    from pathlib import Path
+
+    path = Path(document_path).expanduser()
+    if not path.is_absolute() or not path.is_file():
+        from jarvis.app.runtime_context import resolve_knowledge_base_path
+        resolved = (resolve_knowledge_base_path() / document_path).resolve()
+        if resolved.is_file():
+            path = resolved
+    if not path.is_file():
+        return query
+
+    # For text-readable files, read content directly
+    TEXT_EXTENSIONS = {
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java", ".c", ".cpp",
+        ".h", ".hpp", ".cs", ".rb", ".rs", ".go", ".php", ".sh", ".zsh", ".bash",
+        ".r", ".m", ".mm", ".sql", ".md", ".txt", ".json", ".yaml", ".yml", ".xml",
+        ".html", ".css", ".scss", ".toml", ".ini", ".cfg", ".conf", ".env", ".log",
+        ".vue", ".svelte", ".dart", ".lua",
+    }
+    ext = path.suffix.lower()
+    if ext not in TEXT_EXTENSIONS:
+        # For binary documents (PDF, DOCX, etc.), try to read from indexed chunks
+        try:
+            from jarvis.app.bootstrap import init_database
+            from jarvis.app.config import JarvisConfig
+
+            config = JarvisConfig(data_dir=os.getenv("JARVIS_DATA_DIR", ""))
+            db = init_database(config)
+            rows = db.execute(
+                "SELECT c.text FROM chunks c JOIN documents d ON c.document_id = d.id "
+                "WHERE d.path = ? ORDER BY c.chunk_index LIMIT 30",
+                (str(path),),
+            ).fetchall()
+            if rows:
+                content = "\n\n".join(row[0] for row in rows)
+                return (
+                    f"[문서 컨텍스트: {path.name}]\n{content[:20000]}\n"
+                    f"[/문서 컨텍스트]\n\n{query}"
+                )
+        except Exception:
+            pass
+        return query
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")[:20000]
+    except Exception:
+        return query
+
+    return f"[문서 컨텍스트: {path.name}]\n{content}\n[/문서 컨텍스트]\n\n{query}"
+
+
+_doc_backend_instance: object | None = None
+_doc_backend_lock = threading.Lock()
+
+
+def _get_doc_analysis_backend():
+    """Get or create a Gemma 4 E4B backend for document analysis (128K context).
+
+    Falls back to the runtime context's existing backend if Gemma is unavailable.
+    The backend is cached as a singleton to avoid reloading on every request.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    global _doc_backend_instance
+    with _doc_backend_lock:
+        if _doc_backend_instance is not None and getattr(_doc_backend_instance, 'is_loaded', False):
+            return _doc_backend_instance
+
+        # Try Gemma 4 E4B (128K context, best for document analysis)
+        try:
+            from jarvis.runtime.gemma_vlm_backend import GemmaVlmBackend
+            from jarvis.contracts import RuntimeDecision
+            backend = GemmaVlmBackend()
+            backend.load(RuntimeDecision(
+                model_id="gemma4:e4b",
+                context_window=131072,
+            ))
+            _doc_backend_instance = backend
+            _log.info("Document analysis: Gemma 4 E4B loaded (128K context)")
+            return backend
+        except Exception as exc:
+            _log.warning("Gemma 4 E4B unavailable: %s — falling back to runtime context backend", exc)
+
+        # Fallback: reuse already-loaded backend from runtime context
+        model_chain = _menu_bar_model_chain()
+        for model_id in model_chain:
+            if model_id.strip().lower() == "stub":
+                continue
+            try:
+                context = _get_runtime_context(model_id=model_id)
+                generator = getattr(context.orchestrator, '_llm_generator', None)
+                if generator is None:
+                    continue
+                backend = getattr(generator, '_backend', None)
+                if backend is not None and getattr(backend, 'is_loaded', False):
+                    _doc_backend_instance = backend
+                    _log.info("Document analysis: reusing runtime backend %s", getattr(backend, 'model_id', model_id))
+                    return backend
+            except Exception as exc2:
+                _log.warning("Runtime context fallback failed for %s: %s", model_id, exc2)
+                continue
+
+    _log.error("No LLM backend available for document analysis")
+    return None
+
+
+_MAX_CONTINUATION_ROUNDS = 3
+
+
+def _generate_full_response(backend: object, prompt: str, context: str) -> str:
+    """Generate a complete LLM response with automatic continuation.
+
+    If the model hits max_tokens before EOS (response was truncated),
+    feeds the partial response back as context and asks the model to
+    continue. Repeats up to _MAX_CONTINUATION_ROUNDS times, then
+    concatenates all parts into the full response.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    parts: list[str] = []
+
+    for round_idx in range(_MAX_CONTINUATION_ROUNDS + 1):
+        if round_idx == 0:
+            current_prompt = prompt
+            current_context = context
+        else:
+            # Continuation: feed partial response back, ask to continue
+            accumulated = "".join(parts)
+            current_context = context
+            current_prompt = (
+                f"{prompt}\n\n"
+                f"[이전 응답 (이어서 작성할 것)]\n{accumulated}\n[/이전 응답]\n\n"
+                "위 응답이 중간에 잘렸습니다. 잘린 부분부터 이어서 작성하세요. "
+                "이전 내용을 반복하지 말고, 바로 이어서 계속하세요."
+            )
+
+        chunk, hit_limit = _generate_single_chunk(backend, current_prompt, current_context)
+
+        if chunk:
+            parts.append(chunk)
+
+        if not hit_limit:
+            # Model finished naturally (EOS) — done
+            break
+
+        _log.info("Document analysis: continuation round %d (accumulated %d chars)", round_idx + 1, sum(len(p) for p in parts))
+
+    return "".join(parts)
+
+
+_DOCUMENT_ANALYSIS_SYSTEM_PROMPT = (
+    "당신은 JARVIS입니다. 사용자가 현재 열고 있는 파일이 참고 자료로 제공됩니다.\n\n"
+    "답변 규칙:\n"
+    "- 사용자의 질문에 자연스럽게 답변하세요.\n"
+    "- 코드나 문서 분석을 요청하면 상세하게 설명하세요. 간결하게 요약하지 마세요.\n"
+    "- 특정 부분에 대한 질문이면 해당 부분만 집중하여 설명하세요.\n"
+    "- 인사나 일상 대화에는 자연스럽게 응답하세요.\n"
+    "- 한국어로 답변하세요."
+)
+
+
+def _generate_single_chunk(backend: object, prompt: str, context: str) -> tuple[str, bool]:
+    """Generate one chunk via the backend. Returns (text, hit_max_tokens).
+
+    Prepends the document analysis system prompt to the context so that
+    backend.generate() (which calls build_system_message) includes our
+    analysis instructions in the evidence section, overriding the default
+    brevity constraint.
+    """
+    augmented_context = _DOCUMENT_ANALYSIS_SYSTEM_PROMPT + "\n\n" + context
+    response = backend.generate(prompt, augmented_context, "document_explanation")
+
+    # Rough truncation detection: if response chars > 40% of context window
+    # (in chars), the model may have hit the token limit
+    ctx_window = getattr(backend, '_context_window', 8192)
+    hit_limit = len(response) > ctx_window * 0.8 if response else False
+
+    return response, hit_limit
+
+
+_TEXT_EXTENSIONS = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".rb", ".rs", ".go", ".php", ".sh", ".zsh", ".bash",
+    ".r", ".m", ".mm", ".sql", ".md", ".txt", ".json", ".yaml", ".yml", ".xml",
+    ".html", ".css", ".scss", ".toml", ".ini", ".cfg", ".conf", ".vue", ".svelte",
+}
+
+_CODE_EXTENSIONS = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".kt", ".java",
+    ".c", ".cpp", ".h", ".cs", ".rb", ".rs", ".go", ".sh",
+}
+
+
+def _resolve_file_path(document_path: str) -> Path | None:
+    """Resolve a document path (absolute or KB-relative) to an existing file."""
+    from pathlib import Path as P
+    path = P(document_path).expanduser()
+    if path.is_file():
+        return path
+    from jarvis.app.runtime_context import resolve_knowledge_base_path
+    resolved = (resolve_knowledge_base_path() / document_path).resolve()
+    return resolved if resolved.is_file() else None
+
+
+def _read_file_content(path: Path, max_chars: int = 20000) -> str:
+    """Read file content: text files directly, binary via indexed chunks."""
+    ext = path.suffix.lower()
+    if ext in _TEXT_EXTENSIONS:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+        except Exception:
+            pass
+    # Binary fallback: try indexed chunks
+    context_text = _inject_document_context("", str(path)).strip()
+    if context_text:
+        import re
+        m = re.search(r"\[문서 컨텍스트:.*?\]\n(.*?)\n\[/문서 컨텍스트\]", context_text, re.DOTALL)
+        return (m.group(1) if m else context_text)[:max_chars]
+    return ""
+
+
+def _ask_about_documents(query: str, document_paths: list[str]) -> tuple[dict[str, object] | None, str]:
+    """Answer questions using multiple document files as context.
+
+    Reads all provided files, combines into evidence context, and sends
+    to the LLM for analysis. Returns (response_payload, "") on success
+    or (None, reason) on failure.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    backend = _get_doc_analysis_backend()
+    if backend is None:
+        return None, "LLM 백엔드 로드 실패"
+
+    backend_name = getattr(backend, '_model_id', 'unknown')
+    ctx_window = getattr(backend, '_context_window', 8192)
+
+    # Budget: 1/3 for files, 2/3 for response
+    prompt_overhead_tokens = 400
+    usable_tokens = ctx_window - prompt_overhead_tokens
+    file_token_budget = usable_tokens // 3
+    total_file_char_budget = file_token_budget * 3  # ~3 chars/token for code
+    per_file_budget = max(2000, total_file_char_budget // max(len(document_paths), 1))
+
+    # Read all files
+    file_sections: list[str] = []
+    loaded_files: list[tuple[str, str]] = []  # (filename, path)
+    total_chars = 0
+
+    for doc_path in document_paths:
+        resolved = _resolve_file_path(doc_path)
+        if resolved is None:
+            continue
+        remaining = total_file_char_budget - total_chars
+        if remaining < 500:
+            break
+        budget = min(per_file_budget, remaining)
+        content = _read_file_content(resolved, max_chars=budget)
+        if not content:
+            continue
+        filename = resolved.name
+        loaded_files.append((filename, doc_path))
+        file_sections.append(f"[파일: {filename}]\n{content}")
+        total_chars += len(content)
+
+    if not file_sections:
+        return None, f"읽을 수 있는 파일이 없습니다 ({len(document_paths)}개 경로 중 0개 성공)"
+
+    evidence_context = "\n\n".join(file_sections)
+
+    try:
+        answer = _generate_full_response(backend, query, evidence_context)
+    except Exception as exc:
+        _log.error("Document analysis failed: %s", exc)
+        return None, f"LLM 생성 실패 (backend={backend_name}): {exc}"
+
+    if not answer or not answer.strip():
+        return None, f"LLM이 빈 응답을 반환했습니다 (backend={backend_name})"
+
+    from jarvis.service.builtin_capabilities import _response_payload, _presentation, _block, _artifact
+
+    artifacts = []
+    citations = []
+    for i, (filename, doc_path) in enumerate(loaded_files):
+        aid = f"doc_context_{i}"
+        artifacts.append(_artifact(
+            artifact_id=aid,
+            type_name="code" if Path(doc_path).suffix.lower() in _CODE_EXTENSIONS else "document",
+            title=filename,
+            subtitle="참조 문서",
+            path=doc_path,
+            full_path=doc_path,
+            preview=doc_path,
+            source_type="document",
+        ))
+        citations.append({
+            "label": filename,
+            "source_path": filename,
+            "full_source_path": doc_path,
+            "source_type": "document",
+            "quote": "",
+            "relevance_score": 1.0,
+        })
+
+    subtitle = loaded_files[0][0] if len(loaded_files) == 1 else f"{loaded_files[0][0]} 외 {len(loaded_files) - 1}개"
+    payload = _response_payload(
+        query=query,
+        response_text=answer.strip(),
+        spoken_text=answer.strip(),
+        intent="document_explanation",
+        skill="direct_document_qa",
+        source_profile="knowledge_base",
+        primary_source_type="document",
+        artifacts=artifacts,
+        citations=citations,
+        presentation=_presentation(
+            layout="stack",
+            title="Document Analysis",
+            subtitle=subtitle,
+            selected_artifact_id="doc_context_0",
+            blocks=[
+                _block(block_id="answer", kind="answer", title="분석 결과", subtitle=f"{len(loaded_files)}개 문서 참조"),
+                _block(
+                    block_id="list",
+                    kind="list",
+                    title="참조 문서",
+                    subtitle="분석에 사용된 문서",
+                    artifact_ids=[f"doc_context_{i}" for i in range(len(artifacts))],
+                ),
+            ],
+        ),
+    )
+    return payload, ""
+
+
 class JarvisApplicationService:
     """Backend service facade for frontend clients.
 
@@ -4618,8 +4962,46 @@ class JarvisApplicationService:
                         code="INVALID_ARGUMENT",
                         message="text is required",
                     )
-                response_payload = resolve_builtin_capability(
-                    text,
+                raw_paths = request.payload.get("context_document_paths") or []
+                context_document_paths = [str(p).strip() for p in raw_paths if str(p).strip()] if isinstance(raw_paths, list) else []
+                if context_document_paths:
+                    # Direct LLM call — bypass RAG entirely
+                    doc_result, doc_fail_reason = _ask_about_documents(text, context_document_paths)
+                    if doc_result is not None:
+                        _prime_tts_cache_async(doc_result)
+                        return ok_response(
+                            request=request,
+                            payload={
+                                "response": doc_result,
+                                "answer": _build_answer_payload(doc_result),
+                                "guide": _build_guide_payload(doc_result),
+                            },
+                        )
+                    # Return diagnostic with specific failure reason (do NOT fall to RAG)
+                    from jarvis.service.builtin_capabilities import _response_payload as _rp
+                    fail_msg = f"문서 분석 실패: {doc_fail_reason}"
+                    diag = _rp(
+                        query=text,
+                        response_text=fail_msg,
+                        spoken_text=fail_msg,
+                        intent="document_explanation",
+                        skill="direct_document_qa",
+                        source_profile="knowledge_base",
+                        primary_source_type="document",
+                        artifacts=[],
+                        presentation=None,
+                    )
+                    return ok_response(
+                        request=request,
+                        payload={
+                            "response": diag,
+                            "answer": _build_answer_payload(diag),
+                            "guide": _build_guide_payload(diag),
+                        },
+                    )
+                else:
+                    response_payload = resolve_builtin_capability(
+                        text,
                     runtime_status_resolver=_health_light,
                     calendar_view_resolver=lambda query: _resolve_calendar_view_payload(query, request.session_id),
                     calendar_update_resolver=lambda query: _resolve_calendar_update_payload(query, request.session_id),

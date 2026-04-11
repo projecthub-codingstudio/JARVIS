@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { Bookmark, ChevronLeft, ChevronRight, Download, Search, Sparkles } from 'lucide-react';
+import { BookmarkCheck, Bookmark, MessageSquare, Minus, PanelRightClose, PanelRightOpen, Plus, Search, Sparkles } from 'lucide-react';
 import { apiClient } from '../../lib/api-client';
 import { cn } from '../../lib/utils';
-import { ViewerRouter } from './ViewerRouter';
+import { ViewerRouter, getZoomMode } from './ViewerRouter';
+import { useAppStore } from '../../store/app-store';
 import type { Artifact, Citation } from '../../types';
 
 interface ViewerShellProps {
@@ -20,12 +21,6 @@ function getMatchScore(index: number) {
   return Math.max(42, 98 - index * 14);
 }
 
-function getPageLabel(artifact: Artifact) {
-  if (artifact.viewer_kind === 'document') return 'Page 1 of 1';
-  if (artifact.viewer_kind === 'image') return 'Asset View';
-  if (artifact.viewer_kind === 'web') return 'Live Source';
-  return 'Document View';
-}
 
 function shouldUseLightDocumentCanvas(artifact: Artifact) {
   const path = (artifact.full_path || artifact.path || '').toLowerCase();
@@ -43,8 +38,14 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
   hideLibrary = false,
 }) => {
   const [documentPrompt, setDocumentPrompt] = useState('');
+  const [zoom, setZoom] = useState(1.0);
+  const [showInspector, setShowInspector] = useState(!hideLibrary);
+  const [showPrompt, setShowPrompt] = useState(false);
   const filePath = artifact.full_path || artifact.path || '';
   const fileUrl = filePath ? apiClient.getFileUrl(filePath) : undefined;
+  const zoomMode = getZoomMode(artifact);
+  const { bookmarks, toggleBookmark } = useAppStore();
+  const isBookmarked = bookmarks.includes(filePath);
 
   const activeCitations = useMemo(() => {
     const filtered = citations.filter((citation) => (citation.full_source_path || citation.source_path) === filePath);
@@ -108,25 +109,57 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
 
       <section className="relative flex min-w-0 flex-1 flex-col bg-surface-container">
         <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/5 bg-surface px-4">
-          <div className="flex items-center gap-4">
-            <button className="transition hover:text-primary">
-              <Search size={14} />
-            </button>
-            <span className="font-mono text-[12px] text-outline">{artifact.viewer_kind === 'document' ? '125%' : '100%'}</span>
-            <button className="transition hover:text-primary">
-              <Bookmark size={14} />
-            </button>
+          <div className="flex items-center gap-2">
+            {zoomMode !== 'none' && (<>
+              <button
+                onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))}
+                className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary"
+                title="Zoom out"
+              >
+                <Minus size={14} />
+              </button>
+              <button
+                onClick={() => setZoom(1.0)}
+                className="min-w-[3rem] rounded px-1 py-0.5 text-center font-mono text-[12px] text-outline transition hover:bg-surface-container-highest hover:text-primary"
+                title="Reset zoom"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                onClick={() => setZoom((z) => Math.min(3.0, Math.round((z + 0.25) * 100) / 100))}
+                className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary"
+                title="Zoom in"
+              >
+                <Plus size={14} />
+              </button>
+            </>)}
+            {filePath && (
+              <button
+                onClick={() => toggleBookmark(filePath)}
+                className={cn('ml-1 rounded p-1 transition', isBookmarked ? 'text-primary' : 'text-outline hover:text-primary')}
+                title={isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 추가'}
+              >
+                {isBookmarked ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-[12px] text-outline">{getPageLabel(artifact)}</span>
-            <div className="flex gap-1">
-              <button className="rounded p-1 transition hover:bg-surface-container-highest">
-                <ChevronLeft size={14} />
+            {!isMobile && onAskArtifact && (
+              <button
+                onClick={() => setShowPrompt((v) => !v)}
+                className={cn('rounded p-1 transition', showPrompt ? 'text-primary' : 'text-outline hover:bg-surface-container-highest hover:text-primary')}
+                title={showPrompt ? 'Hide prompt' : 'Ask about this document'}
+              >
+                <MessageSquare size={14} />
               </button>
-              <button className="rounded p-1 transition hover:bg-surface-container-highest">
-                <ChevronRight size={14} />
-              </button>
-            </div>
+            )}
+            <button
+              onClick={() => setShowInspector((v) => !v)}
+              className="rounded p-1 text-outline transition hover:bg-surface-container-highest hover:text-primary"
+              title={showInspector ? 'Hide Inspector' : 'Show Inspector'}
+            >
+              {showInspector ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            </button>
             {fileUrl && (
               <a
                 href={fileUrl}
@@ -141,10 +174,10 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
         </div>
 
         <div className={cn('flex-1 overflow-hidden', shouldUseLightDocumentCanvas(artifact) && 'bg-[#f5f5f4]')}>
-          <ViewerRouter artifact={artifact} fileUrl={fileUrl} content={artifact.preview} />
+          <ViewerRouter artifact={artifact} fileUrl={fileUrl} content={artifact.preview} scale={zoom} />
         </div>
 
-        {!isMobile && onAskArtifact && (
+        {!isMobile && onAskArtifact && showPrompt && (
           <div className="shrink-0 border-t border-white/5 bg-surface px-6 py-4">
             <form onSubmit={handleDocumentAsk} className="mx-auto flex w-full max-w-3xl items-center gap-3 rounded-xl border border-white/10 bg-surface-container-high px-3 py-2">
               <Sparkles size={16} className="text-tertiary" />
@@ -166,7 +199,7 @@ export const ViewerShell: React.FC<ViewerShellProps> = ({
         )}
       </section>
 
-      <aside className="hidden w-80 shrink-0 border-l border-white/5 bg-surface-container-low xl:flex xl:flex-col">
+      <aside className={cn('w-80 shrink-0 border-l border-white/5 bg-surface-container-low', showInspector ? 'hidden xl:flex xl:flex-col' : 'hidden')}>
         <div className="border-b border-white/5 bg-surface px-4 py-4">
           <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
             <Sparkles size={12} className="text-tertiary" />

@@ -25,6 +25,7 @@ const API_BASE_URL = import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:80
 export interface AskRequest {
   text: string;
   session_id: string;
+  context_document_paths?: string[];
 }
 
 export interface Response {
@@ -66,12 +67,21 @@ export interface AskResponse {
   guide: GuideDirective;
 }
 
+export interface IndexingState {
+  status: 'idle' | 'scanning' | 'indexing' | 'done' | 'error';
+  processed: number;
+  total: number;
+  last_completed: string | null;
+  error: string | null;
+}
+
 export interface HealthResponse {
   health: {
     status: string;
     model_loaded: boolean;
     memory_usage: number;
     index_status: string;
+    indexing?: IndexingState;
   };
 }
 
@@ -110,6 +120,18 @@ export const apiClient = {
       throw new Error(`Health check failed: ${response.statusText}`);
     }
     return response.json();
+  },
+
+  async reindex(): Promise<{ started: boolean; indexing: IndexingState }> {
+    const response = await fetch(`${API_BASE_URL}/api/reindex`, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Reindex failed: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async restart(): Promise<void> {
+    await fetch(`${API_BASE_URL}/api/restart`, { method: 'POST' }).catch(() => {});
   },
 
   async normalizeQuery(text: string): Promise<{ normalized_query: string }> {
@@ -195,11 +217,11 @@ export const apiClient = {
   },
 
   getFileUrl(fullPath: string): string {
-    return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath)}`;
+    return `${API_BASE_URL}/api/file?path=${encodeURIComponent(fullPath.normalize('NFC'))}`;
   },
 
   async browse(path: string = ''): Promise<BrowseResponse> {
-    const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`${API_BASE_URL}/api/browse?path=${encodeURIComponent(path.normalize('NFC'))}`);
     if (!res.ok) {
       throw new Error(`Browse failed: ${res.status} ${res.statusText}`);
     }
@@ -249,11 +271,38 @@ export const apiClient = {
 
   async getExtractedText(path: string, limit: number = 200): Promise<ExtractedTextResponse> {
     const res = await fetch(
-      `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path)}&limit=${limit}`,
+      `${API_BASE_URL}/api/file/extracted?path=${encodeURIComponent(path.normalize('NFC'))}&limit=${limit}`,
     );
     if (!res.ok) {
       throw new Error(`Extracted text fetch failed: ${res.status}`);
     }
+    return res.json();
+  },
+
+  async forgetData(scope: 'all' | 'conversations' | 'session_events' | 'task_logs'): Promise<{ deleted: Record<string, number> }> {
+    const res = await fetch(`${API_BASE_URL}/api/data/forget`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`Forget data failed: ${res.status} ${detail}`);
+    }
+    return res.json();
+  },
+
+  async submitFeedback(queryText: string, feedbackType: 'positive' | 'negative', citationPaths: string[], sessionId: string): Promise<{ ok: boolean }> {
+    const res = await fetch(`${API_BASE_URL}/api/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query_text: queryText,
+        feedback_type: feedbackType,
+        citation_paths: citationPaths,
+        session_id: sessionId,
+      }),
+    });
     return res.json();
   },
 };

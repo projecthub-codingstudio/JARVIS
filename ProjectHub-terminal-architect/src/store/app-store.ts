@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { Message, SystemLog, Citation, Artifact, GuideDirective, Presentation, FileNode } from '../types';
 
 interface AppState {
@@ -6,6 +7,9 @@ interface AppState {
   messages: Message[];
   assets: Artifact[];
   logs: SystemLog[];
+  lastHealthLatency: number | null;
+  lastHealthError: string | null;
+  lastLogReadCount: number;
   isLoading: boolean;
   error: string | null;
   sessionId: string;
@@ -34,6 +38,10 @@ interface AppState {
   setHasEvidence: (hasEvidence: boolean) => void;
   setSessionId: (sessionId: string) => void;
   addLog: (log: SystemLog) => void;
+  setLastHealthLatency: (ms: number | null) => void;
+  setLastHealthError: (error: string | null) => void;
+  clearLogs: () => void;
+  markLogsRead: () => void;
 
   // Repository
   setFileTree: (entries: FileNode[]) => void;
@@ -41,13 +49,20 @@ interface AppState {
   setSelectedFilePath: (path: string | null) => void;
   toggleExpandedDir: (path: string) => void;
   expandToPath: (filePath: string) => void;
+
+  // Bookmarks
+  bookmarks: string[];
+  toggleBookmark: (path: string) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>()(persist((set) => ({
   // Initial state
   messages: [],
   assets: [],
   logs: [],
+  lastHealthLatency: null,
+  lastHealthError: null,
+  lastLogReadCount: 0,
   isLoading: false,
   error: null,
   sessionId: typeof crypto !== 'undefined' ? crypto.randomUUID() : 'default-session',
@@ -89,6 +104,11 @@ export const useAppStore = create<AppState>((set) => ({
   addLog: (log) =>
     set((state) => ({ logs: [...state.logs, log] })),
 
+  setLastHealthLatency: (ms) => set({ lastHealthLatency: ms }),
+  setLastHealthError: (error) => set({ lastHealthError: error }),
+  clearLogs: () => set({ logs: [], lastLogReadCount: 0 }),
+  markLogsRead: () => set((state) => ({ lastLogReadCount: state.logs.length })),
+
   setFileTree: (entries) => set({ fileTree: entries }),
   cacheDirectory: (path, entries) =>
     set((state) => ({
@@ -112,4 +132,17 @@ export const useAppStore = create<AppState>((set) => ({
       const merged = [...new Set([...state.expandedDirs, ...dirs])];
       return { expandedDirs: merged, selectedFilePath: filePath };
     }),
+
+  // Bookmarks
+  bookmarks: [],
+  toggleBookmark: (path) =>
+    set((state) => ({
+      bookmarks: state.bookmarks.includes(path)
+        ? state.bookmarks.filter((b) => b !== path)
+        : [...state.bookmarks, path],
+    })),
+}), {
+  name: 'projecthub-storage',
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({ bookmarks: state.bookmarks }),
 }));

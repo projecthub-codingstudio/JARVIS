@@ -52,6 +52,34 @@ def init_database(config: JarvisConfig) -> sqlite3.Connection:
         )
     """)
 
+    # Migration: create search_feedback table (feedback-based search improvement, v0.4)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_feedback (
+            feedback_id       TEXT PRIMARY KEY,
+            query_text        TEXT NOT NULL,
+            query_terms       TEXT DEFAULT '[]',
+            retrieval_task    TEXT DEFAULT '',
+            feedback_type     TEXT NOT NULL,
+            relevant_paths    TEXT DEFAULT '[]',
+            irrelevant_paths  TEXT DEFAULT '[]',
+            citation_paths    TEXT DEFAULT '[]',
+            session_id        TEXT DEFAULT '',
+            created_at        REAL NOT NULL DEFAULT (unixepoch())
+        )
+    """)
+
+    # Migration: create query_document_affinity table (learned relevance, v0.4)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS query_document_affinity (
+            query_pattern     TEXT NOT NULL,
+            document_path     TEXT NOT NULL,
+            affinity_score    REAL NOT NULL DEFAULT 0.0,
+            hit_count         INTEGER NOT NULL DEFAULT 0,
+            last_updated      REAL NOT NULL DEFAULT (unixepoch()),
+            PRIMARY KEY (query_pattern, document_path)
+        )
+    """)
+
     return conn
 
 

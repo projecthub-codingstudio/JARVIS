@@ -8,24 +8,27 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
   BarChart3,
-  Bell,
-  FolderOpen,
-  HelpCircle,
-  House,
+  FileSearch2,
+  FolderSearch,
+  LayoutDashboard,
   Search,
-  Settings,
   TerminalSquare,
-  UserRound,
   Workflow,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { useAppStore } from './store/app-store';
 import { useJarvis } from './hooks/useJarvis';
-import { apiClient } from './lib/api-client';
-import { RepositoryWorkspace } from './components/repository/RepositoryWorkspace';
+import { apiClient, type IndexingState } from './lib/api-client';
+import { DocumentsWorkspace } from './components/documents/DocumentsWorkspace';
+import { ExplorerWorkspace } from './components/explorer/ExplorerWorkspace';
 import { TerminalWorkspace } from './components/workspaces/TerminalWorkspace';
 import { AdminWorkspace } from './components/workspaces/AdminWorkspace';
 import { SkillsWorkspace } from './components/workspaces/SkillsWorkspace';
+import { CommandPalette } from './components/shell/CommandPalette';
+import { NotificationBell } from './components/shell/NotificationBell';
+import { SettingsPopover } from './components/shell/SettingsPopover';
+import { SessionInfo } from './components/shell/SessionInfo';
+import { HelpPopover } from './components/shell/HelpPopover';
 import type {
   ActionMap,
   ActionMapCreateInput,
@@ -38,32 +41,48 @@ import type {
 } from './types';
 
 const SHELL_NAV = [
-  { key: 'home' as ViewState, label: 'Home', icon: House },
+  { key: 'home' as ViewState, label: 'Dashboard', icon: LayoutDashboard },
   { key: 'terminal' as ViewState, label: 'Terminal', icon: TerminalSquare },
-  { key: 'repository' as ViewState, label: 'Repository', icon: FolderOpen },
+  { key: 'explorer' as ViewState, label: 'Explorer', icon: FolderSearch },
+  { key: 'documents' as ViewState, label: 'Documents', icon: FileSearch2 },
   { key: 'skills' as ViewState, label: 'Skills', icon: Workflow },
   { key: 'admin' as ViewState, label: 'Admin', icon: BarChart3 },
 ];
 
-const DOCUMENT_REFERENCE_PATTERN = /(이\s*(문서|파일|코드|슬라이드|페이지|시트)|해당\s*(문서|파일|코드)|현재\s*(문서|파일|코드)|여기|this\s+(document|file|code)|current\s+(document|file|code)|here)/i;
+const DOCUMENT_REFERENCE_PATTERN = /(이\s*(문서|파일|코드|슬라이드|페이지|시트|클래스|함수|메서드|모듈|스크립트)|해당\s*(문서|파일|코드|클래스|함수|모듈)|현재\s*(문서|파일|코드|클래스)|여기|this\s+(document|file|code|class|function|method|module)|current\s+(document|file|code|class|module)|here)/i;
 const EXPLICIT_TARGET_PATTERN = /^\s*(.+?)\s*(?:에서|에\s*대해|관련(?:해서)?|기준으로)\b/i;
 const GENERIC_DOCUMENT_TARGETS = new Set([
   '이 문서',
   '이 파일',
   '이 코드',
+  '이 클래스',
+  '이 함수',
+  '이 메서드',
+  '이 모듈',
+  '이 스크립트',
   '해당 문서',
   '해당 파일',
   '해당 코드',
+  '해당 클래스',
+  '해당 함수',
+  '해당 모듈',
   '현재 문서',
   '현재 파일',
   '현재 코드',
+  '현재 클래스',
   '여기',
   'this document',
   'this file',
   'this code',
+  'this class',
+  'this function',
+  'this method',
+  'this module',
   'current document',
   'current file',
   'current code',
+  'current class',
+  'current module',
 ]);
 
 function getActiveShellKey(view: ViewState): ViewState {
@@ -91,7 +110,10 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [kbStats, setKbStats] = useState<{ chunks: number; docs: number; failed: number; failedPaths: string[]; sizeBytes: number; embeddings: number } | null>(null);
+  const [indexingState, setIndexingState] = useState<IndexingState>({ status: 'idle', processed: 0, total: 0, last_completed: null, error: null });
   const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
+  const [documentContextPaths, setDocumentContextPaths] = useState<string[]>([]);
   const [skillCatalog, setSkillCatalog] = useState<SkillCatalog | null>(null);
   const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
   const [skillCatalogError, setSkillCatalogError] = useState<string | null>(null);
@@ -99,6 +121,7 @@ export default function App() {
   const [actionMapsLoading, setActionMapsLoading] = useState(false);
   const [actionMapsError, setActionMapsError] = useState<string | null>(null);
   const [repositoryInitialPath, setRepositoryInitialPath] = useState<string | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const {
     messages,
@@ -111,6 +134,14 @@ export default function App() {
     logs,
     sessionId,
     addLog,
+    lastHealthLatency,
+    lastHealthError,
+    lastLogReadCount,
+    setLastHealthLatency,
+    setLastHealthError,
+    clearLogs,
+    clearMessages,
+    markLogsRead,
   } = useAppStore();
 
   const { sendMessage, sendMessageWithImage } = useJarvis();
@@ -127,6 +158,17 @@ export default function App() {
     syncViewport();
     window.addEventListener('resize', syncViewport);
     return () => window.removeEventListener('resize', syncViewport);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
 
   useEffect(() => {
@@ -163,42 +205,104 @@ export default function App() {
 
     if (preferredView === 'repository') {
       if (assets.length > 0 || citations.length > 0) {
-        setView('repository');
+        setView('explorer');
       }
       return;
     }
 
     if (preferredView === 'detail_viewer') {
       if (assets.length > 0) {
-        setView('repository');
+        setView('explorer');
+      }
+      return;
+    }
+
+    if (preferredView === 'documents') {
+      if (assets.length > 0) {
+        // Stay in terminal — set document context for follow-up Q&A
+        // User can navigate to Documents view via nav if they want the cascade view
+        const paths = assets.map((a) => a.full_path || a.path).filter(Boolean);
+        if (paths.length > 0) setDocumentContextPaths(paths);
       }
     }
   }, [assets.length, citations.length, guide?.ui_hints?.preferred_view]);
 
   useEffect(() => {
     const checkBackend = async () => {
+      const start = performance.now();
       try {
         const response = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
         if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          const errorMsg = `HTTP ${response.status}: ${response.statusText}${detail ? ` — ${detail}` : ''}`;
           setBackendStatus('offline');
+          setLastHealthLatency(null);
+          setLastHealthError(errorMsg);
+          addLog({ id: `${Date.now()}-health-err`, timestamp: new Date().toISOString(), type: 'error', message: errorMsg });
           return;
         }
-        setBackendStatus('online');
+        const elapsed = Math.round(performance.now() - start);
+        const data = await response.json().catch(() => null);
+        const isStarting = data?.health?.status_level === 'starting';
+        setBackendStatus(isStarting ? 'checking' : 'online');
+        setLastHealthLatency(elapsed);
+        setLastHealthError(isStarting ? 'Backend is loading models...' : null);
+        if (data?.health?.chunk_count != null) {
+          setKbStats({
+            chunks: data.health.chunk_count ?? 0,
+            docs: data.health.doc_count ?? 0,
+            failed: data.health.failed_doc_count ?? 0,
+            failedPaths: data.health.failed_doc_paths ?? [],
+            sizeBytes: data.health.total_size_bytes ?? 0,
+            embeddings: data.health.embedding_count ?? 0,
+          });
+        }
+        if (data?.health?.indexing) {
+          setIndexingState(data.health.indexing);
+        }
         addLog({
           id: `${Date.now()}-health`,
           timestamp: new Date().toISOString(),
           type: 'info',
           message: 'JARVIS backend is connected.',
         });
-      } catch {
+      } catch (err) {
+        const errorMsg = err instanceof Error
+          ? (err.message.includes('Failed to fetch') ? 'Connection refused — backend process not running' : err.message)
+          : 'Unknown connection error';
         setBackendStatus('offline');
+        setLastHealthLatency(null);
+        setLastHealthError(errorMsg);
+        addLog({ id: `${Date.now()}-health-err`, timestamp: new Date().toISOString(), type: 'error', message: errorMsg });
       }
     };
 
     void checkBackend();
-    const interval = window.setInterval(checkBackend, 30000);
+    // Poll faster during restart/checking or indexing
+    const isPollingFast = backendStatus === 'checking' || indexingState.status === 'scanning' || indexingState.status === 'indexing';
+    const intervalMs = isPollingFast ? 2000 : 30000;
+    const interval = window.setInterval(checkBackend, intervalMs);
     return () => window.clearInterval(interval);
+  }, [addLog, setLastHealthLatency, indexingState.status, backendStatus]);
+
+  const handleReindex = useCallback(async () => {
+    try {
+      const result = await apiClient.reindex();
+      if (result.indexing) setIndexingState(result.indexing);
+      addLog({ id: `${Date.now()}-reindex`, timestamp: new Date().toISOString(), type: 'info', message: result.started ? 'Reindex started.' : 'Reindex already in progress.' });
+    } catch (err) {
+      addLog({ id: `${Date.now()}-reindex-err`, timestamp: new Date().toISOString(), type: 'error', message: `Reindex failed: ${err instanceof Error ? err.message : 'unknown'}` });
+    }
   }, [addLog]);
+
+  const handleRestart = useCallback(async () => {
+    if (!window.confirm('백엔드를 재시작하시겠습니까?\n재시작 중에는 질의가 불가능합니다.')) return;
+    addLog({ id: `${Date.now()}-restart`, timestamp: new Date().toISOString(), type: 'info', message: 'Backend restart requested...' });
+    setBackendStatus('checking');
+    setLastHealthError('Backend is restarting...');
+    setKbStats(null);
+    await apiClient.restart();
+  }, [addLog, setLastHealthLatency]);
 
   const selectArtifact = useCallback((artifact: Artifact) => {
     setSelectedArtifact((current) => {
@@ -216,17 +320,22 @@ export default function App() {
     const kbIndex = path.indexOf(kbMarker);
     const relativePath = kbIndex >= 0 ? path.slice(kbIndex + kbMarker.length) : path;
     setRepositoryInitialPath(relativePath);
-    setView('repository');
+    setView('explorer');
   }, []);
 
   const openArtifact = useCallback((artifact: Artifact) => {
+    const filePath = artifact.full_path || artifact.path;
+    // Web artifacts → open in new tab
+    if (filePath?.startsWith('http://') || filePath?.startsWith('https://')) {
+      window.open(filePath, '_blank', 'noopener,noreferrer');
+      return;
+    }
     setSelectedArtifact((current) => {
       if (!current) return artifact;
       const currentPath = current.full_path || current.path;
       const nextPath = artifact.full_path || artifact.path;
       return currentPath === nextPath ? current : artifact;
     });
-    const filePath = artifact.full_path || artifact.path;
     if (filePath) {
       navigateToFile(filePath);
     }
@@ -309,7 +418,7 @@ export default function App() {
       setView('terminal');
       setTerminalFocusNonce((current) => current + 1);
     }
-    await sendMessage(inputValue);
+    await sendMessage(inputValue, documentContextPaths.length > 0 ? { contextDocumentPaths: documentContextPaths } : undefined);
     setInputValue('');
   };
 
@@ -320,9 +429,11 @@ export default function App() {
     const contextualQuery = shouldScopeArtifactPrompt(normalizedPrompt)
       ? `${artifactLabel}에서 ${normalizedPrompt}`
       : normalizedPrompt;
+    const docPath = artifact.full_path || artifact.path || '';
+    if (docPath) setDocumentContextPaths([docPath]);
     setView('terminal');
     setTerminalFocusNonce((current) => current + 1);
-    await sendMessage(contextualQuery);
+    await sendMessage(contextualQuery, docPath ? { contextDocumentPaths: [docPath] } : undefined);
   }, [sendMessage]);
 
   const handleNavigate = (target: ViewState) => {
@@ -331,8 +442,20 @@ export default function App() {
       setTerminalFocusNonce((current) => current + 1);
       return;
     }
+    // Clear document context when navigating away from terminal/documents
+    if (target !== 'documents' && target !== 'terminal') {
+      setDocumentContextPaths([]);
+    }
     setView(target);
   };
+
+  const handleCommandPaletteSend = useCallback(async (text: string) => {
+    setInputValue(text);
+    setView('terminal');
+    setTerminalFocusNonce((current) => current + 1);
+    await sendMessage(text);
+    setInputValue('');
+  }, [sendMessage]);
 
   useEffect(() => {
     if (view !== 'skills') return;
@@ -350,7 +473,7 @@ export default function App() {
             <img src="/projecthub-icon.png" alt="ProjectHub" className="h-6 w-6 rounded" />
             <div className="text-sm font-bold tracking-tight text-primary">ProjectHub-JARVIS</div>
           </div>
-          <nav className="hidden items-center gap-4 md:flex">
+          <nav className="hidden items-center gap-4 md:flex lg:hidden">
             {SHELL_NAV.map(({ key, label }) => (
               <button
                 key={key}
@@ -369,22 +492,33 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          <label className="hidden items-center gap-2 rounded-sm bg-surface-container-lowest px-3 py-1 md:flex">
+          <button
+            onClick={() => setCommandPaletteOpen(true)}
+            className="hidden items-center gap-2 rounded-sm bg-surface-container-lowest px-3 py-1 md:flex"
+          >
             <Search size={14} className="text-outline" />
-            <input
-              className="w-44 bg-transparent text-[12px] text-on-surface outline-none placeholder:text-outline"
-              placeholder="Global Search..."
-            />
-          </label>
-          <button className="text-primary transition hover:bg-surface-container-high hover:text-on-surface">
-            <Bell size={16} />
+            <span className="w-44 text-left text-[12px] text-outline">Global Search...</span>
+            <kbd className="rounded border border-white/10 px-1 py-0.5 text-[9px] font-mono text-outline">
+              Cmd+K
+            </kbd>
           </button>
-          <button className="text-primary transition hover:bg-surface-container-high hover:text-on-surface">
-            <Settings size={16} />
-          </button>
-          <div className="flex h-7 w-7 items-center justify-center rounded-sm border border-white/10 bg-surface-container-highest text-outline">
-            <UserRound size={14} />
-          </div>
+          <NotificationBell
+            logs={logs}
+            unreadCount={Math.max(0, logs.length - lastLogReadCount)}
+            onMarkRead={markLogsRead}
+            onClearAll={clearLogs}
+          />
+          <SettingsPopover
+            onClearMessages={clearMessages}
+            addLog={addLog}
+          />
+          <SessionInfo
+            sessionId={sessionId}
+            backendStatus={backendStatus}
+            artifactCount={assets.length}
+            citationCount={citations.length}
+            messageCount={messages.length}
+          />
         </div>
       </header>
 
@@ -410,10 +544,12 @@ export default function App() {
         </div>
 
         <div className="mt-auto flex w-full flex-col items-center gap-4 pb-8">
-          <button className="text-outline transition hover:text-on-surface">
-            <HelpCircle size={18} />
-          </button>
-          <button className="text-outline transition hover:text-on-surface">
+          <HelpPopover backendStatus={backendStatus} />
+          <button
+            onClick={() => handleNavigate('admin')}
+            className="text-outline transition hover:text-on-surface"
+            title="System Activity"
+          >
             <Activity size={18} />
           </button>
         </div>
@@ -447,6 +583,10 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
+                kbStats={kbStats}
+                indexingState={indexingState}
+                onReindex={handleReindex}
+                onRestart={handleRestart}
               />
             </motion.div>
           ) : null}
@@ -477,21 +617,40 @@ export default function App() {
                 onSubmit={handleSendMessage}
                 onImageSubmit={sendMessageWithImage}
                 focusInputNonce={terminalFocusNonce}
+                documentContext={documentContextPaths}
+                onClearDocumentContext={() => setDocumentContextPaths([])}
+                onNavigateToDocuments={() => setView('documents')}
               />
             </motion.div>
           ) : null}
 
-          {view === 'repository' ? (
+          {view === 'explorer' ? (
             <motion.div
-              key="repository"
+              key="explorer"
               initial={{ opacity: 0, x: 12 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -12 }}
               className="h-full"
             >
-              <RepositoryWorkspace
+              <ExplorerWorkspace
                 initialPath={repositoryInitialPath}
                 onClearInitialPath={() => setRepositoryInitialPath(null)}
+                onAskArtifact={handleAskArtifact}
+              />
+            </motion.div>
+          ) : null}
+
+          {view === 'documents' ? (
+            <motion.div
+              key="documents"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              className="h-full"
+            >
+              <DocumentsWorkspace
+                assets={assets}
+                onAskArtifact={handleAskArtifact}
               />
             </motion.div>
           ) : null}
@@ -507,6 +666,7 @@ export default function App() {
               <AdminWorkspace
                 assets={assets}
                 backendStatus={backendStatus}
+                lastHealthError={lastHealthError}
                 citations={citations}
                 logs={logs}
                 messages={messages}
@@ -542,21 +702,81 @@ export default function App() {
         </AnimatePresence>
       </main>
 
+      {/* Offline banner with retry */}
+      {backendStatus === 'offline' && (
+        <div className="fixed inset-x-0 top-12 z-50 flex items-center justify-between border-b border-[#ffb4ab]/30 bg-[#93000a] px-4 py-2 lg:left-16">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-2 w-2 rounded-full bg-[#ffb4ab] animate-pulse" />
+            <span className="text-[12px] font-medium text-[#ffdad6]">
+              Backend Offline{lastHealthError ? ` — ${lastHealthError}` : ''}
+            </span>
+          </div>
+          <button
+            onClick={async () => {
+              setBackendStatus('checking');
+              setLastHealthError(null);
+              try {
+                const res = await fetch(`${import.meta.env.VITE_JARVIS_API_URL || 'http://localhost:8000'}/api/health`);
+                if (res.ok) {
+                  setBackendStatus('online');
+                  setLastHealthError(null);
+                  setLastHealthLatency(null);
+                  addLog({ id: `${Date.now()}-retry`, timestamp: new Date().toISOString(), type: 'info', message: 'Backend reconnected via manual retry.' });
+                } else {
+                  const detail = await res.text().catch(() => '');
+                  setBackendStatus('offline');
+                  setLastHealthError(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+                }
+              } catch (err) {
+                const msg = err instanceof Error && err.message.includes('Failed to fetch')
+                  ? 'Connection refused — backend process not running'
+                  : (err instanceof Error ? err.message : 'Connection failed');
+                setBackendStatus('offline');
+                setLastHealthError(msg);
+              }
+            }}
+            className="shrink-0 rounded-sm bg-[#ffdad6]/20 px-3 py-1 text-[11px] font-semibold text-[#ffdad6] transition hover:bg-[#ffdad6]/30"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
+
       <footer className="fixed inset-x-0 bottom-0 z-50 flex h-6 items-center border-t border-white/5 bg-surface-container-lowest px-4 font-mono text-[11px]">
         <span className={cn('mr-6', backendStatus === 'online' ? 'text-secondary' : backendStatus === 'checking' ? 'text-primary' : 'text-[#ffb4ab]')}>
           {backendStatus === 'online' ? 'SYSTEM READY' : backendStatus === 'checking' ? 'SYSTEM CHECKING' : 'SYSTEM OFFLINE'}
         </span>
         <div className="flex flex-1 items-center gap-6 text-outline">
-          <span>branch:main</span>
-          <span>latency:14ms</span>
+          <span>backend:{backendStatus}</span>
+          <span>latency:{lastHealthLatency !== null ? `${lastHealthLatency}ms` : '--'}</span>
           <span>session:{sessionId.slice(0, 8)}</span>
           {selectedArtifact && <span>{selectedArtifact.title}</span>}
         </div>
         <div className="hidden gap-4 text-outline md:flex">
-          <span>docs:{assets.length}</span>
-          <span>refs:{citations.length}</span>
+          {(indexingState.status === 'scanning' || indexingState.status === 'indexing') && (
+            <span className="text-primary animate-pulse">
+              indexing:{indexingState.processed}/{indexingState.total}
+            </span>
+          )}
+          {kbStats && <span>kb:{kbStats.docs.toLocaleString()} docs</span>}
+          {kbStats && <span>chunks:{kbStats.chunks.toLocaleString()}</span>}
+          {kbStats && kbStats.embeddings > 0 && <span>vectors:{kbStats.embeddings.toLocaleString()}</span>}
+          {assets.length > 0 && <span>loaded:{assets.length}</span>}
+          {citations.length > 0 && <span>refs:{citations.length}</span>}
         </div>
       </footer>
+
+      <AnimatePresence>
+        {commandPaletteOpen && (
+          <CommandPalette
+            open={commandPaletteOpen}
+            onClose={() => setCommandPaletteOpen(false)}
+            onNavigate={(target) => { handleNavigate(target); setCommandPaletteOpen(false); }}
+            onSendMessage={handleCommandPaletteSend}
+            onNavigateToFile={(path) => { navigateToFile(path); setCommandPaletteOpen(false); }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

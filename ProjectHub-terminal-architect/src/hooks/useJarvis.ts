@@ -20,18 +20,18 @@ export const useJarvis = () => {
 
   const { isLoading } = useAppStore();
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, options?: { contextDocumentPaths?: string[] }) => {
     if (!text.trim() || isLoading) return;
 
     // Add user message
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'operator',
-      timestamp: new Date().toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
-        hour12: false 
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
       }),
       content: text,
     };
@@ -44,6 +44,7 @@ export const useJarvis = () => {
       const request: AskRequest = {
         text: text,
         session_id: sessionId,
+        ...(options?.contextDocumentPaths?.length ? { context_document_paths: options.contextDocumentPaths } : {}),
       };
 
       const response: AskResponse = await apiClient.ask(request);
